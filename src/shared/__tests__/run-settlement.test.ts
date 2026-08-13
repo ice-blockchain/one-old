@@ -5,15 +5,25 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { stableContractJson } from '../architecture-contract';
+import { readJsonResult } from '../fsjson';
 import { isMaintenanceTerminal } from '../maintenance/terminal';
-import { mintOverride } from '../override';
+import { oneSettingsPath } from '../one-settings';
+import {
+  mintOverride,
+  overrideEvidenceReport,
+  overrideLedgerPath,
+  overrideReconciliationDraft,
+  recordOverrideReconciliation,
+} from '../override';
 import { qaReportV2Path } from '../qa-report-v2';
 import {
+  SETTLEMENT_RECORD_ILLEGIBLE_CHECK,
   activateRunV2RollbackBarrier,
   activeRunClaimScan,
   effectiveLegacyRunStatus,
   projectRunLedgerForV2Rollback,
   readRunSettlement,
+  readRunSettlementResult,
   reconcileRunSettlement,
   writeRunSettlement,
   type CanonicalRunStatus,
@@ -120,6 +130,168 @@ test('verified settlement fails closed while a claim or check remains active', (
   });
 });
 
+test('a settlement that exists and does not parse is preserved, rebuilt, and never certifies again', () => {
+  // IMMUTABILITY THAT ONE EDIT REMOVES, which is the defect, and the SECOND
+  // shape of its fix. The terminal guard reads the previous record through a
+  // parser that answers `null` for any hash or shape damage, so an intact
+  // terminal settlement resisted being reopened while the SAME record with one
+  // byte changed was overwritten at revision 1 — by anything that can write the
+  // project tree, which is where this file lives.
+  //
+  // The first fix REFUSED the write, and this test pinned that. It bought the
+  // property at the price of a wedge: no writer, not even `failed`, could settle
+  // the run again, and 32 of a measured 63 damaged-record × ledger-state cells
+  // lost their canonical terminal status. What is pinned now keeps the property
+  // and drops the wedge — the damage buys the attacker nothing it did not
+  // already have, because the run comes back PERMANENTLY UNCERTIFIABLE.
+  withProject((cwd) => {
+    writeStrictVerificationEvidence(cwd);
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'blocked' })?.status, 'blocked');
+    const file = path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json');
+    // The control: intact, the terminal guard holds and the record is returned
+    // unchanged, so what happens below is not just "terminal states are refused".
+    const held = writeRunSettlement(cwd, 'R', { status: 'failed' });
+    assert.equal(held?.status, 'blocked');
+    assert.equal(held?.revision, 1);
+
+    const damaged = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    damaged.updatedAt = new Date(Date.now() + 1000).toISOString();
+    const damagedBytes = JSON.stringify(damaged, null, 2);
+    fs.writeFileSync(file, damagedBytes, 'utf8');
+    assert.equal(readRunSettlement(cwd, 'R'), null, 'one edit and the record no longer parses');
+    assert.equal(readRunSettlementResult(cwd, 'R').kind, 'malformed',
+      'and the read says WHICH kind of unreadable, rather than answering like an absent one');
+
+    // THE WEDGE IS GONE: the run settles.
+    const rebuilt = writeRunSettlement(cwd, 'R', { status: 'failed' });
+    assert.equal(rebuilt?.status, 'failed', 'a damaged record is no longer a wedge — the run still settles');
+    assert.equal(readRunSettlement(cwd, 'R')?.status, 'failed', 'durably');
+
+    // THE BYTES SURVIVE, which is what makes rebuilding defensible at all.
+    assert.equal(fs.readFileSync(`${file}.corrupt`, 'utf8'), damagedBytes,
+      'the damaged record is preserved beside itself, byte for byte');
+
+    // AND THE DAMAGE BOUGHT NOTHING. The marker is inside the hashed record, so
+    // removing it makes the record illegible again and puts it straight back.
+    assert.ok(rebuilt?.incompleteChecks.includes(SETTLEMENT_RECORD_ILLEGIBLE_CHECK),
+      'the run carries the damage permanently');
+  });
+
+  // The point of the marker, on a run that is otherwise GENUINELY certifiable:
+  // damaging the record used to be a way to blank a run's history and start it
+  // clean. Now it is a way to make it uncertifiable forever.
+  withProject((cwd) => {
+    writeStrictVerificationEvidence(cwd);
+    // Control: this exact fixture certifies when nothing was ever damaged.
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'verified' })?.status, 'verified');
+  });
+  withProject((cwd) => {
+    writeStrictVerificationEvidence(cwd);
+    const file = path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json');
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'active' })?.status, 'active');
+    fs.writeFileSync(file, '{"schemaVersion":2,"runId":"R","status":"act', 'utf8');
+
+    const first = writeRunSettlement(cwd, 'R', { status: 'verified' });
+    assert.equal(first?.status, 'validating', 'the pass that FINDS the damage refuses to certify');
+    assert.equal(first?.reason, SETTLEMENT_RECORD_ILLEGIBLE_CHECK,
+      'under its own name, which is the one an operator cannot repair by fixing something else');
+
+    // …and once, forever: the second pass reads a record it wrote itself, so the
+    // marker has to be carried forward or the very next write certifies.
+    const second = writeRunSettlement(cwd, 'R', { status: 'verified' });
+    assert.equal(second?.status, 'validating', 'and so does every pass after it');
+    assert.ok(second?.incompleteChecks.includes(SETTLEMENT_RECORD_ILLEGIBLE_CHECK));
+    const ledger = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'runs', 'R', 'run.json'), 'utf8'));
+    assert.notEqual(ledger.outcome, 'shipped', 'so `shipped` is unreachable too');
+
+    // A DIFFERENT run in the same project is untouched: this is a run-scoped
+    // consequence of that run's own record, not a project kill switch.
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', 'S'), { recursive: true });
+    writeStrictVerificationEvidence(cwd, 'S');
+    assert.equal(writeRunSettlement(cwd, 'S', { status: 'verified' })?.status, 'verified');
+  });
+
+  // ABSENT is still absent, and still the ordinary case: a run with no record
+  // certifies normally. Without this the marker could be reached by "no
+  // settlement" and every first write in the product would be uncertifiable.
+  withProject((cwd) => {
+    writeStrictVerificationEvidence(cwd);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json')), false);
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'verified' })?.status, 'verified');
+  });
+});
+
+test('a damaged record we cannot preserve is not rebuilt over', () => {
+  // The one refusal that remains, and the rule it shares with
+  // `writeLegacyProjection`: preservation comes first. Rebuilding over bytes we
+  // could not copy aside destroys the only account of what the record claimed,
+  // which is the thing the whole marker exists to make impossible to erase.
+  //
+  // A DANGLING LINK at the quarantine path, following publisher-write-refusal
+  // .test.ts: `settlement-v2.json.corrupt` is only ever WRITTEN, so there is no
+  // read to keep alive, and the consent fence refuses a link at either end of a
+  // move.
+  withProject((cwd) => {
+    const file = path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json');
+    // Writable baseline: the same damage with the quarantine path unfenced both
+    // preserves and rebuilds. Without it a fence closed for an unrelated reason
+    // would pass identically.
+    fs.writeFileSync(file, 'not json', 'utf8');
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'failed' })?.status, 'failed',
+      'writable baseline: the rebuild lands');
+    assert.equal(fs.readFileSync(`${file}.corrupt`, 'utf8'), 'not json',
+      'writable baseline: after the preservation');
+  });
+  withProject((cwd) => {
+    const file = path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json');
+    fs.writeFileSync(file, 'not json either', 'utf8');
+    fs.symlinkSync(path.join(path.dirname(file), 'no-such-target'), `${file}.corrupt`);
+    assert.equal(fs.existsSync(`${file}.corrupt`), false, 'fixture guard: the link is dangling');
+
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'failed' }), null,
+      'a record we could not preserve is not replaced — the refusal of the copy refuses the write');
+    assert.equal(fs.readFileSync(file, 'utf8'), 'not json either', 'and the bytes are exactly as they were');
+  });
+});
+
+test('a symlink at the settlement path is refused rather than moved aside', () => {
+  // The quarantine must not become a way to clear the consent fence. A planted
+  // link at `settlement-v2.json` is refused by fsjson on every write; if the
+  // rebuild could rename it out of the way first, the SECOND write would land
+  // through a path the fence had already refused once.
+  withProject((cwd) => {
+    const file = path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json');
+    const elsewhere = path.join(cwd, 'elsewhere.json');
+    fs.writeFileSync(elsewhere, '{"planted":true}', 'utf8');
+    fs.symlinkSync(elsewhere, file);
+
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'failed' }), null, 'the write is refused');
+    assert.ok(fs.lstatSync(file).isSymbolicLink(), 'and the link is left exactly where it was');
+    assert.equal(fs.existsSync(`${file}.corrupt`), false, 'nothing was moved aside');
+    assert.equal(fs.readFileSync(elsewhere, 'utf8'), '{"planted":true}', 'and its target is untouched');
+  });
+});
+
+test('two spellings of one run id are one settlement record', () => {
+  // The path helper sanitises and the parser compares EXACTLY, so writing a
+  // settlement for an id with a trailing space landed it in the sanitised
+  // directory carrying the unsanitised id — after which reading the canonical
+  // id answered `null`, blanking another run's canonical record for free.
+  // Composes with the refusal above, which reads "exists and does not parse" as
+  // a reason to refuse every later write, so the blanking would have become a
+  // wedge anyone could plant with one argument.
+  withProject((cwd) => {
+    assert.equal(writeRunSettlement(cwd, 'R', { status: 'active' })?.status, 'active');
+    const spelled = writeRunSettlement(cwd, 'R ', { status: 'blocked' });
+    assert.equal(spelled?.status, 'blocked');
+    assert.equal(spelled?.runId, 'R', 'the record carries the canonical id, not the caller\'s spelling');
+    assert.equal(readRunSettlement(cwd, 'R')?.status, 'blocked', 'and the canonical read still finds it');
+    assert.equal(readRunSettlement(cwd, 'R ')?.status, 'blocked', 'from either spelling');
+    assert.equal(fs.readdirSync(path.join(cwd, '.traffic-one', 'runs')).sort().join(','), 'R',
+      'one directory, one record');
+  });
+});
+
 // The operator-override abuse guard. Driven through a run that is otherwise
 // GENUINELY verifiable — full strict evidence, no active claims — so the
 // downgrade can only be coming from the override, and so removing the guard
@@ -168,6 +340,224 @@ test('a run somebody minted an operator override for can never settle verified o
     if (savedXdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = savedXdg;
     fs.rmSync(machineBase, { recursive: true, force: true });
   }
+});
+
+// The step AFTER the guard above, which is where the green run actually came
+// from. The abuse guard reads the ledger, so deleting the ledger answered it
+// with "no override was ever minted" and the run settled `verified` with
+// `reason=none` — measured, and reproduced by the first case below before the
+// completeness checks existed. Every case here drives a run that is otherwise
+// GENUINELY verifiable, so a refusal can only be coming from the override
+// record; the eligible cases are the ones that prove the checks have not simply
+// been wired to refuse everything.
+function withMachineDir(body: (machineDir: string) => void): void {
+  const saved = process.env.XDG_STATE_HOME;
+  const machineBase = fs.mkdtempSync(path.join(os.tmpdir(), 't1-settlement-override-'));
+  process.env.XDG_STATE_HOME = machineBase;
+  try {
+    body(machineBase);
+  } finally {
+    if (saved === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = saved;
+    // The unreadable-ledger case clamps a file to 0o000, which defeats the rm
+    // on some platforms.
+    try { fs.chmodSync(path.join(machineBase, 'traffic-one'), 0o700); } catch { /* not that case */ }
+    fs.rmSync(machineBase, { recursive: true, force: true });
+  }
+}
+
+test('erasing the override ledger does not buy back a verified run', () => {
+  withMachineDir(() => {
+    withProject((cwd) => {
+      writeStrictVerificationEvidence(cwd);
+      const minted = mintOverride({
+        projectRoot: cwd, runId: 'R', scope: 'gate', target: 'plan-guard', snapshot: { runId: 'R' },
+      });
+      assert.equal(minted.ok, true);
+      assert.equal(writeRunSettlement(cwd, 'R', { status: 'verified' })?.status, 'validating');
+
+      // The forgery, verbatim: one `rm` of a file outside the project tree that
+      // no gate has an opinion about.
+      fs.rmSync(overrideLedgerPath(cwd));
+
+      const settlement = writeRunSettlement(cwd, 'R', { status: 'verified' });
+      assert.equal(settlement?.status, 'validating');
+      assert.equal(settlement?.reason, 'override-snapshot-orphaned');
+      assert.ok(settlement?.incompleteChecks.includes('override-snapshot-orphaned'));
+      assert.ok(settlement?.incompleteChecks.includes('override-mint-count-mismatch'));
+      const ledger = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'runs', 'R', 'run.json'), 'utf8'));
+      assert.notEqual(ledger.outcome, 'shipped');
+      assert.equal(ledger.canonicalStatus, 'validating');
+
+      // Project-scoped, unlike the abuse guard: a deleted line took its runId
+      // with it, so no other run in this project can be certified either.
+      fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', 'S'), { recursive: true });
+      writeStrictVerificationEvidence(cwd, 'S');
+      assert.equal(writeRunSettlement(cwd, 'S', { status: 'verified' })?.status, 'validating');
+    });
+  });
+});
+
+test('an illegible override ledger refuses certification while an absent one stays eligible', () => {
+  // ENOENT is the case that must NOT regress: no override was ever minted here,
+  // which is what almost every install looks like forever.
+  withMachineDir(() => {
+    withProject((cwd) => {
+      writeStrictVerificationEvidence(cwd);
+      assert.equal(fs.existsSync(overrideLedgerPath(cwd)), false);
+      assert.equal(writeRunSettlement(cwd, 'R', { status: 'verified' })?.status, 'verified');
+    });
+  });
+
+  for (const [label, corrupt] of [
+    ['corrupt', (file: string) => fs.writeFileSync(file, 'not json at all\n', 'utf8')],
+    ['oversized', (file: string) => fs.writeFileSync(file, `${'x'.repeat(600 * 1024)}\n`, 'utf8')],
+    ['unreadable', (file: string) => {
+      fs.writeFileSync(file, '{}\n', 'utf8');
+      fs.chmodSync(file, 0o000);
+      assert.equal(readJsonResult(file).kind, 'unreadable',
+        'fixture guard: a root uid reads straight through the mode bits and would measure nothing');
+    }],
+  ] as const) {
+    withMachineDir(() => {
+      withProject((cwd) => {
+        writeStrictVerificationEvidence(cwd);
+        const file = overrideLedgerPath(cwd);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        corrupt(file);
+        const settlement = writeRunSettlement(cwd, 'R', { status: 'verified' });
+        assert.equal(settlement?.status, 'validating', label);
+        assert.equal(settlement?.reason, 'override-ledger-illegible', label);
+        assert.ok(settlement?.incompleteChecks.includes('override-ledger-illegible'), label);
+      });
+    });
+  }
+});
+
+test('a mint counter ahead of the ledger, or unsigned, refuses certification', () => {
+  withMachineDir(() => {
+    withProject((cwd) => {
+      writeStrictVerificationEvidence(cwd);
+      assert.equal(mintOverride({
+        projectRoot: cwd, runId: 'R', scope: 'gate', target: 'plan-guard', snapshot: { runId: 'R' },
+      }).ok, true);
+
+      // The whole bucket removed — snapshots included — so the counter in the
+      // machine-owned one.json is the only witness left.
+      fs.rmSync(path.dirname(overrideLedgerPath(cwd)), { recursive: true });
+      const erased = writeRunSettlement(cwd, 'R', { status: 'verified' });
+      assert.equal(erased?.status, 'validating');
+      assert.equal(erased?.reason, 'override-mint-count-mismatch');
+    });
+  });
+
+  // A machine dir of its own: one.json holds every project's counter, and the
+  // edit below has to land on the entry belonging to THIS fixture.
+  withMachineDir(() => {
+    withProject((cwd) => {
+      writeStrictVerificationEvidence(cwd);
+      assert.equal(mintOverride({
+        projectRoot: cwd, runId: 'R', scope: 'gate', target: 'plan-guard', snapshot: { runId: 'R' },
+      }).ok, true);
+      fs.rmSync(path.dirname(overrideLedgerPath(cwd)), { recursive: true });
+      // …and stripping the signature off the counter is not a way out either.
+      const settingsPath = oneSettingsPath();
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+      const section = settings.overrideMints as Record<string, Record<string, unknown>>;
+      delete (section[Object.keys(section)[0] as string] as Record<string, unknown>).mac;
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+
+      const settlement = writeRunSettlement(cwd, 'R', { status: 'verified' });
+      assert.equal(settlement?.status, 'validating');
+      assert.equal(settlement?.reason, 'override-mint-counter-unverifiable');
+    });
+  });
+});
+
+test('a reconciled project certifies again, except for the runs the operator quarantined', () => {
+  // The other end of every refusal above: they are permanent and project-wide,
+  // and a control with no route out is a wedge. The route is an operator
+  // acknowledgement that deletes nothing (shared/override/reconcile.ts), and
+  // the price it charges is asserted HERE, at settlement, because that is where
+  // it has to be true: the run that existed when the erasure was noticed stays
+  // refused, and only a run started afterwards is eligible.
+  withMachineDir(() => {
+    withProject((cwd) => {
+      writeStrictVerificationEvidence(cwd);
+      assert.equal(mintOverride({
+        projectRoot: cwd, runId: 'R', scope: 'gate', target: 'plan-guard', snapshot: { runId: 'R' },
+      }).ok, true);
+      fs.rmSync(overrideLedgerPath(cwd));
+      assert.equal(writeRunSettlement(cwd, 'R', { status: 'verified' })?.status, 'validating');
+
+      const reconciled = recordOverrideReconciliation({
+        projectRoot: cwd,
+        fingerprint: overrideReconciliationDraft(cwd).fingerprint,
+        quarantinedRuns: ['R'],
+      });
+      assert.equal(reconciled.ok, true);
+
+      const held = writeRunSettlement(cwd, 'R', { status: 'verified' });
+      assert.equal(held?.status, 'validating', 'the quarantined run is still refused, and permanently');
+      assert.equal(held?.reason, 'override-reconciliation-quarantined');
+      assert.ok(held?.incompleteChecks.includes('override-reconciliation-quarantined'));
+
+      // THE QUARANTINE IS A LIST OF DIRECTORY NAMES, and a copy of the run under
+      // a new name is not on it. Measured here rather than argued, because the
+      // reading matters: `cp -r runs/R runs/R2` — every artifact, byte for byte,
+      // with the run ids inside them re-pointed — does NOT certify. The
+      // verification contract's hash covers its own runId and the QA report binds
+      // to that hash, so the copy arrives with evidence that does not describe it.
+      // What certifies a fresh id is fresh evidence, which is this feature's
+      // deliberate boundary (the override taints the run, not the tree) and is
+      // available with or without a reconciliation on record.
+      const runs = path.join(cwd, '.traffic-one', 'runs');
+      fs.cpSync(path.join(runs, 'R'), path.join(runs, 'R2'), { recursive: true });
+      for (const file of [verificationContractPath(cwd, 'R2'), qaReportV2Path(cwd, 'R2'),
+        path.join(runs, 'R2', 'settlement.json'), path.join(runs, 'R2', 'run.json')]) {
+        if (!fs.existsSync(file)) continue;
+        fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split('"R"').join('"R2"'), 'utf8');
+      }
+      // The copy is refused TWICE OVER, and the extra refusal is worth naming:
+      // `cp -r` brings the source run's `settlement-v2.json` with it, whose
+      // `runId` names the run it came from, so the copy's canonical record
+      // exists and is not a record OF THIS RUN. The writer treats that as
+      // damage — it preserves the foreign bytes, rebuilds the record, and marks
+      // the copy permanently uncertifiable.
+      const carried = writeRunSettlement(cwd, 'R2', { status: 'verified' });
+      assert.equal(carried?.status, 'validating',
+        'a copied run carries a settlement that does not describe it, and cannot certify over it');
+      assert.ok(carried?.incompleteChecks.includes(SETTLEMENT_RECORD_ILLEGIBLE_CHECK),
+        carried?.incompleteChecks.join(', '));
+      assert.equal(fs.existsSync(path.join(runs, 'R2', 'settlement-v2.json.corrupt')), true,
+        "and the source run's record is preserved rather than silently replaced");
+
+      // …and the copy is judged on its evidence too, which is the measurement
+      // this test exists for: every artifact byte for byte with the run ids
+      // re-pointed still does NOT certify, because the verification contract's
+      // hash covers its own runId and the QA report binds to that hash. What
+      // certifies a fresh id is fresh evidence — this feature's deliberate
+      // boundary, available with or without a reconciliation. Measured on a
+      // THIRD copy, so the marker above is not the only thing refusing.
+      fs.cpSync(path.join(runs, 'R'), path.join(runs, 'R3'), { recursive: true });
+      for (const file of [verificationContractPath(cwd, 'R3'), qaReportV2Path(cwd, 'R3'),
+        path.join(runs, 'R3', 'settlement.json'), path.join(runs, 'R3', 'run.json')]) {
+        if (!fs.existsSync(file)) continue;
+        fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split('"R"').join('"R3"'), 'utf8');
+      }
+      fs.rmSync(path.join(runs, 'R3', 'settlement-v2.json'), { force: true });
+      const copied = writeRunSettlement(cwd, 'R3', { status: 'verified' });
+      assert.equal(copied?.status, 'validating', 'a renamed copy is not a certified run');
+      assert.equal(copied?.incompleteChecks.includes(SETTLEMENT_RECORD_ILLEGIBLE_CHECK), false,
+        'and this one is refused on its EVIDENCE, with no damage marker involved');
+      assert.ok(copied?.incompleteChecks.some((check) => check.startsWith('verification-contract')
+        || check.startsWith('qa-')), copied?.incompleteChecks.join(', '));
+
+      fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', 'S'), { recursive: true });
+      writeStrictVerificationEvidence(cwd, 'S');
+      assert.equal(writeRunSettlement(cwd, 'S', { status: 'verified' })?.status, 'verified',
+        'work started after the operator looked is certifiable — the project is not dead');
+    });
+  });
 });
 
 test('claim scan truncation is explicit and cannot hide a late active claim', () => {

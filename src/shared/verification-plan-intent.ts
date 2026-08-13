@@ -2,13 +2,13 @@
 // The planner may request stricter verification, but this parser deliberately
 // exposes only the compile options the runtime is prepared to accept.
 
-import * as fs from 'fs';
 import * as path from 'path';
 
 import type {
   LighthouseThresholdsV1,
   VerificationCompileOptions,
 } from './verification-contract';
+import { readRegularFileOrThrow } from './bounded-read';
 
 export const VERIFICATION_PLAN_INTENT_START = '<!-- traffic-one-verification:start -->';
 export const VERIFICATION_PLAN_INTENT_END = '<!-- traffic-one-verification:end -->';
@@ -167,7 +167,7 @@ function verificationPlanPath(projectRoot: string): string {
 export function readVerificationPlanIntent(projectRoot: string): VerificationPlanCompileOptions {
   const planPath = verificationPlanPath(projectRoot);
   try {
-    return parseVerificationPlanIntent(fs.readFileSync(planPath, 'utf8'));
+    return parseVerificationPlanIntent(readRegularFileOrThrow(planPath));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
     throw error;

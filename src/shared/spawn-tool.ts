@@ -51,7 +51,13 @@ export function escapeCmdArgument(arg: string): string {
 // → used as-is; absolute bare name → try .cmd/.bat/.exe siblings; otherwise
 // exec.which() does the PATHEXT-aware PATH lookup. Falls back to the original so a
 // genuinely-missing command still yields the normal ENOENT the caller handles.
-function resolveWindowsCommand(command: string): string {
+//
+// Exported for qa-evidence/native-process.ts, which needs the same resolution
+// for an ASYNC spawn and cannot use spawnTool. A second copy of these four
+// lines is exactly the drift this module's escaping is imported to avoid, and
+// this is a pure export: nothing about the behaviour five other runners depend
+// on changes.
+export function resolveWindowsCommand(command: string): string {
   if (path.isAbsolute(command)) {
     if (fs.existsSync(command)) return command;
     for (const ext of ['.cmd', '.bat', '.exe']) {

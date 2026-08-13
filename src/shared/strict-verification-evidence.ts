@@ -27,6 +27,7 @@ import { readJson } from './fsjson';
 import { readQaReportV1 } from './qa-report';
 import { readQaReportV2 } from './qa-report-v2';
 import { readVerificationContract } from './verification-contract';
+import { readRegularFileOrThrow } from './bounded-read';
 
 interface StrictVerificationEvidence {
   ok: boolean;
@@ -75,7 +76,7 @@ function digestEvidence(
     try {
       const stat = fs.statSync(file);
       if (!stat.isFile() || stat.size <= 0) continue;
-      const text = fs.readFileSync(file, 'utf8');
+      const text = readRegularFileOrThrow(file);
       if (!text.trim()) continue;
       const verdict = exactVerdict(text);
       if (!verdict) return { verdict: null, newestMtimeMs: Math.floor(stat.mtimeMs) };

@@ -53,6 +53,34 @@ export function strayRunIdInText(text: unknown, currentRunId: unknown): string |
     // a real run-id (epoch-ms) or even a `date`/ISO string never contains these glob chars, so
     // skipping them drops the read-glob false positive without weakening real-id detection.
     if (/[*?[\]{}]/.test(segment)) continue;
+    // A DOT-PREFIXED segment is not a run id and never was. Run ids are
+    // gate-minted epoch-ms numbers; the runs root also holds project-level
+    // records that are deliberately NOT under a run — `.resets.json` (the reset
+    // ledger, runners/traffic-one-reset/resets.ts) and `.once/` (session
+    // markers, shared/once.ts) — and this function was reading both filenames as
+    // fabricated run ids.
+    //
+    // That was not harmless, in either direction. The refusal it produced said
+    // "this write targets run-id `.resets.json` … write under
+    // `.traffic-one/runs/<currentRunId>/` instead", which is advice no writer of
+    // that path can follow: there is no run directory it belongs in. And because
+    // it was the ONLY thing refusing that path, the reset record's entire
+    // defence was a misparse — conditional on `currentRunId` being set (this
+    // function returns null without one), and silently removable by any future
+    // author who narrowed this pattern correctly.
+    //
+    // So the misparse is gone and the record has a real fence instead:
+    // `reset-record-owner-gate` (modules/plan-guard/plan-readiness/index.ts plus
+    // plan-write/reset-record-shell.ts), which reads no run pointer and is
+    // driven at the gate by __tests__/reset-record-fence.test.ts. What `.once/`
+    // loses is an accidental refusal whose absence is fail-SAFE: a deleted
+    // once-marker makes an advisory block emit AGAIN (shared/once.ts), so
+    // nothing is unlocked by removing one.
+    //
+    // `.` and `..` keep their refusal: those are traversal rather than a name,
+    // and `runs/../…` escaping the run tree is exactly the write-path split this
+    // guard exists for.
+    if (segment.startsWith('.') && segment !== '.' && segment !== '..') continue;
     return segment;
   }
   return null;

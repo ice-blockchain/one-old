@@ -122,6 +122,81 @@ export function writeFileNoFollow(absolute: string, text: string, mode: 'truncat
 }
 
 /**
+ * READ `absolute` without ever following a symlink AT it — `writeFileNoFollow`'s
+ * twin, and it exists because the write half alone protects nothing on the way
+ * IN.
+ *
+ * A bare `readFileSync` on a path someone else planted a link at returns the
+ * LINK TARGET's bytes, anywhere on the filesystem, and a caller that then copies
+ * those bytes into a file inside the project has exfiltrated them. MEASURED:
+ * `architecture.md` -> `../outside-secret.md` in a state-holding project put the
+ * outside file's bytes into `.traffic-one/plan.md` and unlinked the link
+ * (materialize/plan-migration.ts, peer row R11). The ownership gate in that same
+ * module already refuses a SYMLINKED `.one.json` on the grounds that a link is
+ * not evidence of what it names; this is the same rule for the read.
+ *
+ * Throws exactly what `fs` throws — ELOOP for a link, EISDIR for a directory,
+ * EACCES, ENOENT — so a caller can tell a refusal from a real IO failure, and so
+ * "I could not read it" never arrives as an empty string. Callers keep their own
+ * pre-open `lstat` refusal for the same reason every writer here does: O_NOFOLLOW
+ * is undefined on Windows and degrades to 0, where the check is the whole
+ * protection.
+ *
+ * ── BOUNDED, and O_NOFOLLOW was never what bounded it ────────────────────────
+ * This function used to open `O_RDONLY|O_NOFOLLOW` with no `O_NONBLOCK` and no
+ * kind test, and the docblock above stopped at the link. O_NOFOLLOW refuses a
+ * SYMLINK at the final component; it does not refuse a FIFO, a socket or a
+ * device NAMED at that component, and `open(O_RDONLY)` on a FIFO with no writer
+ * waits for one forever. So the twin of a write that cannot be redirected was
+ * still a read that could never return — measured at three structurally
+ * identical readers elsewhere in this tree (bounded-read.ts), and at this
+ * module's own gate paths at 12 023 ms and 12 080 ms to SIGKILL
+ * (.tmp/bounded-reads).
+ *
+ * The two flags do different jobs and neither substitutes for the other:
+ *   O_NOFOLLOW  refuses a link AT the name — whose bytes answer.
+ *   O_NONBLOCK  makes the open of a FIFO return instead of waiting — when.
+ *   the fstat   converts every remaining non-regular shape into a refusal
+ *               instead of an EOF, because an O_NONBLOCK FIFO reads as EMPTY.
+ *
+ * THE KIND TEST THROWS RATHER THAN ANSWERING `null`, unlike
+ * `bounded-read.ts`'s `readRegularFile`, because this function's contract is
+ * that it throws and its callers read `.code` off the error. A synthesized
+ * `ENOTREG` would be a code no kernel produces on a real error object, which is
+ * the same convention bounded-read.ts's `not-a-regular-file` and fsjson.ts's
+ * `RefusalReason` already use in that field — an operator can tell our refusal
+ * from the filesystem's. `EISDIR` is kept as the kernel's own answer for a
+ * directory, which is what the unbounded version already threw from the read.
+ *
+ * THIS IS WHY THE CALLER'S PRE-OPEN `lstat` IS NOT THE FIX. Its one production
+ * caller (materialize/plan-migration.ts) refuses a non-regular source with an
+ * `lstatSync` before calling this, which HAPPENS to keep the FIFO away from the
+ * open today — and that is precisely the classify-one-object-read-another
+ * window bounded-read.ts argues against: anyone who can plant a FIFO can
+ * substitute the name between the two calls. The primitive must not depend on a
+ * caller's stat, so the kind is decided here, on the descriptor, and the
+ * caller's lstat stays as the Windows fallback it also is.
+ */
+export function readFileNoFollow(absolute: string): string {
+  const fd = fs.openSync(
+    absolute,
+    fs.constants.O_RDONLY | O_NOFOLLOW | (fs.constants.O_NONBLOCK || 0),
+  );
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      throw Object.assign(
+        new Error(`${absolute} is not a regular file`),
+        { code: stat.isDirectory() ? 'EISDIR' : 'ENOTREG' },
+      );
+    }
+    return fs.readFileSync(fd, 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
  * CREATE `absolute`, or fail with EEXIST because someone else got there first.
  * `O_CREAT|O_EXCL` is the kernel's compare-and-swap on a filename: the existence
  * test and the creation are one operation, so unlike an `existsSync` guard it

@@ -42,14 +42,22 @@
 // question instead of a text question.
 //
 // ── The two severities ───────────────────────────────────────────────────────
-// A call site that passes NO verbatim fallback renders `''` when its block goes
-// missing — a live empty-reason defect. A call site that passes one degrades to
-// that prose instead, which is a documentation drift, not an enforcement loss.
-// Both are asserted; only the first is described as a defect. plan-guard's
-// assembler makes the fallback a REQUIRED positional argument (`Block` in
-// plan-readiness/context.ts, bound by `makePlanBlock`), which is why its
-// TS-only names below are safe: the compiler, not a test, is what keeps
-// plan-guard's fallback-less count at zero across 99 call sites.
+// A call site whose block resolves to no prose AT ALL renders `''` — a live
+// empty-reason defect. A call site whose prose exists but whose call-site copy
+// says something else is documentation drift, not an enforcement loss. Both are
+// asserted; only the first is described as a defect.
+//
+// What "no prose at all" means changed when shared/skill-fallbacks.generated.ts
+// landed. `makeSkillBlock` now resolves the live T1BLOCK, then the GENERATED
+// table (the same bodies, compiled beside the assembler and reached without
+// pluginRoot()), then the call site's explicit argument. So a site that passes
+// no fallback is no longer vulnerable by itself: it renders the shipped prose
+// on a torn install like every other site. Only a block that exists in no
+// SKILL.md can still render empty, and that is asserted DIRECTLY below
+// ('every block a call site can render resolves to prose…') against the table
+// itself, rather than through the 33-entry fallback-less allowlist that used to
+// stand in for it. The table's own fidelity to the SKILL.md bodies is
+// skill-fallback-drift.test.ts's job, and `npm run plugin:check`'s.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,7 +66,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as ts from 'typescript';
 
-import { extractBlock } from '../skill-block';
+import { extractBlock, generatedFallback } from '../skill-block';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
@@ -748,8 +756,10 @@ const CENSUS = scanRoot(REPO_ROOT);
 // Block names that are referenced WITH a verbatim fallback and have no T1BLOCK.
 // They render their TS prose, so enforcement and the reason both survive — but
 // SKILL.md is not their source of truth, and that has to be visible rather than
-// discovered. Pinned as an exact set: a NINTH one fails here, and so does
-// authoring one of these eight into SKILL.md without deleting its line.
+// discovered. Pinned as an exact set in both directions: an unlisted one fails
+// here, and so does authoring a listed one into SKILL.md without deleting its
+// line. The set was eight, then three, and is now two; it grows only with a
+// reason beside it.
 // Six of the original eight were authored into plan-guard/skill/SKILL.md as
 // byte-exact transcriptions of their TS fallbacks (`${expr}` → `{{VAR}}` over
 // the vars the call site already passes). Four of the six did not move the
@@ -759,6 +769,16 @@ const CENSUS = scanRoot(REPO_ROOT);
 // `TARGETS` var its call site passes), and were then transcribed, so their cells
 // moved deliberately and are measured in
 // modules/plan-guard/__tests__/skill-fallback-parity.test.ts.
+// The SEVENTH was reset-record-owner-gate, and it stood here for a different
+// reason from the two below: COORDINATION, not structure. Its prose was
+// authorable as it stood — no runtime-composed clause, no second call site, no
+// vars — and the only thing holding it was that the round which added the gate
+// did not own plan-guard/skill/SKILL.md. It is transcribed now. Transcribing it
+// took one edit its entry did not anticipate: the fallback was the only one of
+// these written as a SINGLE-QUOTED string, and the parity test compares against a
+// template-literal body, so the two could not be compared byte for byte until the
+// call site became a template literal (50 backticks escaped, `\'` unescaped, the
+// round trip asserted to reproduce the prose exactly).
 // The two that remain are each here for a STRUCTURAL reason, not for want of
 // effort — transcribing either as it stands would ship a WORSE deny than the TS
 // fallback renders today:
@@ -780,6 +800,30 @@ const TS_ONLY_PROSE: readonly string[] = [
   'plan-guard :: run-team-maintenance-contract',
 ];
 
+// Blocks a SKILL.md DECLARES that no call site renders. Nothing used to look in
+// this direction — the conformance test walks call sites, so a block with no
+// call site is invisible to it, and both of these have been shipping unread.
+// Neither is safe to delete on sight, which is why they are pinned with a
+// disposition rather than swept:
+//
+//   architecture-assignment-gate — reads like the missing ARM of
+//     `architecture-contract-gate`, which is currently one name serving four
+//     distinct refusals from plan-readiness/index.ts with four per-site
+//     fallbacks (BLOCK_WITH_PER_SITE_FALLBACKS, below). Splitting that name is
+//     already the recommended fix; this block is a destination for one of the
+//     arms, not dead prose.
+//   run-team-unexpected — a defensive catch-all ("this is a gate bug — please
+//     report") whose call site in plan-runteam.ts is gone. Delete it with the
+//     evidence that the fall-through it covered is gone too, or restore the arm.
+//
+// No block name in this repo is built dynamically (UNRESOLVABLE_NAME_SITES is
+// empty and the resolved+exempt==total assertion below keeps it that way), so
+// "unreferenced" here means unreferenced, not merely unresolvable by parse.
+const ORPHAN_BLOCKS: readonly string[] = [
+  'plan-guard :: architecture-assignment-gate',
+  'plan-guard :: run-team-unexpected',
+];
+
 // Call sites whose block name the parse cannot resolve to a literal set. EMPTY
 // today: the three non-literal sites in the repo all pick between two named
 // blocks with a ternary, and are resolved to BOTH. Kept as a declared list
@@ -787,64 +831,25 @@ const TS_ONLY_PROSE: readonly string[] = [
 // resolved + exempt == total: a site cannot leave the population quietly.
 const UNRESOLVABLE_NAME_SITES: readonly string[] = [];
 
-// ── the fallback-less population, pinned exactly ─────────────────────────────
-// Every (file, module, block) triple whose call site passes NO verbatim
-// fallback, so a SKILL.md that goes missing AT RUNTIME renders `''` there. The
-// conformance test above already fails in CI when a rename or deletion makes
-// one of these blocks absent, so none of them is a live defect; what this pin
-// buys is the other direction — the population of sites that WOULD render
-// empty can no longer grow silently.
+// ── what replaced the fallback-less allowlist, and why that is not a relaxation ─
+// This file used to pin, as an exact 33-entry set, every (file, module, block)
+// triple whose call site passed no verbatim fallback — a proxy for "sites that
+// would render `''` if their SKILL.md went away". The proxy is gone, replaced
+// by the invariant it was standing in for: 'every block a call site can render
+// resolves to prose with no filesystem read', asserted below against the
+// GENERATED table for all 179 sites.
 //
-// Pinned as an exact set rather than a count floor on purpose. A floor
-// (`bare.length >= 30`, which this replaces) is anti-correlated with the goal:
-// it is satisfied by having MORE vulnerable sites and would have failed the
-// day someone finished giving all of them fallbacks. Non-vacuity is proven by
-// the synthetic fixtures below instead, which detect a fallback-less site in a
-// tree this file has never heard of — a property that does not degrade as the
-// real population shrinks.
-//
-// A 34th entry fails, and so does REMOVING one without deleting its line:
-// adding a fallback is a deliberate, reviewed shrink of this list.
-//
-// Keyed on file+module+block, never on a line number, so an unrelated edit
-// above a call site does not churn it. `agent-model :: agent-reuse-continue`
-// is one entry for three call sites in gate-reuse.ts — this is a set of
-// vulnerable BLOCK RENDERS, not a tally of calls.
-const NO_FALLBACK_SITES: readonly string[] = [
-  'src/modules/agent-model/choice-reply.ts :: agent-model :: model-choice-recorded-enable',
-  'src/modules/agent-model/choice-reply.ts :: agent-model :: model-choice-recorded-fallback',
-  'src/modules/agent-model/gate-enforcement.ts :: agent-model :: agent-materialization-deny',
-  'src/modules/agent-model/gate-enforcement.ts :: agent-model :: performance-main-agent',
-  'src/modules/agent-model/gate-enforcement.ts :: agent-model :: team-confirmation',
-  'src/modules/agent-model/gate-opencode-first.ts :: agent-model :: opencode-plan-batch-required',
-  'src/modules/agent-model/gate-opencode-first.ts :: agent-model :: opencode-role-delegate',
-  'src/modules/agent-model/gate-reuse.ts :: agent-model :: agent-reuse-await-cursor-id',
-  'src/modules/agent-model/gate-reuse.ts :: agent-model :: agent-reuse-continue',
-  'src/modules/agent-model/model-denies.ts :: agent-model :: cursor-exact-model-required',
-  'src/modules/agent-model/model-denies.ts :: agent-model :: model-availability-advisory',
-  'src/modules/agent-model/model-denies.ts :: agent-model :: model-availability-banner',
-  'src/modules/agent-model/model-denies.ts :: agent-model :: model-unavailable-choice',
-  'src/modules/agent-model/model-denies.ts :: agent-model :: performance-model-param',
-  'src/modules/agent-model/model-rotation.ts :: agent-model :: model-choice-enable-required',
-  'src/modules/agent-model/spawn-hygiene.ts :: agent-model :: absolute-traffic-one-path',
-  'src/modules/agent-model/spawn-shape.ts :: agent-model :: kilo-general-agent-required',
-  'src/modules/agent-model/spawn-shape.ts :: agent-model :: opencode-named-agent-required',
-  'src/modules/model-choice-gate/index.ts :: model-choice-gate :: model-choice-stop-first',
-  'src/modules/model-choice-gate/index.ts :: model-choice-gate :: model-choice-stop-repeat',
-  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: repaired-materialization',
-  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: server-deny-reason',
-  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: server-deny-reason-links-shown',
-  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: server-deny-reason-repeat',
-  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: team-mode-downgrade-guard',
-  'src/modules/onboarding-gate/handler.ts :: onboarding-gate :: team-mode-marker-guard',
-  'src/modules/session/prompt-submit.ts :: onboarding-gate :: server-deny-reason',
-  'src/modules/session/prompt-submit.ts :: onboarding-gate :: server-deny-reason-repeat',
-  'src/modules/session/prompt-submit.ts :: onboarding-gate :: team-mode-switch-authorized',
-  'src/modules/session/session-start-setup.ts :: onboarding-gate :: setup-pending',
-  'src/modules/session/session-start-setup.ts :: onboarding-gate :: server-deny-reason',
-  'src/modules/session/triage-directive.ts :: onboarding-gate :: maintenance-triage-main-agent',
-  'src/modules/session/triage-directive.ts :: onboarding-gate :: maintenance-triage-subagents',
-];
+// The replacement is strictly stronger in three ways, and weaker in none:
+//   - it checks what actually renders on a torn install (the generated body),
+//     not merely that SOME literal was typed at the call site;
+//   - it covers the ~145 sites that DO pass a fallback, which the allowlist
+//     never looked at;
+//   - it is an equality against the empty set, not against a 33-line roster
+//     that has to be maintained by hand.
+// And the allowlist had turned anti-correlated with the goal, the same defect
+// its own comment recorded about the count floor it replaced: now that the
+// generated table serves a fallback-less site, DELETING a redundant call-site
+// literal is the improvement — and it grew that list by one line every time.
 
 // ── the parity bar: "every gate keeps a VERBATIM deny fallback" ──────────────
 // The claim in AGENTS.md is that the TS fallback is a verbatim copy of the
@@ -865,8 +870,9 @@ const NO_FALLBACK_SITES: readonly string[] = [
 //       fallback. A single generic T1BLOCK cannot be byte-identical to four
 //       different fallbacks — this is a structural fact about the block, not
 //       drift. BLOCK_WITH_PER_SITE_FALLBACKS.
-//   20  genuine 1:1 prose divergence: one block, one fallback, different words.
-//       PROSE_DIVERGED_FROM_FALLBACK.
+//   18  genuine 1:1 prose divergence: one block, one fallback, different words.
+//       PROSE_DIVERGED_FROM_FALLBACK. Was 20; the two agent-model pairs were
+//       reconciled and their call-site copies deleted (see the list's own note).
 //
 // The bar is byte-identity, NOT a normalised comparison. Normalising whitespace
 // or stripping backticks would silently absorb this entire class. `no-any` was
@@ -883,9 +889,17 @@ const NO_FALLBACK_SITES: readonly string[] = [
 // A pinned divergence is not a defect to be fixed on sight — the two texts are
 // two spellings of the same refusal and both read fine. What the pin buys is
 // that the NEXT one is a test failure and not a discovery.
+//
+// Two agent-model entries left this list by being RESOLVED rather than
+// re-pinned, and they are the argument for the generated table.
+// `agent-reuse-await-codex-meta`'s transcription had drifted 400 characters
+// short of its block, losing the task-name contract a replacement spawn needs;
+// `architect-phase-incomplete`'s had gained two clauses the block never got.
+// Neither call site carries a copy now — the shipped block is the only text,
+// and shared/skill-fallbacks.generated.ts is what renders it on a torn install.
+// The rest are plan-guard, whose `Block` still makes the fallback a required
+// positional argument.
 const PROSE_DIVERGED_FROM_FALLBACK: readonly string[] = [
-  'agent-model :: agent-reuse-await-codex-meta',
-  'agent-model :: architect-phase-incomplete',
   'plan-guard :: architect-memory-baseline-gate',
   'plan-guard :: architect-opencode-queue-gate',
   'plan-guard :: architect-planning-allowlist-gate',
@@ -1088,26 +1102,60 @@ test('a block rendered with NO verbatim fallback is a live empty-reason risk and
   );
 });
 
-test('the fallback-less population is pinned exactly and can only be shrunk deliberately', () => {
-  const measured = [...new Set(
-    CENSUS.sites.filter((site) => !site.hasFallback).flatMap(renderLabels),
-  )].sort();
-  const pinned = [...NO_FALLBACK_SITES].sort();
-
-  const added = measured.filter((label) => !pinned.includes(label));
+test('a declared block that no call site renders is pinned, not silently shipped', () => {
+  const referenced = new Set<string>();
+  for (const site of CENSUS.sites) {
+    for (const name of site.names ?? []) if (site.moduleId) referenced.add(`${site.moduleId} :: ${name}`);
+  }
+  const orphans: string[] = [];
+  for (const [moduleId, names] of CENSUS.blocksByModule) {
+    for (const name of names) if (!referenced.has(`${moduleId} :: ${name}`)) orphans.push(`${moduleId} :: ${name}`);
+  }
+  assert.ok(referenced.size >= 140, `expected 140+ referenced ids, found ${referenced.size} — the census is empty`);
   assert.deepEqual(
-    added, [],
-    `${added.length} NEW call site(s) render a deny with no verbatim fallback. The block exists today, so nothing is `
-    + 'broken yet — but a later rename or deletion of that T1BLOCK, or a SKILL.md that goes missing in the shipped '
-    + 'install, makes this deny render an EMPTY reason. Pass a verbatim fallback as the assembler\'s fallback argument '
-    + `(the plan-guard \`Block\` type makes it REQUIRED, which is why plan-guard has none of these):\n  ${added.join('\n  ')}`,
+    orphans.sort(), [...ORPHAN_BLOCKS].sort(),
+    'the set of declared-but-unrendered blocks moved. A NEW one is either prose written for a call site that was '
+    + 'never added, or a call site that was deleted and left its paragraph behind — both ship as dead weight and '
+    + 'both are now in the generated fallback table. One that LEFT got its call site, so delete its line here.',
+  );
+});
+
+// The whole point of the generated table, asserted where the call-site census
+// lives. `makeSkillBlock` resolves live block → generated table → call-site
+// fallback, and the first of those needs a readable SKILL.md under a plugin
+// root this process was HANDED. The other two do not, so this is the assertion
+// that no gate can be reduced to silence by a bad root, a partial rsync or a
+// plugin sync caught mid-swap.
+test('every block a call site can render resolves to prose with no filesystem read', () => {
+  const silent: string[] = [];
+  const tableless = new Set<string>();
+  let checked = 0;
+  for (const site of CENSUS.sites) {
+    if (!site.moduleId || !site.names) continue;
+    for (const name of site.names) {
+      checked += 1;
+      if (generatedFallback(site.moduleId, name) !== null) continue;
+      tableless.add(`${site.moduleId} :: ${name}`);
+      if (!site.hasFallback) silent.push(`${siteLabel(site)} — ${site.moduleId} :: ${name}`);
+    }
+  }
+  assert.ok(checked >= 150, `expected 150+ (site, block) renders to check, saw ${checked} — the census is empty`);
+
+  assert.deepEqual(
+    silent.sort(), [],
+    `${silent.length} call site(s) render NOTHING on an install whose skill trees cannot be read: the block has no `
+    + 'entry in shared/skill-fallbacks.generated.ts (so it exists in no SKILL.md) and the site passes no verbatim '
+    + `fallback either. The agent is refused and told nothing:\n  ${silent.join('\n  ')}`,
   );
 
-  const removed = pinned.filter((label) => !measured.includes(label));
+  // The exception set, as an equality. These are the ids whose prose is TS-only,
+  // so the generated table cannot carry them and the call-site argument is
+  // load-bearing rather than redundant. A THIRD one has to be justified here,
+  // and one that gets authored into a SKILL.md has to have its line deleted.
   assert.deepEqual(
-    removed, [],
-    `${removed.length} pinned entr(ies) no longer name a fallback-less site. If you gave them a verbatim fallback, `
-    + `delete the line from NO_FALLBACK_SITES in the same change — a stale entry masks the next real one:\n  ${removed.join('\n  ')}`,
+    [...tableless].sort(), [...TS_ONLY_PROSE].sort(),
+    'the set of rendered ids with no generated prose moved. A new one means a block was renamed or deleted without '
+    + 'its call site following; one that left is now in a SKILL.md, so delete its TS_ONLY_PROSE line.',
   );
 });
 
@@ -1404,15 +1452,15 @@ test('discovery that finds nothing fails a floor rather than passing vacuously',
     // silent pass. Proven by running the same predicates the tests above run.
     assert.equal(census.modules.length >= 6, false, 'the module floor would fail');
     assert.equal(census.sites.length >= 150, false, 'the site floor would fail');
-    // The fallback-less pin is an EQUALITY, so an empty census fails it from
-    // the other side: every pinned entry reads as removed. That is why the pin
-    // replaced a count floor — a floor is satisfied by having more vulnerable
-    // sites, and would have failed the day the last one was given a fallback.
-    const measured = new Set(census.sites.filter((site) => !site.hasFallback).flatMap(renderLabels));
-    assert.equal(measured.size, 0, 'precondition: nothing measured');
-    assert.equal(
-      NO_FALLBACK_SITES.filter((label) => !measured.has(label)).length, NO_FALLBACK_SITES.length,
-      'every pinned fallback-less site would report as removed, so the pin fails closed on an empty census',
+    // The prose-resolution assertion is an EQUALITY against TS_ONLY_PROSE, so an
+    // empty census fails it from the other side rather than passing with an
+    // empty defect list. That is the property a count floor never had: a floor
+    // is satisfied by having MORE vulnerable sites.
+    const rendered = census.sites.flatMap((site) => (site.names ?? []).map((name) => `${site.moduleId} :: ${name}`));
+    assert.deepEqual(rendered, [], 'precondition: nothing measured');
+    assert.notDeepEqual(
+      rendered.sort(), [...TS_ONLY_PROSE].sort(),
+      'an empty census must not satisfy the tableless-ids equality, or the assertion passes on a broken scanner',
     );
   });
 });

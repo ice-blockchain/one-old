@@ -2,7 +2,6 @@
 // Model-policy schema, parse/validation, and read.
 
 import { createHash } from 'crypto';
-import * as fs from 'fs';
 import * as path from 'path';
 import { AGENT_ROLES } from '../config/performance';
 import {
@@ -18,6 +17,7 @@ import {
 } from './host/capabilities';
 import { canonicalHost, canonicalPlan, modelMatchesExpected, type ModelTierSnapshot } from './model-tiers';
 import { obj } from './obj';
+import { readRegularFileOrThrow } from './bounded-read';
 
 export const RUN_MODEL_POLICY_SCHEMA_VERSION = 1;
 const POLICY_FILE = 'model-policy.json';
@@ -227,7 +227,7 @@ function parsePolicy(value: unknown, expectedRunId?: string): RunModelPolicyV1 |
 
 export function readRunModelPolicy(cwd: string, runId: string): RunModelPolicyV1 | null {
   try {
-    return parsePolicy(JSON.parse(fs.readFileSync(runModelPolicyPath(cwd, runId), 'utf8')), runId);
+    return parsePolicy(JSON.parse(readRegularFileOrThrow(runModelPolicyPath(cwd, runId))), runId);
   } catch {
     return null;
   }

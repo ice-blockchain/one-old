@@ -55,6 +55,38 @@ test('strayRunIdInText: a shell glob/wildcard run-dir segment is an inspection, 
   );
 });
 
+test('strayRunIdInText: a dot-prefixed segment is a project-level record, not a stray run id', () => {
+  // Both of these are real paths in the runs root, and neither is a run: the
+  // reset ledger and the once-marker directory sit ABOVE every run id on
+  // purpose. This function used to answer `.resets.json` and `.once` here, and
+  // the refusal that produced told the writer to write under
+  // `.traffic-one/runs/<currentRunId>/` instead — advice neither path can
+  // follow.
+  assert.equal(strayRunIdInText('.traffic-one/runs/.resets.json', CURRENT), null);
+  assert.equal(strayRunIdInText(`rm -f .traffic-one/runs/.resets.json`, CURRENT), null);
+  assert.equal(strayRunIdInText('.traffic-one/runs/.once/maintenance-triage-abc', CURRENT), null);
+  // The reset record is FENCED, just not from here: `reset-record-owner-gate`
+  // refuses it at the plan gate with no reference to `currentRunId`. That is
+  // asserted where it can be — against the gate — in
+  // modules/plan-guard/__tests__/reset-record-fence.test.ts ('the reset record is
+  // refused with no currentRunId at all'). This assertion is the reason that one
+  // has to exist: nothing on this line protects the record any more.
+  //
+  // `.` and `..` are traversal rather than a name and keep their refusal, or
+  // `runs/../…` would become a way out of the run tree.
+  assert.equal(strayRunIdInText('.traffic-one/runs/../../etc/passwd', CURRENT), '..');
+  assert.equal(strayRunIdInText('.traffic-one/runs/./x', CURRENT), '.');
+  // A dot INSIDE the segment is untouched — `<id>.bak` is a fabricated sibling
+  // dir, which is exactly what this guard is for.
+  assert.equal(strayRunIdInText(`.traffic-one/runs/${CURRENT}.bak/run.json`, CURRENT), `${CURRENT}.bak`);
+  // And a real stray alongside a dotted record is still caught: skipping the
+  // record must not swallow the scan.
+  assert.equal(
+    strayRunIdInText('.traffic-one/runs/.resets.json\n.traffic-one/runs/2026-06-17T12-09-40Z/y', CURRENT),
+    '2026-06-17T12-09-40Z',
+  );
+});
+
 test('strayRunIdInText: no enforcement when currentRunId is empty (nothing minted yet)', () => {
   assert.equal(strayRunIdInText('.traffic-one/runs/2026-06-17T12-09-40Z/assignments.json', ''), null);
   assert.equal(strayRunIdInText('.traffic-one/runs/anything/x', undefined), null);

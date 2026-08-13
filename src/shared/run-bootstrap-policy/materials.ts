@@ -2,7 +2,6 @@
 // Envelope hashing plus role material resolution: rule/skill bodies read
 // from the installed plugin, deduplicated and capped.
 
-import * as fs from 'fs';
 import * as path from 'path';
 import type { HostModelKey } from '../../config/model-tiers';
 import { pluginRoot } from '../paths';
@@ -23,6 +22,7 @@ import { sha256 } from '../text';
 import {
   type BootstrapMaterialRefV2,
 } from './types';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
@@ -45,7 +45,7 @@ export function stableEqual(left: unknown, right: unknown): boolean {
 function readFirst(candidates: string[]): string | null {
   for (const candidate of candidates) {
     try {
-      const text = fs.readFileSync(candidate, 'utf8');
+      const text = readRegularFileOrThrow(candidate);
       if (text.trim()) return text;
     } catch {
       // try the next installed/source layout

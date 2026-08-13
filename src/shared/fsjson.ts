@@ -57,8 +57,10 @@ import * as path from 'path';
 
 import { STATE_DIR } from '../config/paths';
 import type { FsJson } from '../core/types';
+import { readRegularFileResult } from './bounded-read';
 import {
   O_NOFOLLOW,
+  appendAll,
   createFileNoFollow,
   isSymlink,
   realPathWithMissingTail,
@@ -68,6 +70,21 @@ import {
 // A pure leaf (no imports of its own), so unlike plugin-use below this one
 // cannot close a cycle and needs no lazy require.
 import { errnoOf, recordStateWrite } from './state/state-write-log';
+
+/**
+ * The two directory opens below are an FSYNC OF A DIRECTORY, not a file read —
+ * the census's allowlist has said so for two rounds and the reason was true.
+ * It was also an ARGUMENT, and the point of this round is that an argument is
+ * not an instrument: it rested on the `mkdirSync(dir, {recursive:true})` above
+ * throwing EEXIST for a non-directory, which is a property of a DIFFERENT line.
+ *
+ * Said in flags instead, where the kernel enforces it: O_DIRECTORY refuses
+ * anything that is not a directory at the open, and O_NONBLOCK means no shape
+ * can make the open wait. Both fold to 0 on Windows, which has neither the flag
+ * nor the directory-fsync this is guarding — and the `catch` below already
+ * treats a refused directory fsync as the ordinary outcome there.
+ */
+const DIR_SYNC_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0) | (fs.constants.O_DIRECTORY || 0);
 
 // Lazy require, not an import: state/plugin-use.ts reads the per-user prefs
 // through readJson below, so a static import would close a cycle. Same
@@ -98,12 +115,25 @@ export function parseJson<T = unknown>(text: string, fallback: T): T {
   }
 }
 
+/**
+ * BOUNDED (shared/bounded-read.ts), and the bare `readFileSync` this replaces is
+ * why. `open(O_RDONLY)` on a FIFO waits for a writer forever and a character
+ * device answers a read as long as anybody keeps asking, so a planted object at
+ * any path this reads made a HOOK never return — driven at `.traffic-one/.one.json`
+ * (.tmp/fsjson-bounded): SIGKILL at 12 011 ms here, 12 014 ms through
+ * `readJsonResult`, 20 151 ms for a symlink to `/dev/zero`, against a 0 ms
+ * control. An unbounded loop cannot even be reported, which is the one outcome
+ * this codebase ranks below failing closed.
+ *
+ * The `null` is unchanged and still folds every failure, which is all this
+ * caller's shape can express: `readText`'s consumers ask a question OF THE TEXT.
+ * A shape that is not a regular file joins the fold where a DIRECTORY already
+ * was, so nothing reachable today moves; only the two shapes that had no
+ * behaviour to preserve do.
+ */
 export function readText(filePath: string): string | null {
-  try {
-    return fs.readFileSync(filePath, 'utf8');
-  } catch {
-    return null;
-  }
+  const read = readRegularFileResult(filePath);
+  return read.kind === 'text' ? read.text : null;
 }
 
 /**
@@ -130,6 +160,14 @@ export function readText(filePath: string): string | null {
  * signature of an `O_TRUNC` open that never got its write — is `corrupt`, not
  * `ok`. That is the same verdict `parseJson` already reaches (it returns the
  * fallback for a null value), so the wrapper below stays behaviour-identical.
+ *
+ * A NON-REGULAR FILE is `unreadable` with a named errno — `EISDIR` for a
+ * directory (where it already landed, via the read's own errno), and
+ * `not-a-regular-file` for a FIFO, a device or a socket. Neither of the other two
+ * arms would be safe for it, which is the trap the bounded reader exists to
+ * close rather than an ordering preference: `absent` says nothing is there and
+ * licenses a write, and `corrupt` carries the bytes and licenses a REPLACEMENT
+ * of a file whose emptiness is an artefact of how we opened it.
  */
 export type JsonRead<T> =
   | { readonly kind: 'ok'; readonly value: T }
@@ -138,13 +176,17 @@ export type JsonRead<T> =
   | { readonly kind: 'unreadable'; readonly errno: string };
 
 export function readJsonResult<T = unknown>(filePath: string): JsonRead<T> {
-  let text: string;
-  try {
-    text = fs.readFileSync(filePath, 'utf8');
-  } catch (error) {
-    const errno = errnoOf(error);
-    return errno === 'ENOENT' ? { kind: 'absent' } : { kind: 'unreadable', errno: errno ?? 'unknown' };
-  }
+  // BOUNDED, and the classification is the reason the reader is a shared leaf
+  // rather than a try/catch here: a non-regular file must reach `unreadable`
+  // with a named errno, and BOTH of the other arms are fail-open for it. As
+  // `absent` it would license a write over something that is there; as `corrupt`
+  // it would license a REPLACEMENT, because an O_NONBLOCK FIFO reads as EOF and
+  // `JSON.parse('')` throws straight into the arm that carries the bytes. See
+  // bounded-read.ts's FSTAT-DROP paragraph for the measurement.
+  const read = readRegularFileResult(filePath);
+  if (read.kind === 'absent') return { kind: 'absent' };
+  if (read.kind === 'unreadable') return { kind: 'unreadable', errno: read.errno };
+  const text = read.text;
   let value: unknown;
   try {
     value = JSON.parse(String(text ?? '').trim() || 'null');
@@ -202,6 +244,126 @@ function within(parent: string, child: string): boolean {
 }
 
 /**
+ * `child` is `parent` or lives under it, compared EXACTLY — the other half of the
+ * containment check below, and the half `within` cannot be.
+ *
+ * THE COMPARISON BELOW IS ASYMMETRIC, which is why it needs two predicates. One
+ * side is `path.join(realRoot, STATE_DIR)` — a CONSTANT this file supplies — and
+ * the other is caller text that `fs.realpathSync` re-emits verbatim (the JS
+ * resolver preserves the caller's spelling for every component that is not a
+ * symlink; measured, and it is `.native` that canonicalises). So the two sides can
+ * differ in case for two entirely different reasons:
+ *
+ *   the PROJECT ROOT prefix caller spelling on both sides, descending from the
+ *                           same string. Folding here widens what counts as
+ *                           CONTAINED, which SUPPRESSES a refusal — and on a
+ *                           case-sensitive filesystem a folded prefix does not
+ *                           stay inside the project at all. MEASURED on a real
+ *                           case-sensitive APFS volume, project `Proj` with
+ *                           `.traffic-one -> ../proj/.traffic-one` and a distinct
+ *                           sibling checkout `proj`:
+ *
+ *                             folding  permitted=true  wrote=true
+ *                                      the SIBLING's state file: overwritten
+ *                             exact    permitted=false wrote=false
+ *                                      the SIBLING's state file: untouched
+ *
+ *                           …while the sibling's OWN state dir, the same real
+ *                           directory addressed as its own project, stays
+ *                           permitted. Not a blanket refusal: the crossing is
+ *                           what is refused.
+ *   the STATE_DIR segment   caller spelling versus our constant, and the fold
+ *                           there does NOT widen a refusal. A previous version of
+ *                           this docblock said it did — transplanted verbatim from
+ *                           plugin-use.ts, where it is true of a DIFFERENT
+ *                           function. What counts as STATE is decided UPSTREAM, at
+ *                           classifyStateWrite's first line:
+ *                           projectRootForStatePath matches STATE_DIR with a
+ *                           case-INSENSITIVE regex, so `.Traffic-One` and
+ *                           `.TRAFFIC-ONE` are already this project's state and
+ *                           already inside the consent fence (MEASURED, both
+ *                           volume kinds: the classifier returns the project root
+ *                           for all three spellings). At the comparison itself
+ *                           folding makes `permitted` true and the write LAND,
+ *                           where an exact compare returns `escapes-state-dir` —
+ *                           so there it SUPPRESSES a refusal too.
+ *
+ * That is the same sibling-checkout escape materialize/plan-migration.ts's
+ * `containedIn` docblock records, on the WRITE path, and it was reasoned to be
+ * narrower ("a folded prefix still lands inside the project root") — measured, it
+ * is not narrower in kind.
+ *
+ * THE FOLD ON THE SEGMENT STAYS ANYWAY, decided against its cost rather than
+ * against the inherited justification above. What it permits, MEASURED on the
+ * case-sensitive volume: `<project>/.Traffic-One/x.json` is permitted, the write
+ * lands, and it lands in a SECOND directory — `.Traffic-One` and `.traffic-one`
+ * both present in the project, distinct inodes, the canonical one without the
+ * file. Nothing reads that directory, and plugin-use.ts's
+ * removeDeclinedProjectArtifacts joins the canonical STATE_DIR, so a decline does
+ * not reclaim it either. BOUNDED, and worth saying plainly rather than inflating:
+ * the exact half above still confines the target to the project root, so the worst
+ * case is a stray in-project directory and never a boundary crossing.
+ *
+ * Refusing instead costs more than that. The recorded reason would be FALSE where
+ * it matters most — on macOS and Windows `.Traffic-One` IS the state dir, one
+ * directory, and `escapes-state-dir` for a path that escapes nothing is a record
+ * an operator cannot act on — and it would put this comparison in contradiction
+ * with the classifier two calls earlier, which treats that path as this project's
+ * state on purpose. The place to refuse a spelling outright is where state-ness is
+ * decided, and that decision must keep folding or the spelling leaves the consent
+ * fence altogether (plugin-use.ts's own measurement: `root=null, allowed=true`
+ * under an exact compare). No plugin code produces a non-canonical spelling, so
+ * both directions are latent; what would move this decision is a production writer
+ * that can be handed one, or the decline sweep learning the case-variant names.
+ *
+ * STILL DUPLICATED in materialize/plan-migration.ts's `containedIn`, and not for
+ * the reason that used to be given here. "That module imports this one, so
+ * importing it back is a cycle" ruled out the one direction nobody needed:
+ * plan-migration.ts ALREADY imports this module, so exporting from here is acyclic,
+ * and sharing was the first thing tried. What stops it is one file away and
+ * MEASURED rather than reasoned about — `tests/refusal-contract.test.ts` censuses
+ * every FUNCTION this module exports and reds on any it cannot classify:
+ *
+ *   fsjson.ts exports a function neither list names. Add it to FSJSON_WRITERS if
+ *   its false (or its union) can mean REFUSED, or to FSJSON_NON_WRITERS with the
+ *   reason it cannot.
+ *
+ * So sharing needs one entry in FSJSON_NON_WRITERS — a pure path comparison opens
+ * nothing and can refuse nothing — in a file this change does not own. A
+ * coordination cost, not a design objection: whoever lands the sharing adds that
+ * line and deletes the copy.
+ *
+ * What two copies cost is drift, and that is now covered rather than hoped about.
+ * The root-segment hole below was in BOTH and had to be fixed twice, which is the
+ * cost arriving; each copy now has a row that reds when only its own side is
+ * reverted (the volume-root row in fsjson-symlink-fence.test.ts here, the predicate
+ * row in plan-migration-fold-safety.test.ts there). `pathWithin` in plugin-use.ts
+ * is deliberately not one of the copies: it folds, for the consent fence and its
+ * other callers.
+ */
+function withinExactly(parent: string, child: string): boolean {
+  const parentSegments = parent.split(path.sep);
+  // A parent that IS a filesystem root splits with a trailing EMPTY segment
+  // (`'/'` → `['', '']`, `'C:\\'` → `['C:', '']`) that no real child segment can
+  // ever equal, so without this the check can never pass for a project rooted at
+  // the volume root — a shape projectRootForStatePath deliberately supports
+  // (`abs.slice(0, at) || path.sep`). MEASURED, decision only, on both volume
+  // kinds: `stateWritePermitted('/.traffic-one/x.json')` is false with the
+  // root-prefix check and true without it, so adding that check regressed every
+  // state write for that shape. `pathWithin` has the identical hole, which is how
+  // we know exactness is not the cause — comparing the root prefix at all is.
+  // That hole is in the FUNCTION and not reachable from the product: all three
+  // callers hand it a parent one segment below a root at least — `path.join(root,
+  // STATE_DIR)` here and in removeDeclinedProjectArtifacts, `machineStateDir(env)`
+  // (via globalTrafficOneDir, which always appends) in machineOwnedStatePath — so
+  // it is left alone deliberately rather than pending a fix.
+  if (parentSegments.length > 1 && parentSegments[parentSegments.length - 1] === '') parentSegments.pop();
+  const childSegments = child.split(path.sep);
+  if (childSegments.length < parentSegments.length) return false;
+  return parentSegments.every((segment, i) => childSegments[i] === segment);
+}
+
+/**
  * The decision itself, with NO side effect — separated from `stateWriteGuard` so
  * the same rules can be asked as a question (`stateWritePermitted`) without
  * recording a refusal that never happened. Returns the reason when it refuses;
@@ -231,6 +393,12 @@ function classifyStateWrite(target: string): 'plain' | 'state' | RefusalReason {
   const realRoot = realPathWithMissingTail(root);
   const real = realPathWithMissingTail(target);
   if (realRoot === null || real === null) return 'unresolvable-path';
+  // TWO PREDICATES, and the project root is required EXACTLY because folding it
+  // reaches a sibling checkout on a case-sensitive filesystem (measured). The
+  // STATE_DIR segment keeps the folding compare; `withinExactly` carries what that
+  // costs and why it is still the better trade — it is NOT that folding there
+  // widens this refusal, which is what a previous version of this comment claimed.
+  if (!withinExactly(realRoot, real)) return 'escapes-state-dir';
   if (!within(path.join(realRoot, STATE_DIR), real)) return 'escapes-state-dir';
   return 'state';
 }
@@ -287,6 +455,13 @@ function act(target: string, op: string, guard: Guard, body: () => void): boolea
 // a concurrent reader then sees invalid JSON, falls back to {}, and may
 // rewrite freshly-detected state over the real one.
 //
+// ATOMIC, NOT DURABLE — no fsync, deliberately. `writeJsonDurable` below is the
+// fsync-fd -> rename -> fsync-dir sibling; its docblock carries the measured
+// cost (+8.8 ms a call, and +47 ms / 17x on a floor-case hook invocation, which
+// makes FIVE calls to this function) and THE RULE for which of the two a new
+// writer wants. This is the default; reach for the other one only when that
+// rule says the artifact qualifies.
+//
 // Returns whether it wrote, like all five of its siblings below. It used to
 // return `void`, which made its refusal UNDETECTABLE: decision-log.ts's
 // nextHookSeq persisted a counter through here and could not tell a refused
@@ -314,6 +489,15 @@ export function writeJson(filePath: string, value: unknown): boolean {
  * writeJson's DURABLE sibling: the same fence, the same symlink refusal, the
  * same boolean, plus an `fsync` before the rename.
  *
+ * AS DURABLE AS NODE CAN BE ON macOS, which is not the same as power-loss safe:
+ * Darwin's `fsync(2)` empties the kernel cache but does not force the drive to
+ * flush its own, and the call that does — `fcntl(F_FULLFSYNC)` — has no Node
+ * binding (nor does `F_BARRIERFSYNC`), so closing the gap would need a native
+ * addon the dependency-free hook runtime rules out. Read every "durable" below
+ * as "survives a process crash, a host kill and a racing writer" — the failures
+ * this codebase observes — and not as "survives a power cut". The rule that
+ * follows is unaffected: a retracted commitment is just as bad from a crash.
+ *
  * ── why a sibling and not durability in writeJson ────────────────────────────
  * Measured on this machine (APFS, 400 writes after 50 warm, payload size made no
  * difference across 120B/900B/8000B — the cost is the journal barrier, not the
@@ -321,15 +505,99 @@ export function writeJson(filePath: string, value: unknown): boolean {
  * directory fsync with nothing pending is 0.02 ms, so the ~4 ms it adds here IS
  * the pending rename's transaction.
  *
+ * Re-measured independently since, same machine, same method, at three payload
+ * sizes an order of magnitude apart (84 B / 1.3 KB / 40 KB, 400 writes after 50
+ * warm at each, three separate runs): writeJson p50 0.16-0.29 ms,
+ * writeJsonDurable p50 7.9-9.1 ms. The delta is ~8.8 ms and it does not move
+ * with the payload — a 478x size increase moves it by less than the run-to-run
+ * spread — so the figure is the barrier and it has not drifted.
+ *
  * Then the denominator, measured over 133 real `runPipeline` invocations (the
  * replay corpus plus the materializing session/converge suites): a PreToolUse
  * invocation performs a median of 5 `writeJson` calls and 12 at p95. Durability
- * in writeJson for every caller therefore costs 38 ms median and 92 ms p95 — 62%
- * of the product's 150 ms pre-tool hook budget, most of it spent on run-ledger
- * and agent-registry churn that is rebuilt from scratch on the next hook anyway.
- * That is not affordable, so the property goes where it is load-bearing instead:
- * the canonical `.one.json` publish (state/normalize.ts), 3 writes median / 4 at
- * p95 per PreToolUse, i.e. 23 ms / 31 ms.
+ * in writeJson for every caller therefore costs 44 ms median and 106 ms p95 —
+ * most of it spent on run-ledger and agent-registry churn that is rebuilt from
+ * scratch on the next hook anyway. That is not affordable, so the property goes
+ * where it is load-bearing instead: the canonical `.one.json` publish
+ * (state/normalize.ts), 3 writes median / 4 at p95 per PreToolUse.
+ *
+ * The re-measurement makes the same case in the shape that is harder to argue
+ * with, because it does not need the corpus. Driven against the THINNEST project
+ * a gate will still run on — materialized, no run team, no claims, no registry —
+ * one denying PreToolUse invocation performs TEN state writes, FIVE of them
+ * `writeJson`, and takes 2.94 ms p50 end to end (400 samples after 30 warm,
+ * three runs, p50 2.93/2.94/2.94). Routing those five through here is +47 ms:
+ * 50 ms p50, 17x slower, on the floor case, before any of the churn the corpus
+ * measures. That is not a derivation — it is a DIRECT A/B between two trees, the
+ * shipped one and a copy whose `writeJson` body is this function, driven by the
+ * same fixture on the same machine, because a same-process A/B is not available
+ * here: reassigning the module's export does NOT reroute a consumer under this
+ * loader, and a measurement that patches it silently compares A against A.
+ *
+ * The two figures are not the same arithmetic and neither is a derivation of
+ * the other: 5 x 8.8 ms is +44 ms, and +47 ms is what the end-to-end A/B
+ * MEASURED. The per-call model is a floor rather than an identity — three
+ * milliseconds of it are not accounted for by the five calls — so quote the
+ * measured number and say it is measured.
+ *
+ * TWO EARLIER FIGURES WERE WRONG, both by undercounting the same thing, so the
+ * next reader does not re-derive either. "3 state writes, 1 of them writeJson,
+ * +7.9 ms" and "3 state writes, +24 ms, 7.6x" both come from
+ * `drainStateWrites()` called AFTER the invocation returns — but core/pipeline.ts
+ * drains that buffer at settle and writes it into the decision record, so a
+ * post-run drain sees only the 3 writes that happen after the drain, of which 1
+ * is a `writeJson`. __tests__/durable-writer-rule.test.ts pins the count from
+ * the union of exactly those two production surfaces, so the multiplier this
+ * paragraph rests on cannot silently move again.
+ *
+ * That union is the whole population OF THE FLOOR CASE, not structurally, and
+ * the two gaps both point the same way. A write to a PLAIN path — anything
+ * outside a project's `.traffic-one/` — is recorded by neither surface, because
+ * `recordStateWrite` is only reached for `state` writes; and both surfaces are
+ * bounded (state-write-log.ts's MAX_BUFFERED_WRITES is 64, and appendDecision
+ * bounds again), so an invocation that writes more than that is truncated. A
+ * materializing invocation hits both. Both errors UNDERCOUNT, which weakens
+ * this paragraph's own argument rather than inflating it: the real multiplier
+ * is at least five, so durability-for-everyone costs at least +44 ms.
+ *
+ * session-updates-surface's 15 ms marker budget says NOTHING about this writer
+ * and is not evidence either way: that path writes its markers with
+ * `writeTextFile` (shared/once.ts) and performs no `writeJson` at all, so making
+ * `writeJson` durable cannot move it. A previous version of this docblock
+ * offered it as the tightest constraint; it was the wrong writer. A version
+ * after that reached for hook-timing's 150 ms Write budget instead and claimed
+ * the corpus p95 breached it; that was the wrong arithmetic — it multiplied a
+ * PreToolUse write count against a SessionStart p95, and against the row the
+ * count belongs to the sum is comfortably inside the budget. Deleted rather
+ * than repaired: the floor-case A/B above already carries the argument, and a
+ * breach claim a careful reader can dismantle only undermines the part that is
+ * solid.
+ *
+ * ── THE RULE, so the next writer does not have to re-derive it ───────────────
+ * Use `writeJsonDurable` when the artifact records a fact that was MINTED ONCE
+ * and has already been OBSERVED OFF THIS MACHINE — where a power loss does not
+ * lose work, it silently retracts a commitment somebody else has already acted
+ * on. Two families qualify today and they are the entire durable set:
+ *
+ *   - the canonical `.one.json` (state/normalize.ts), which carries the project
+ *     uid and the one-mcp report id — both minted once, both quoted outside;
+ *   - the one-mcp report status and payload (runners/one-mcp-report/**), which
+ *     name the report id a reporter has been handed.
+ *
+ * Everything else uses `writeJson`, and that is the same property stated the
+ * other way rather than laxity: a run ledger, an agent registry, a claims store,
+ * a compiled contract, a decision log's sequence counter and a QA artifact are
+ * each re-derived or re-minted by the next hook invocation, so a rollback of the
+ * last few seconds is invisible to every reader. Nothing in the non-durable set
+ * is the only record of a promise. `writeJsonSet` matches `writeJson` for the
+ * separate reason its own docblock gives.
+ *
+ * ENFORCED, because an unenforced convention is how the writer half of "one
+ * durable writer" went missing in the first place: __tests__/durable-writer-
+ * rule.test.ts pins the caller allowlist above AND drives the real `writeState`
+ * to assert the op recorded at this chokepoint is `write-json-durable`. It
+ * bounds the durable set and catches its two members being quietly demoted; it
+ * cannot classify a NEW artifact, which is what the rule is for.
  *
  * ── why the recipe is lifted, not designed ───────────────────────────────────
  * Body taken from runners/one-mcp-report/lib.ts's private writeJson, which
@@ -376,7 +644,7 @@ export function writeJsonDurable(filePath: string, value: unknown): boolean {
       // platform supports directory fsync as well.
       let dirFd: number | null = null;
       try {
-        dirFd = fs.openSync(dir, 'r');
+        dirFd = fs.openSync(dir, DIR_SYNC_FLAGS);
         fs.fsyncSync(dirFd);
       } catch {
         // Some filesystems reject directory fsync. Atomic rename still applies.
@@ -585,6 +853,81 @@ export function appendTextFile(filePath: string, text: string): boolean {
   return act(filePath, 'append-text', guard, () => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     writeFileNoFollow(filePath, text, 'append');
+  });
+}
+
+/**
+ * `appendTextFile`'s DURABLE sibling: the same fence, the same no-follow open,
+ * the same boolean, plus the two barriers an append needs.
+ *
+ * Both barriers carry the macOS ceiling `writeJsonDurable` states: `fsync(2)`
+ * without `F_FULLFSYNC` does not flush the drive's own cache, so an append that
+ * has returned can still be lost to a power cut while surviving every crash.
+ *
+ * TWO fsyncs, because an append has two commits and syncing one is the classic
+ * half-fix:
+ *
+ *   - the FD, which is what makes the appended LINE durable;
+ *   - the PARENT DIRECTORY, which is what makes a NEWLY CREATED file durable.
+ *     An unsynced directory entry loses the whole file, not just the last line,
+ *     so "we just fsynced the data" does not cover it.
+ *
+ * The directory fsync is UNCONDITIONAL rather than gated on "did this call
+ * create the file". The gate is available — stat before the open — and it is a
+ * race this primitive would lose silently in the one direction that costs the
+ * whole file: two appenders arriving together both see the file absent, or both
+ * see it present, and the one that actually created it can be the one that
+ * decided not to sync the directory.
+ *
+ * What the gate would buy is the no-op case, and that case is MEASURED: a
+ * directory fsync with nothing pending costs 0.02 ms on this machine (APFS, 400
+ * calls after 50 warm — the same run that produced `writeJsonDurable`'s figures
+ * above, where the same call costs 4.0 ms when a rename IS pending, which is
+ * how we know 0.02 is the empty barrier and not a mis-timed one). Two
+ * hundredths of a millisecond is not worth a silent hole, so the gate is not
+ * taken.
+ *
+ * `O_APPEND` is what makes the write land at EOF ATOMICALLY under concurrency —
+ * `appendAll` therefore writes at the fd's own offset, never at an explicit
+ * position, which would silently become a `pwrite` at byte 0 (see
+ * fs-nofollow.ts's note; the decision log lost a record to exactly that).
+ *
+ * WHO SHOULD USE THIS: the same rule as `writeJsonDurable` — an artifact
+ * recording a fact MINTED ONCE and already OBSERVED OFF THIS MACHINE, where a
+ * power loss does not lose work but silently retracts a commitment somebody
+ * else has already acted on. An append-only LEDGER of such facts is the shape
+ * `writeJsonDurable` cannot serve, because that writer renames a whole document
+ * over the destination and an append-only log has no whole document to publish.
+ * Its caller set is bounded by the SAME allowlist
+ * (__tests__/durable-writer-rule.test.ts), which scans for both primitives: this
+ * one has NO production caller yet, and that emptiness is asserted rather than
+ * argued in prose. It used to be exempted here on the grounds that the allowlist
+ * only scanned for `writeJsonDurable(` — which is how a bound becomes a
+ * convention nobody checks. The rule in `writeJsonDurable`'s docblock governs
+ * both.
+ */
+export function appendTextFileDurable(filePath: string, text: string): boolean {
+  const guard = stateWriteGuard(filePath, 'append-text-durable');
+  const dir = path.dirname(filePath);
+  return act(filePath, 'append-text-durable', guard, () => {
+    fs.mkdirSync(dir, { recursive: true });
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | O_NOFOLLOW;
+    const fd = fs.openSync(filePath, flags);
+    try {
+      appendAll(fd, Buffer.from(text, 'utf8'));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    let dirFd: number | null = null;
+    try {
+      dirFd = fs.openSync(dir, DIR_SYNC_FLAGS);
+      fs.fsyncSync(dirFd);
+    } catch {
+      // Some filesystems reject directory fsync. The line itself is durable.
+    } finally {
+      if (dirFd !== null) try { fs.closeSync(dirFd); } catch { /* best-effort */ }
+    }
   });
 }
 

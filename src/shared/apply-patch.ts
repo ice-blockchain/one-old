@@ -5,6 +5,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { readRegularFile } from './bounded-read';
+
 type Rec = Record<string, unknown>;
 
 type PatchOperationKind = 'add' | 'update' | 'delete' | 'move';
@@ -326,7 +328,68 @@ function readCurrent(
       : { ok: true, content };
   }
   try {
-    const content = fs.readFileSync(absPath, 'utf8');
+    // BOUNDED (shared/bounded-read.ts), and this one is reached from a
+    // PreToolUse hook on a path the AGENT SUPPLIED. `plan-guard/plan-write`
+    // calls `parseApplyPatch(rawPatchText, { baseDir })` after its stand-down
+    // and consent checks, so the name comes out of the patch text — the tool
+    // call itself, i.e. prompt-injectable — while the object at that name comes
+    // out of the repository, where a committed `symlink -> /dev/zero` arrives
+    // through an ordinary clone with no local process involved.
+    //
+    // The bare `fs.readFileSync(absPath, 'utf8')` this replaces had no bound on
+    // either shape, and the `catch` below could not see it: a catch reports a
+    // read that RETURNS, so a blocking object produced no error at all.
+    //
+    // DRIVEN THROUGH `planWriteGate` ITSELF, both sides, one shape per child
+    // under a parent that SIGKILLs at 20 000 ms — a deadline inside the hanging
+    // process cannot fire, which is measured three times over in this round
+    // (.tmp/bounded2/gate-{before,after}-*.txt, load 4.61 → 4.20 of 10 cpus).
+    // The payload is a PreToolUse `apply_patch` envelope over a temp project,
+    // built to the same shape `plan-guard/__tests__/plan-write.test.ts` builds,
+    // so the hostile object is reached the way a tool call reaches it:
+    //   BEFORE (bare read)   a FIFO at the patch target SIGKILLed at 20 019 ms
+    //                        and a `symlink -> /dev/zero` at 20 098 ms, both
+    //                        after printing that they had entered the gate.
+    //   AFTER  (this read)   both DENY in 4 ms, `apply-patch-reconstruction-`
+    //                        `failed`, carrying the message below.
+    //   CONTROL              a regular file reconstructs and the gate walks on
+    //                        past this line to its state check, in 10 ms.
+    // The hung gate returns nothing: no deny, no timeout, no decision record —
+    // the outcome this codebase ranks below failing closed.
+    //
+    // THE FIRST VERSION OF THIS PARAGRAPH OVERSTATED ITS OWN EVIDENCE, and the
+    // correction is recorded rather than swapped in, because the gap is the kind
+    // a reader has to be able to audit. It read "DRIVEN through the real gate
+    // path ... a FIFO at the patch target SIGKILLed at 12 009 ms and a symlink
+    // to `/dev/zero` at 12 042 ms, against a regular-file control that returned
+    // in 13 ms". Those three figures are real and they are still on disk
+    // (.tmp/bounded2/before-apply-*.txt), but the driver that produced them
+    // called `parseApplyPatch(patch, { baseDir })` DIRECTLY — the unit, one
+    // frame below the gate, with the stand-down, consent and structural-parse
+    // checks never executed. "The real gate path" described the call the peer
+    // had traced by reading, not the call that had been run.
+    //
+    // AND THE SHIPPED PIN INHERITS THAT DISTINCTION, stated here rather than
+    // left implied: `__tests__/apply-patch.test.ts` drives `parseApplyPatch` in
+    // a child, so the regression pin is a UNIT pin, one frame below the gate,
+    // exactly like the driver above. It is sufficient only because the gate
+    // route holds no other read — `apply-patch.ts` carries this read plus an
+    // `existsSync` in `targetExists`, and the whole of `plan-guard/plan-write/`
+    // reads through `readRegularFile` — so there is nothing between the gate and
+    // this line for a gate-level pin to catch that the unit pin misses. If a
+    // read is ever added on that route, the pin stops covering it.
+    const content = readRegularFile(absPath);
+    // A SHAPE OF ITS OWN RATHER THAN THE ENOENT FOLD BELOW, and the deny reason
+    // is why. This string reaches the agent through
+    // `apply-patch-reconstruction-failed`, whose remedy is documented at the
+    // gate as "re-read the file and rebuild the hunks" — advice that, told about
+    // a FIFO, sends the agent back to read the blocking object, and told about a
+    // directory reads as a file that is missing. Same ruling, and for the same
+    // reason, as `plan-write/targets.ts`'s `target is not a regular file`: the
+    // generic string is a worse message for the commonest benign case. It sits
+    // beside the binary refusal below because it is the same class — something
+    // IS at that path and no patch can be reconstructed against it.
+    if (content === null) return { ok: false, error: `cannot reconstruct a non-regular file: ${absPath}` };
     if (content.includes('\0')) return { ok: false, error: `cannot reconstruct binary file: ${absPath}` };
     return { ok: true, content };
   } catch {

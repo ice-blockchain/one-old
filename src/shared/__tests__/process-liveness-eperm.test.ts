@@ -31,8 +31,44 @@
 // correct, which is precisely why a name-keyed census is the wrong instrument —
 // it reported a clean audit while three copies of the audited thing sat outside
 // it, and the next author to add a `pidLives` would have inherited the same
-// blind spot. Anything that asks the kernel `kill(pid, 0)` and answers a boolean
+// blind spot. Anything that asks the kernel `kill(pid, 0)` and answers from it
 // is a copy, whatever it is called.
+//
+// THE RETURN TYPE WAS THE SECOND BLIND SPOT, and it opened the moment the
+// settings lock grew a third answer. `one-settings.ts`'s `ownerLiveness` returns
+// `'alive' | 'dead' | 'not-ours'`, so a census keyed on `: boolean` stopped
+// seeing the one predicate whose EPERM handling had just been rewritten: the
+// count fell to 13 and this file went red. That is the census doing its job, and
+// the fix is to read the SHAPE rather than the signature. Three-valued copies are
+// audited on their own terms below — EPERM must be answered DISTINCTLY, as
+// neither the reachable answer nor the ESRCH one, because the entire point of a
+// third value is that the caller decides what "exists, and is not mine to
+// signal" means for ITS lock.
+//
+// THE THIRD BLIND SPOT WAS THE INSTRUMENT ITSELF, and it is the one that
+// mattered: reading shape is still reading TEXT, and a text audit made of
+// substring matches is satisfied by the defect it names. MEASURED — a recognised
+// copy was edited to answer "dead" for an EPERM pid while keeping the characters
+// the audit looked for, and this file stayed green. Thirteen of the fourteen
+// copies were audited by nothing at all: only `processAlive` was ever CALLED,
+// because it is the only one this file can import.
+//
+// So the audit below RUNS every copy. Each body is lifted out of its file, its
+// type annotations and casts removed, and rebuilt as a function whose `process`
+// is a stub that raises the errno under test. Polarity is then read from what
+// the copy ANSWERS for a reachable pid rather than from its text, and the EPERM
+// rule is checked against the value it actually returns. A copy that reaches for
+// anything the harness does not hand it — a helper where its EPERM decision
+// could hide — throws at call time and fails, which is the property that keeps
+// this from being outrun by an indirection. Proven by mutating ALL FOURTEEN
+// copies one at a time on a tree copy: each flip is caught, named, and reported
+// with the value it returned — 14/14, by polarity (the nine "alive" copies made
+// to answer `false` for EPERM, the four "provably dead" ones made to answer
+// `true`, and the three-valued one made to collapse EPERM onto `'dead'`). The
+// peer's own shape was re-run separately and is also caught: appending
+// `&& false` to a correct EPERM comparison keeps every character the old audit
+// searched for and changes the answer, which is exactly the mutation that used
+// to survive.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -49,7 +85,19 @@ const SRC_ROOT = path.resolve(__dirname, '..', '..');
 // observation lock, needed none, it now takes its lease from
 // state/run-agent/locks.ts); widening the census from names to shape surfaced
 // the last three, which had been there all along.
-const COPY_COUNT = 14;
+// THE FOURTH BLIND SPOT WAS THE PROBE'S OWN GRAMMAR, and it is the one that
+// held a live defect rather than a clean copy. `\w+` cannot match a leading
+// minus, so `qa-evidence/process-group.ts`'s `groupHasMembers` —
+// `process.kill(-pgid, 0)`, a liveness question about a process GROUP — was
+// invisible to a census whose declared scope is SHAPE and which records its own
+// history of being widened after missing predicates under other names. Nothing
+// excluded it deliberately; the docblock this file kept never mentioned process
+// groups or negative pids. Inside that blind spot its `catch` was bare, folding
+// EPERM onto ESRCH: a group that EXISTS and is not ours answered "no members",
+// which is the direction the assertions below refuse for this class, and
+// `stopOwnedServer` skips its SIGKILL outright on that answer. Fifteen is the
+// count on the census's own terms; fourteen was the regex's.
+const COPY_COUNT = 15;
 
 interface Copy {
   readonly file: string;
@@ -60,7 +108,14 @@ interface Copy {
 // What makes a function a copy: it asks the kernel about a pid without
 // delivering a signal. Not `/g`-flagged — a stateful regex reused across a loop
 // answers differently on alternate calls.
-const PROBE = /process\.kill\(\s*\w+\s*,\s*0\s*\)/;
+//
+// THE LEADING MINUS IS PART OF THE SHAPE, not a spelling this census tolerates:
+// `kill(-pgid, 0)` asks the identical question about a process GROUP, its EPERM
+// direction is load-bearing in the identical way, and omitting it is what hid
+// the fifteenth copy. Negating the count rather than the polarity — the census
+// is exact, so a sixteenth copy in this shape now fails here until it has been
+// audited, which is the property the number exists for.
+const PROBE = /process\.kill\(\s*-?\s*\w+\s*,\s*0\s*\)/;
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -75,12 +130,14 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Every boolean-returning function in the file, brace-matched from its
- * signature so the check reads the whole body and cannot be satisfied by a
- * neighbour's code — then narrowed to the ones that actually probe a pid. */
+/** Every function in the file with a declared return type, brace-matched from
+ * its signature so the check reads the whole body and cannot be satisfied by a
+ * neighbour's code — then narrowed to the ones that actually probe a pid. The
+ * return type is deliberately not constrained: `boolean` missed the three-valued
+ * one (see the header). */
 function liveness(source: string, file: string): Copy[] {
   const found: Copy[] = [];
-  const signature = /(?:export\s+)?function\s+(\w+)\s*\([^)]*\)\s*:\s*boolean\s*\{/g;
+  const signature = /(?:export\s+)?function\s+(\w+)\s*\([^)]*\)\s*:\s*[\w'| ]+\s*\{/g;
   for (let match = signature.exec(source); match; match = signature.exec(source)) {
     let depth = 0;
     let end = match.index + match[0].length - 1;
@@ -98,19 +155,57 @@ function liveness(source: string, file: string): Copy[] {
   return found;
 }
 
-/** What the copy answers when the probe SUCCEEDS — the text between the
- * `kill(pid, 0)` and its `catch`. A copy's polarity is decided here rather than
- * from its name, because the name is the one thing about a predicate that
- * carries no guarantee: `processExists`, `pidAlive` and `isPidAlive` are all
- * `processAlive` under another spelling. The slice starts AT the probe so an
- * argument guard's own `return false` cannot be mistaken for the answer. */
-function answerOnReachable(copy: Copy): 'alive' | 'dead' | null {
-  const probe = copy.body.search(PROBE);
-  const catchAt = copy.body.indexOf('catch', probe);
-  const tryTail = copy.body.slice(probe, catchAt < 0 ? undefined : catchAt);
-  if (/return\s+true;/.test(tryTail)) return 'alive';
-  if (/return\s+false;/.test(tryTail)) return 'dead';
-  return null;
+/**
+ * The copy, lifted out of its module and made callable with a `process` this
+ * file controls.
+ *
+ * WHY NOT IMPORT IT: thirteen of the fourteen are module-private, and exporting
+ * them to be tested would change the thing under audit. Merging them behind one
+ * helper is the consolidation wave this census exists to make unnecessary.
+ *
+ * WHAT IS REMOVED: parameter and return annotations, and `as T` casts. Nothing
+ * else — no rewriting of comparisons, no normalising of returns, so the
+ * expression that decides EPERM is the one that ships. Anything the strip cannot
+ * handle throws here and fails the census rather than skipping a copy.
+ *
+ * WHAT IS SUPPLIED: `process`, and the two record helpers two copies use to read
+ * `.code` off an unknown. They are handed in as arguments, so a body that
+ * reaches for a module-scope helper this list does not name gets a
+ * ReferenceError the moment its catch arm runs — the EPERM decision cannot be
+ * moved somewhere the census does not look.
+ */
+type Probe = 'reachable' | 'EPERM' | 'ESRCH' | 'EINVAL';
+
+function callable(copy: Copy): (probe: Probe) => unknown {
+  const signature = /function\s+(\w+)\s*\(([^)]*)\)\s*:\s*[^{]*\{/.exec(copy.body);
+  if (!signature) throw new Error(`${copy.file}:${copy.name}: the census could not read this signature`);
+  const params = (signature[2] as string)
+    .split(',')
+    .map((param) => (param.split(':')[0] as string).trim())
+    .filter((param) => param.length > 0);
+  const braceAt = copy.body.indexOf('{', signature.index + (signature[0] as string).length - 1);
+  const stripped = copy.body.slice(braceAt).replace(/\bas\s+[A-Za-z_$][\w.$]*/g, '');
+  const source = `function ${copy.name}(${params.join(', ')}) ${stripped}\nreturn ${copy.name};`;
+
+  const build = new Function('process', 'isRecord', 'obj', source) as (
+    processStub: unknown, isRecord: unknown, obj: unknown,
+  ) => (...args: unknown[]) => unknown;
+
+  return (probe: Probe): unknown => {
+    const processStub = {
+      kill: (): boolean => {
+        if (probe === 'reachable') return true;
+        const error: NodeJS.ErrnoException = new Error(probe);
+        error.code = probe;
+        throw error;
+      },
+    };
+    const isRecord = (value: unknown): boolean => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+    const obj = (value: unknown): unknown => (isRecord(value) ? value : null);
+    // A pid that passes every argument guard in the census, so the probe is what
+    // decides the answer and never a rejected pid.
+    return build(processStub, isRecord, obj)(4242);
+  };
 }
 
 const copies = sourceFiles(SRC_ROOT)
@@ -125,34 +220,68 @@ test('every process-liveness predicate is accounted for', () => {
   // positive form would otherwise pass the direction check below while silently
   // deleting the distinction it rests on — and the negating form is the one that
   // authorizes reclaims, so it is the half that must never quietly disappear.
-  assert.ok(copies.some((c) => answerOnReachable(c) === 'alive'),
-    'the "is it alive" form must still exist');
-  assert.ok(copies.some((c) => answerOnReachable(c) === 'dead'),
-    'the "is it provably dead" form must still exist');
+  const reachable = copies.map((copy) => callable(copy)('reachable'));
+  assert.ok(reachable.includes(true), 'the "is it alive" form must still exist');
+  assert.ok(reachable.includes(false), 'the "is it provably dead" form must still exist');
 });
 
-test('no copy treats EPERM as evidence of death', () => {
+test('no copy treats EPERM as evidence of death — every copy, called', () => {
+  const audited: string[] = [];
   for (const copy of copies) {
     const at = `${copy.file}:${copy.name}`;
-    const answer = answerOnReachable(copy);
-    assert.notEqual(answer, null,
-      `${at}: a reachable pid must produce a literal true/false, or this copy's polarity cannot be read`);
+    const call = callable(copy);
+    const onReachable = call('reachable');
+    const onEperm = call('EPERM');
+    const onEsrch = call('ESRCH');
 
-    if (answer === 'alive') {
-      // Alive on success, and alive on EPERM. The catch must key on EPERM and
-      // must NOT key on ESRCH: `return code !== 'ESRCH'` would be equivalent
-      // today but silently reclassifies every OTHER errno as alive.
-      assert.match(copy.body, /===\s*'EPERM'/, `${at}: EPERM must be the catch's positive case`);
-      assert.doesNotMatch(copy.body, /'ESRCH'/,
-        `${at}: a predicate that answers "alive" for a reachable pid must decide on EPERM, not on ESRCH`);
-    } else {
-      // The exact dual: dead ONLY on ESRCH, so EPERM (and every other errno)
-      // answers "not provably dead" and blocks the reclaim.
-      assert.match(copy.body, /===\s*'ESRCH'/, `${at}: only ESRCH may prove death`);
-      assert.doesNotMatch(copy.body, /'EPERM'/,
-        `${at}: a predicate that answers "not alive" for a reachable pid must not name EPERM — ESRCH alone decides`);
+    if (typeof onReachable === 'string') {
+      // The third form does not answer this question with a bit, and forcing it
+      // into one of the two arms below is what would re-open the wedge: EPERM
+      // must be its OWN answer, so that the caller decides whether "exists, not
+      // mine to signal" holds ITS lock.
+      assert.notEqual(onEperm, onReachable,
+        `${at}: EPERM answered ${JSON.stringify(onEperm)}, the same as a reachable pid — folded back into `
+        + '"alive", which is the planted-owner wedge this replaced');
+      assert.notEqual(onEperm, onEsrch,
+        `${at}: EPERM and ESRCH both answered ${JSON.stringify(onEperm)} — a third value that collapses is `
+        + 'a second value with extra steps, and it collapses toward the reclaim');
+      audited.push(`${at} → ${JSON.stringify(onReachable)}/${JSON.stringify(onEperm)}/${JSON.stringify(onEsrch)}`);
+      continue;
     }
+
+    assert.equal(typeof onReachable, 'boolean',
+      `${at}: a reachable pid answered ${JSON.stringify(onReachable)} — this copy's polarity cannot be read`);
+
+    if (onReachable === true) {
+      // Alive on success, and alive on EPERM. ESRCH is the only answer that may
+      // report the holder gone.
+      assert.equal(onEperm, true,
+        `${at}: an "is it alive" predicate answered ${JSON.stringify(onEperm)} for EPERM — a running process `
+        + "owned by another uid, reported as gone, and its lock handed to the next caller");
+      assert.equal(onEsrch, false, `${at}: ESRCH must still report the holder gone, or nothing is reclaimable`);
+    } else {
+      // The exact dual: provably dead ONLY on ESRCH, so EPERM blocks the
+      // reclaim by answering "not provably dead".
+      assert.equal(onEperm, false,
+        `${at}: an "is it provably dead" predicate answered ${JSON.stringify(onEperm)} for EPERM — the same `
+        + 'reclaim of a live process, reached from the other polarity');
+      assert.equal(onEsrch, true, `${at}: ESRCH must still prove death, or nothing is reclaimable`);
+    }
+
+    // An errno nobody enumerated answers `false` in BOTH polarities, which is
+    // the shape the text census prescribed when it required `=== 'EPERM'` over
+    // `!== 'ESRCH'`. Note what that means and note that it is asymmetric: for
+    // the "provably dead" form it is the cautious answer (no reclaim), and for
+    // the "is it alive" form it is the permissive one (the holder is not
+    // vouched for, so a caller may reclaim). Pinned as it is rather than
+    // quietly changed — no errno reaching these predicates is known to produce
+    // it, and eight copies across seven other lanes would have to move
+    // together. Written down here so it is a decision and not an accident.
+    assert.equal(call('EINVAL'), false,
+      `${at}: an errno nobody enumerated must not be answered by guessing`);
+    audited.push(`${at} → ${String(onReachable)}/${String(onEperm)}/${String(onEsrch)}`);
   }
+  assert.equal(audited.length, COPY_COUNT, `every copy must be CALLED, not just counted: ${audited.join(', ')}`);
 });
 
 // The census above reads source text, so it cannot catch a copy whose text is

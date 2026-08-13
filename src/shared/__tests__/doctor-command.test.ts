@@ -16,6 +16,7 @@ import {
   doctorShimCommand,
   doctorShimPath,
   gateExemptDoctorScriptPaths,
+  gateExemptShimDirs,
   selfRelativePluginRoot,
 } from '../doctor-command';
 import {
@@ -125,19 +126,27 @@ test('doctorScriptPath falls back when the env-overridden root does not exist at
 // Split deliberately from doctorScriptPath(): PROSE may follow the resolved
 // root, a GATE exemption may not. See doctor-command.ts's header.
 
-test('gateExemptDoctorScriptPaths is exactly {self-relative doctor, every shim dir} and ignores every plugin-root env var', () => {
+test('gateExemptDoctorScriptPaths is exactly {self-relative doctor, documented shim} and ignores every plugin-root env var', () => {
+  // The exemption set is the WRITE set minus the anchors env can relocate. It
+  // used to be `runnerShimDirs()` entire, which meant XDG_STATE_HOME or
+  // TRAFFIC_ONE_TOOLCHAIN_ROOT — both inputs to the hook process — moved the
+  // anchor, and a file planted at the moved anchor was admitted. Shims are
+  // still WRITTEN to every dir (asserted just below, and by the shim test); it
+  // is only the security exemption that stops following them.
   const expected = [
     path.join(selfRelativePluginRoot(), 'scripts', 'doctor.cjs'),
-    ...runnerShimDirs().map((dir) => path.join(dir, 'doctor.cjs')),
+    ...gateExemptShimDirs().map((dir) => path.join(dir, 'doctor.cjs')),
   ];
   assert.deepEqual(gateExemptDoctorScriptPaths(), expected);
+  assert.deepEqual(gateExemptShimDirs(), [documentedBinDir()],
+    'only the HOME-derived anchor, which is the one spelling shipped prose prints');
   assert.equal(selfRelativePluginRoot(), REPO_ROOT);
   // The DOCUMENTED spelling is always in the set — that is B1's invariant, and
-  // the reason this is runnerShimDirs() rather than stableBinDir() alone: the
-  // two coincide only until a machine sets XDG_STATE_HOME.
+  // it is what keeps "we never print a command we block" true.
   assert.ok(gateExemptDoctorScriptPaths().includes(doctorShimPath()));
   assert.equal(doctorShimPath(), path.join(documentedBinDir(), 'doctor.cjs'));
-  assert.ok(runnerShimDirs().includes(stableBinDir()), 'the env-derived dir stays in the set for relocated installs');
+  assert.ok(runnerShimDirs().includes(stableBinDir()),
+    'the env-derived dir stays in the WRITE set for relocated installs — narrowing the exemption must not stop us writing it');
   // A shipped shim, not a path this module invented.
   assert.ok(RUNNER_SHIMS.some((entry) => entry.shim === 'doctor.cjs' && entry.rel === 'scripts/doctor.cjs'));
 
@@ -263,8 +272,8 @@ test('the documented shim literal exists AND is gate-accepted under every HOME/X
           }
         }
 
-        // (b) accepted — in both shipped spellings, with and without flags.
-        const spellings = [documented, DOCUMENTED_SHIM_LITERAL, path.join(stableBinDir(), 'doctor.cjs')];
+        // (b) accepted — in both SHIPPED spellings, with and without flags.
+        const spellings = [documented, DOCUMENTED_SHIM_LITERAL];
         for (const spelling of spellings) {
           for (const args of ['', ' --bundle', ' --run 1785169657252', ' --run 1785169657252 --bundle', ' --session 019fbca1-2222-4333-8444-555566667777']) {
             const command = `node ${spelling}${args}`;
@@ -274,6 +283,30 @@ test('the documented shim literal exists AND is gate-accepted under every HOME/X
               `${cell.label}: the gate denies a command shipped prose prints: ${command}`,
             );
           }
+        }
+
+        // (c) and the ENV-DERIVED spelling is written but NOT exempt. It used
+        // to be asserted accepted, in the same list as the two above and under
+        // the same "shipped prose prints this" message — but prose does not
+        // print it: line 253 of this test pins doctorShimPath() to the
+        // documented literal in EVERY cell, so the runtime never emits this
+        // spelling at all.
+        //
+        // It is excluded because the exemption set and the write set are not
+        // the same set. stableBinDir() follows XDG_STATE_HOME and
+        // TRAFFIC_ONE_TOOLCHAIN_ROOT, both of which are INPUTS to the hook
+        // process, so admitting it let an agent move the anchor and plant a
+        // file there. Writing the shim to a relocated state dir stays correct;
+        // anchoring a security exemption on a path the caller can steer does
+        // not. The recovery the operator was HANDED still works — that is what
+        // (b) just measured, in this same cell.
+        const relocated = path.join(stableBinDir(), 'doctor.cjs');
+        if (relocated !== documented) {
+          assert.equal(
+            isTrafficOneDoctorCommand('Bash', { command: `node ${relocated}` }),
+            false,
+            `${cell.label}: an env-relocatable anchor must not carry the exemption: ${relocated}`,
+          );
         }
         // And what the runtime prints agrees with both.
         assert.equal(isTrafficOneDoctorCommand('Bash', { command: doctorShimCommand() }), true, cell.label);

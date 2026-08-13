@@ -21,6 +21,7 @@ import {
   type QaReportValidationResult,
   type QaRequiredWidth,
 } from './schema';
+import { openRegularFd, readRegularFileOrThrow } from '../bounded-read';
 
 function isInside(candidate: string, boundary: string): boolean {
   const relative = path.relative(boundary, candidate);
@@ -51,7 +52,7 @@ function screenshotExistsInsideQaDirectory(
     const realCandidate = fs.realpathSync(candidate);
     if (!isInside(realCandidate, realQaDirectory)) return false;
     const header = Buffer.alloc(12);
-    const fd = fs.openSync(realCandidate, 'r');
+    const fd = openRegularFd(realCandidate);
     let bytesRead = 0;
     try {
       bytesRead = fs.readSync(fd, header, 0, header.length, 0);
@@ -281,7 +282,7 @@ export function readQaReportV1(
   let text: string;
   let reportMtimeMs: number | undefined;
   try {
-    text = fs.readFileSync(reportPath, 'utf8');
+    text = readRegularFileOrThrow(reportPath);
     const mtime = fs.statSync(reportPath).mtimeMs;
     if (Number.isFinite(mtime)) reportMtimeMs = mtime;
   } catch (error) {

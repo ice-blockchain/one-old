@@ -21,6 +21,8 @@ import {
 } from '../capabilities';
 import { capabilityProfileForRun } from '../architecture-contract';
 import { isInPluginCache, pluginRoot, pluginRootInfo } from '../paths';
+import { isNewProjectMode } from '../state/lifecycle';
+import { copyRegularFile, readRegularFileOrThrow } from '../bounded-read';
 
 const SKILLS_TEMPLATES_DIR = 'skills-catalog';
 const SKILLS_ACTIVE_DIR = 'skills';
@@ -123,7 +125,7 @@ function normalizedSkillState(input: unknown): SkillState {
 
 export function activeSkillsFor(stackOrState: unknown, host?: HostId): Set<string> {
   const state = normalizedSkillState(stackOrState);
-  if (state.mode === 'new-project' && state.onboardingComplete !== true) {
+  if (isNewProjectMode(state) && state.onboardingComplete !== true) {
     return new Set(BOOTSTRAP_SKILLS);
   }
   const out = new Set(SKILL_FILTERS._common);
@@ -208,7 +210,7 @@ export function roleAgentBody(role: string): string | null {
   for (const candidate of roleAgentDocCandidates(role)) {
     let text = '';
     try {
-      text = fs.readFileSync(candidate, 'utf8');
+      text = readRegularFileOrThrow(candidate);
     } catch {
       continue;
     }
@@ -239,11 +241,26 @@ export function roleKernel(role: string): string | null {
 // of mirroring a TS map) means the subagent directive can never drift from what
 // the role document ships. Returns null when the doc/frontmatter is missing so
 // callers can fall back to the stack-wide directive.
+//
+// AND NULL IS ALSO WHAT AN UNREADABLE LIST RETURNS, which is a deliberate
+// narrowing rather than an oversight. This scanner used to answer with whatever
+// its item pattern happened to match and drop the rest in silence: measured
+// against a conformant YAML parser, a five-item list with ONE item quoted, or
+// carrying a trailing comment, or naming a dotted skill, returned four items and
+// told nobody, so a role ran with a skill scope it never declared. Refusing is
+// the answer the callers already implement — run-bootstrap-policy/materials.ts
+// treats null as a policy COMPILATION FAILURE and roleSkillsDirective falls back
+// to the stack-wide directive, which is over-broad rather than silently narrow —
+// and it is the same answer for every spelling, whereas teaching the pattern one
+// more quote form at a time is writing a YAML parser by adversarial example in
+// code that may not take a dependency. The committed docs can never reach this
+// branch: src/test-support/__tests__/agent-frontmatter-oracle.test.ts compares
+// every src/modules/<role>/agent.md against the oracle and reds on a refusal.
 export function roleDeclaredSkills(role: string): Set<string> | null {
   for (const candidate of roleAgentDocCandidates(role)) {
     let text = '';
     try {
-      text = fs.readFileSync(candidate, 'utf8');
+      text = readRegularFileOrThrow(candidate);
     } catch {
       continue;
     }
@@ -255,11 +272,12 @@ export function roleDeclaredSkills(role: string): Set<string> | null {
     let inSkills = false;
     for (const line of lines) {
       if (/^skills:\s*$/.test(line)) { inSkills = true; continue; }
-      if (inSkills) {
-        const item = line.match(/^\s+-\s+([A-Za-z0-9_-]+)\s*$/);
-        if (item?.[1]) { out.add(item[1]); continue; }
-        if (/^\S/.test(line)) inSkills = false; // next top-level key ends the list
-      }
+      if (!inSkills) continue;
+      if (/^\S/.test(line)) { inSkills = false; continue; } // next top-level key ends the list
+      if (!line.trim()) continue; // a blank line inside a block list is legal and means nothing
+      const item = line.match(/^\s+-\s+([A-Za-z0-9_-]+)\s*$/);
+      if (!item?.[1]) return null; // an item this scanner cannot read makes the whole answer null
+      out.add(item[1]);
     }
     if (out.size > 0) return out;
   }
@@ -306,7 +324,7 @@ function copyDirSync(src: string, dst: string): void {
     const s = path.join(src, entry.name);
     const d = path.join(dst, entry.name);
     if (entry.isDirectory()) copyDirSync(s, d);
-    else if (entry.isFile()) fs.copyFileSync(s, d);
+    else if (entry.isFile()) copyRegularFile(s, d);
   }
 }
 

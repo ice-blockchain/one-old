@@ -19,11 +19,13 @@ import {
   deriveUiImpact,
   plannedUiImpactFloor,
   requiredChecks,
+  truncatedScanUiImpactFloor,
   uiImpactWithPlannedFloor,
   type UiImpact,
 } from '../verification-contract';
-import { changedRoutes, rank } from '../verification-contract/impact';
+import { changedRoutes, rank, validateAgentRaisedImpact } from '../verification-contract/impact';
 import { capabilityProfileForProject } from '../capabilities';
+import type { CapabilityProfileV1 } from '../capabilities/types';
 
 function withProject(fn: (cwd: string) => void): void {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verification-'));
@@ -131,11 +133,20 @@ test('web impact is mechanically classified and agents can raise but never lower
 // the run that made it. Hence one property, both directions: a maximum, never an
 // assignment, and the scan side has to earn every raise.
 test('the planned floor is a lower bound and the scan raises only on evidence', () => {
-  const SCAN_OUTCOMES: Array<[string, Record<string, unknown>]> = [
-    ['scan saw nothing', { changedPaths: [] }],
-    ['scan failed', { changedPaths: [], scanComplete: false, scanReason: 'git baseline diff could not be completed' }],
-    ['scan saw only a mapper', { changedPaths: ['apps/web/src/lib/mapper.ts'] }],
-    ['scan saw only tester outputs', { changedPaths: ['tests/home.test.ts', 'vitest.config.ts'] }],
+  // The third column is the expected impact when it is NOT simply the planned
+  // floor. Only the scan that did not finish has one: an incomplete diff carries
+  // its own floor, the domain maximum, because the paths it never reached could
+  // have been any of them (see truncatedScanUiImpactFloor and its own test
+  // below). Every complete outcome settles at the planned floor exactly.
+  const SCAN_OUTCOMES: Array<[string, Record<string, unknown>, UiImpact | null]> = [
+    ['scan saw nothing', { changedPaths: [] }, null],
+    [
+      'scan failed',
+      { changedPaths: [], scanComplete: false, scanReason: 'git baseline diff could not be completed' },
+      'visual',
+    ],
+    ['scan saw only a mapper', { changedPaths: ['apps/web/src/lib/mapper.ts'] }, null],
+    ['scan saw only tester outputs', { changedPaths: ['tests/home.test.ts', 'vitest.config.ts'] }, null],
   ];
 
   // Direction 1: whatever the scan does or fails to do, the contract stays at
@@ -163,11 +174,12 @@ test('the planned floor is a lower bound and the scan raises only on evidence', 
         floor,
         `fixture guard: ${label} must declare a ${floor} floor`,
       );
-      for (const [outcome, options] of SCAN_OUTCOMES) {
+      for (const [outcome, options, truncated] of SCAN_OUTCOMES) {
+        const expected = truncated || floor;
         const contract = buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, options);
-        assert.equal(contract.uiImpact, floor, `${label} / ${outcome} must not fall below its planned floor`);
+        assert.equal(contract.uiImpact, expected, `${label} / ${outcome} must not fall below its planned floor`);
         assert.equal(contract.browserRequired, true, `${label} / ${outcome} still owes browser evidence`);
-        assert.deepEqual(contract.requiredChecks, requiredChecks(floor));
+        assert.deepEqual(contract.requiredChecks, requiredChecks(expected));
       }
     });
   }
@@ -291,13 +303,251 @@ test('the planned floor is a lower bound and the scan raises only on evidence', 
     ] as ArchitectureInputV1[]) {
       const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, input);
       const floor = plannedUiImpactFloor(cwd, architecture);
+      const truncated = truncatedScanUiImpactFloor(architecture.profile);
       for (const scanned of ['none', 'nonvisual', 'behavioral', 'visual', 'native-ui'] as UiImpact[]) {
-        const settled = uiImpactWithPlannedFloor(cwd, architecture, scanned);
-        assert.ok(rank(settled) >= rank(floor), `${scanned} lowered the ${floor} floor to ${settled}`);
-        assert.ok(rank(settled) >= rank(scanned), `the ${floor} floor lowered a ${scanned} scan to ${settled}`);
+        for (const complete of [true, false]) {
+          const settled = uiImpactWithPlannedFloor(cwd, architecture, scanned, complete);
+          assert.ok(rank(settled) >= rank(floor), `${scanned} lowered the ${floor} floor to ${settled}`);
+          assert.ok(rank(settled) >= rank(scanned), `the ${floor} floor lowered a ${scanned} scan to ${settled}`);
+          if (!complete) {
+            assert.ok(
+              rank(settled) >= rank(truncated),
+              `an incomplete scan settled ${settled}, below its ${truncated} truncation floor`,
+            );
+          }
+        }
       }
     }
   });
+});
+
+// The hole the planned floor structurally cannot cover, and the reason it is a
+// hole rather than a gap: `plannedUiImpactFloor` skips every module and output
+// already in the baseline, so a run that MODIFIES an existing page plans nothing
+// new and floors at `nonvisual`. When the diff scan is ALSO truncated, both
+// inputs are silent for the same reason — nobody looked — and the contract used
+// to publish `nonvisual`, `browserRequired: false` for a run whose whole subject
+// is a page. The weakening ratchet in plan-readiness/contracts.ts is no help: it
+// is reached only once the diff is known complete.
+test('an incomplete diff pins the impact to the truncation floor, and only then', () => {
+  const PLAN: ArchitectureInputV1 = {
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+  };
+
+  withProject((cwd) => {
+    setupReact(cwd);
+    // The page ALREADY exists, which is what makes the planned floor silent.
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'), 'export const Home = () => <main />;\n');
+    const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, PLAN);
+    assert.equal(
+      plannedUiImpactFloor(cwd, architecture),
+      'nonvisual',
+      'fixture guard: a page already in the baseline is not new work and raises no planned floor',
+    );
+
+    const truncated = buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, {
+      changedPaths: [],
+      scanComplete: false,
+      scanReason: 'source scan exceeds 600 files',
+    });
+    assert.equal(truncated.uiImpact, 'visual', 'a truncated diff cannot know it saw no UI');
+    assert.equal(truncated.browserRequired, true);
+    assert.deepEqual(truncated.requiredChecks, requiredChecks('visual'));
+    // Recorded, not just applied: a run that suddenly owes browser evidence for
+    // a change that looks nonvisual has to be able to read why.
+    assert.match(truncated.uiImpactReason || '', /truncated-scan floor/);
+    assert.equal(truncated.scanComplete, false);
+
+    // Bounded to truncation. The identical scan outcome, complete, is evidence
+    // of absence and stays where the evidence put it — otherwise this is the
+    // ignorance-as-behavior default that made runs unsettleable, wearing a new
+    // name.
+    const complete = buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, { changedPaths: [] });
+    assert.equal(complete.uiImpact, 'nonvisual');
+    assert.equal(complete.browserRequired, false);
+    assert.equal(complete.uiImpactReason, undefined);
+  });
+
+  // A domain whose impact is fixed has nothing a partial walk could have hidden,
+  // so an api-only project does not buy a Chromium it has no use for when its
+  // diff is cut short.
+  withProject((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'internal'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'go.mod'), 'module example.test/api\n');
+    const state = {
+      mode: 'existing-codebase', stack: 'custom-backend', frontend: 'none', backend: 'go', mobile: { framework: 'none' },
+    };
+    const architecture = compileArchitecture(cwd, 'R', state, {
+      schemaVersion: 1,
+      routes: [],
+      modules: [{ id: 'health-service', name: 'Health Service', kind: 'service' }],
+    });
+    assert.equal(truncatedScanUiImpactFloor(architecture.profile), 'none');
+    const contract = buildVerificationContract(cwd, 'R', state, architecture, {
+      changedPaths: [],
+      scanComplete: false,
+      scanReason: 'source scan exceeds 600 files',
+    });
+    assert.equal(contract.uiImpact, 'none');
+    assert.equal(contract.browserRequired, false);
+  });
+});
+
+// B1, part two. THREE truncation notions reach this contract and the floor used
+// to cover one. A structure walk that hit its file cap, or a collapse scan that
+// hit COLLAPSE_MAX_FILES, leaves the git diff perfectly complete — measured: on
+// a 10_001-file tree with every file committed, `changedPathsFromBaseline`
+// returns complete while the structure report truncates — so the notion had to
+// arrive on its own input.
+test('a bounded scan that is not the diff raises the same floor, and leaves scanComplete alone', () => {
+  const PLAN: ArchitectureInputV1 = {
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+  };
+  withProject((cwd) => {
+    setupReact(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'), 'export const Home = () => <main />;\n');
+    const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, PLAN);
+
+    const bounded = buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, {
+      changedPaths: [],
+      boundedScanTruncated: true,
+    });
+    assert.equal(bounded.uiImpact, 'visual', 'a bounded scan cannot know it saw no UI either');
+    assert.equal(bounded.browserRequired, true);
+    // And it must NOT arrive by folding into `scanComplete`: that field is
+    // terminal at `validateQaReportV2`, so folding these in would convert a
+    // legible early deny into an unexplained QA rejection after the whole
+    // implementation is paid for.
+    assert.equal(bounded.scanComplete, true);
+    assert.equal(bounded.uiImpactPinned, true);
+    assert.equal(bounded.unpinnedUiImpact, 'nonvisual');
+    assert.match(bounded.uiImpactReason || '', /bounded scan did not finish/);
+
+    const complete = buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, {
+      changedPaths: [],
+    });
+    assert.equal(complete.uiImpact, 'nonvisual');
+    assert.equal(complete.uiImpactPinned, undefined);
+    assert.equal(complete.unpinnedUiImpact, undefined);
+  });
+});
+
+// B2. `previous.uiImpact === truncatedScanUiImpactFloor(profile)` cannot tell a
+// pinned `visual` from an evidence-derived one, because on a web profile they
+// are the same string and the second is the common case. The provenance has to
+// be a field, and it is only true where the pin actually MOVED the value: an
+// agent who raised the impact above the floor did not inherit the pin.
+test('the pin is published as provenance, and only where the floor actually moved the value', () => {
+  const PLAN: ArchitectureInputV1 = {
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [{ id: 'home', name: 'Home', kind: 'page' }],
+  };
+  withProject((cwd) => {
+    setupReact(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'), 'export const Home = () => <main />;\n');
+    const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, PLAN);
+
+    // Derived `visual` with the scan complete: the same string the floor would
+    // have produced, and NOT a pin.
+    const honest = buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, {
+      changedPaths: ['apps/web/src/pages/Home.tsx'],
+    });
+    assert.equal(honest.uiImpact, 'visual');
+    assert.equal(honest.uiImpactPinned, undefined, 'evidence-derived visual is not pinned');
+
+    const pinned = buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, {
+      changedPaths: [],
+      scanComplete: false,
+      scanReason: 'source scan exceeds 600 files',
+    });
+    assert.equal(pinned.uiImpact, 'visual');
+    assert.equal(pinned.uiImpactPinned, true);
+    assert.equal(pinned.unpinnedUiImpact, 'nonvisual', 'and it records what the evidence read');
+
+    // The floor cannot raise what is already above it, so a truncated api-only
+    // project publishes no pin either.
+    assert.equal(
+      buildVerificationContract(cwd, 'R', EXISTING_REACT, architecture, {
+        changedPaths: ['apps/web/src/pages/Home.tsx'],
+        scanComplete: false,
+        scanReason: 'source scan exceeds 600 files',
+      }).uiImpactPinned,
+      undefined,
+    );
+  });
+});
+
+// NIT 9. The floor mapped `web-ui` and `native-ui` and let everything else fall
+// through to `none`, so the ONE branch reached by a surface the floor does not
+// understand failed toward LESS evidence — the opposite of the compensation the
+// floor exists to be. The recognized non-UI surfaces keep their `none`, because
+// a Go service has no browser evidence a partial walk could have hidden.
+test('the truncation floor fails toward more evidence for a surface it does not recognize', () => {
+  const floor = (surfaces: string[], architectureTarget?: string): UiImpact =>
+    truncatedScanUiImpactFloor({ surfaces, architectureTarget } as unknown as CapabilityProfileV1);
+
+  assert.equal(floor(['web-ui']), 'visual');
+  assert.equal(floor(['native-ui']), 'native-ui');
+  assert.equal(floor(['web-ui', 'native-ui'], 'web-ui'), 'visual');
+  assert.equal(floor(['web-ui', 'native-ui'], 'native-ui'), 'native-ui');
+  for (const surface of ['api', 'cli', 'worker', 'data']) {
+    assert.equal(floor([surface]), 'none', surface);
+  }
+  assert.equal(floor(['api', 'cli', 'worker', 'data']), 'none');
+  assert.equal(floor([]), 'none', 'a profile with no surfaces has no UI to have missed');
+  // The branch the nit is about: a surface added to ProjectSurface later, with
+  // this function not updated. It must buy evidence, not shed it.
+  assert.equal(floor(['desktop-ui' as string]), 'visual');
+  assert.equal(floor(['api', 'desktop-ui' as string]), 'visual');
+});
+
+// The coupling that keeps `impact === runtimeImpact` dead where the pin is
+// published (verification-contract/index.ts). That conjunct survives every
+// mutation across six profile shapes, and NOT because it is redundant with the
+// pin: it is dead only because two INDEPENDENT constants coincide — the web
+// truncation floor is `visual`, and `visual` is the highest raise
+// validateAgentRaisedImpact accepts on a web profile, so no agent can raise
+// above a pinned floor. Lower the floor at truncatedScanUiImpactFloor for any
+// reason and the conjunct becomes load-bearing the same day, silently. So the
+// property is asserted here rather than left to the reader: the truncation floor
+// is at least the validator's ceiling, for every shape either function knows.
+test('the truncation floor is never below the highest raise the validator accepts', () => {
+  const ORDER: UiImpact[] = ['none', 'nonvisual', 'behavioral', 'visual', 'native-ui'];
+  for (const [surfaces, architectureTarget] of [
+    [['web-ui'], undefined],
+    [['native-ui'], undefined],
+    [['web-ui', 'native-ui'], 'web-ui'],
+    [['web-ui', 'native-ui'], 'native-ui'],
+    [['api', 'cli', 'worker', 'data'], undefined],
+    [[], undefined],
+    // The shape neither function recognises: the floor buys evidence, the
+    // validator accepts nothing but `none`, and the inequality is what holds.
+    [['desktop-ui'], undefined],
+  ] as Array<[string[], string | undefined]>) {
+    const profile = { surfaces, architectureTarget } as unknown as CapabilityProfileV1;
+    const accepted = ORDER.filter((candidate) => {
+      try {
+        validateAgentRaisedImpact(profile, candidate);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const ceiling = accepted[accepted.length - 1] as UiImpact;
+    const truncationFloor = truncatedScanUiImpactFloor(profile);
+    assert.ok(
+      rank(truncationFloor) >= rank(ceiling),
+      `${JSON.stringify(surfaces)}${architectureTarget ? ` as ${architectureTarget}` : ''}: an agent may raise `
+      + `to ${ceiling} while the truncation floor is only ${truncationFloor}, so a pinned contract can now be `
+      + 'published with impact !== runtimeImpact — the pin provenance in index.ts needs the conjunct it '
+      + 'currently gets for free',
+    );
+  }
 });
 
 // The mirror hole the same deletion opened. MARKUP_RE is a list of extensions

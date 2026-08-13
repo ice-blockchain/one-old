@@ -8,6 +8,28 @@ import { activeAgentRole, isSubagentSession } from './state';
 import type { RunAgentContext } from './state/run-agent';
 import { parseApplyPatch, patchOperationPaths } from './apply-patch';
 import { SOURCE_EXTS } from './detection/artifacts';
+import {
+  COMMAND_START,
+  COMMAND_WORD_PREFIX,
+  compressorKeepsInput,
+  DESTRUCTIVE_VERB,
+  EVAL_FLAG,
+  EVAL_WRITE_MATCH_SOURCE,
+  HEREDOC_OPERATOR_SOURCE,
+  heredocReaderIsInterpreter,
+  INTERPRETER_NAME,
+  IN_PLACE_EDITORS,
+  IN_PLACE_EDITOR_RE,
+  NAMED_OUTPUT_TOOL,
+  namedOutputDestinations,
+  OVERWRITE_TOOL,
+  REPLACING_COMPRESSOR,
+  SHELL_NAME,
+  trafficOnePathLiterals,
+  trafficOnePathsNamedOutsideRead,
+  VERB_ANCHOR,
+  withShellValuesResolved,
+} from './shell-vocabulary';
 
 // Paths the architecture gate treats as "feature source" (monorepo + flat layouts).
 export const FEATURE_SOURCE_RE =
@@ -83,40 +105,250 @@ export function subagentMayWriteFeatureSource(
 
 // A bare interpreter token is not a write: `python3 -c "…json.load(open(...))"`
 // and `node -e "console.log(...)"` are routine read/inspect commands (the B5
-// false-positive). Interpreters count as a write primitive only when an
-// eval/exec flag is paired with file-writing vocabulary in the eval body —
-// redirected interpreter output is still caught by the redirect check.
-const INTERPRETER_EVAL_WRITE_RE = new RegExp(
-  String.raw`\b(?:python3?|node|perl)\b[\s\S]*(?:^|\s)(?:-c|-e|-r|--eval|--exec)\b[\s\S]*`
-  + String.raw`(?:\bopen\s*\([^)]*,\s*['"][wax]|\.write(?:_text|_bytes)?\s*\(|\bwrite(?:File|FileSync)\s*\(`
-  + String.raw`|\bfs\.(?:write|append|rm|unlink|rename|mkdir|cp|copy)|\bappendFile|\bcreateWriteStream`
-  + String.raw`|\bunlink\b|\bos\.(?:remove|rename|replace)\b|\bshutil\b|['"]>{1,2}['"])`,
+// false-positive). Interpreters count as a write primitive only when file-writing
+// vocabulary appears in the EVAL BODY — redirected interpreter output is still
+// caught by the redirect check.
+//
+// The vocabulary names the destructive VERB as a CALLEE, never the module handle.
+// Anchoring on a contiguous `fs.` token was a fail-open across the whole write
+// fence: in `require('fs').unlinkSync(p)` the text between `fs` and the verb is
+// `').`, so `\bfs\.unlink` never matched, and `\bunlink\b` could not match
+// `unlinkSync` either — `S` is a word character, so there is no boundary after
+// `unlink`. Only a handle bound to a variable (`const fs=require('fs')`) restored
+// the anchor. Measured through this file's own exports, 6 of 11 record-erasing
+// spellings were invisible, and `truncate` was absent from the vocabulary
+// altogether, so BOTH of its spellings failed open — truncating a record to zero
+// bytes erases it as effectively as unlinking it. A handle can be spelled without
+// limit (`node:fs`, `import('fs')`, `globalThis.require`, a destructured
+// `const {unlinkSync}=…`, `fs.promises`), which is why the verb is the half worth
+// naming.
+//
+// The verb set is not a set any more, and that is the round-3 change. It was
+// "narrow, not closed", and the two families it advertised as CLASSES — a
+// destructive MODE argument and an in-place FLAG — were measured to be spelling
+// lists one level up: the mode class was anchored on the literal `open`, so
+// php's `fopen`, ruby's `File.new` and perl's 2-arg `open(F, ">P")` were all
+// outside it, and the flag class named `sed` and `perl` out of five binaries
+// that have the feature. Both gaps were in languages `INTERPRETER_NAMES`
+// already lists, which is the tell: a rule that enumerates tokens can only
+// forbid what somebody has already been defeated by.
+//
+// The capability spellings now come from `shell-vocabulary`'s CAPABILITY ×
+// FAMILY table, which a generated symmetry property holds complete — a
+// capability covered for ruby and not for php is red before anyone tries it.
+// What stays HERE is this module's own precision: the exclusions and the
+// call-shaped anchors that let it answer on commands naming no artifact.
+//
+// One family is open and stays open: a verb assembled at runtime
+// (`fs['un'+'link'+'Sync']`) has no literal to match.
+const EVAL_BODY_WRITE_RE = new RegExp(
+  EVAL_WRITE_MATCH_SOURCE
+  // `stdout`/`stderr` receivers excluded: `sys.stdout.write(open(p).read())` is
+  // `cat` with extra steps and erases nothing (a REDIRECTED stdout is caught by
+  // the redirect arm instead). The exclusion was measured, deferred once because
+  // plan-write.test.ts's 3co regression row reached the architecture-input
+  // validator through this false positive alone, and landed together with the
+  // re-rooting of that row onto a command that genuinely writes.
+  //
+  // `fs.` members and `['"]>{1,2}['"]` are the module-handle and shell-mode
+  // shorthands the table does not carry, because they are anchors rather than
+  // capabilities.
+  + String.raw`|\bfs\.(?:write|append|rm|unlink|rename|mkdir|cp|copy)|['"]>{1,2}['"]`
+  // The verb as a callee, receiver unspelled. `[\s\\]*\(` because an UNQUOTED
+  // eval body reaches the shell with its call parens escaped
+  // (`node -e require\('fs'\).unlinkSync\(p\)`). `link` is deliberately absent:
+  // `'a'.link('b')` is a real read false positive and a hard link erases nothing.
+  // `mkdir`/`makedirs` stay absent from the bare family so the "mkdir creates no
+  // file content" decision below is not quietly reversed for interpreters.
+  //
+  // `(?:\\?['"\x60]\s*\])?(?:\?\.)?` is what stands between the verb and its call
+  // parens when the member is spelled as a STATIC computed access or an optional
+  // call: `fs['unlinkSync'](p)`, `fs[\`unlinkSync\`](p)`, `fs.rmSync?.(p)`. The
+  // verb literal is right there in the command text in all three; only the
+  // punctuation after it moved, and a comment in the test file used to claim
+  // (wrongly) that a surviving verb literal was enough. The optional BACKSLASH
+  // is not decoration: inside a double-quoted eval body the inner quote arrives
+  // escaped (`node -e "fs[\"unlinkSync\"](p)"`), so the shell hands the hook a
+  // backslash the naive class could not cross.
+  + String.raw`|\b(?:symlink|touch)(?:Sync)?`
+  + String.raw`(?:\\?['"\x60]\s*\])?(?:\?\.)?[\s\\]*\(`
+  // `writev` splits off from the family for the same reason `stdout.write` does:
+  // fds 0/1/2 are the standard streams, `writevSync(1,[buf])` is a print, and any
+  // other fd is a variable — which, if it came from a destructive open, the mode
+  // arm above has already caught.
+  + String.raw`|\bwritev(?:Sync)?(?:\\?['"\x60]\s*\])?[\s\\]*\((?!\s*[012]\s*,)`
+  // The same verbs spelled WITHOUT parens, which is idiomatic perl and was an
+  // asymmetry inside this very vocabulary: `unlink` had a bare alternative
+  // above, `truncate` did not, so `perl -e 'truncate "p", 0'` was invisible
+  // while `perl -e "unlink 'p'"` was refused. Restricted to an argument that
+  // opens a string/scalar/uppercase filehandle so prose ("truncate the log")
+  // stays a read.
+  + String.raw`|\b(?:rmtree|symlink)\s+(?:['"$@]|[A-Z])`,
 );
 
-// `sed` is a write only when an actual in-place flag appears among the option
-// tokens that PRECEDE its script/file arguments. The old free-span match
+// The eval BODIES of a command, so the vocabulary above is searched where the
+// code actually is. The old pattern scanned `[\s\S]*` — the entire rest of the
+// command — after the eval flag, which is the same free-span mistake
+// `inPlaceEditFlag` below records: `node -e "console.log(1)" && rg "unlinkSync("
+// src/` is a pure read that a free span reads as a write. The interpreter and its
+// flag must also sit in the SAME simple command (as in NESTED_SHELL_EXEC_RE), so
+// `node --version && grep -c "unlinkSync(" f` stays a read. The narrower scope
+// loses no coverage: text OUTSIDE an eval body is a plain shell command, which
+// the redirect/tee/rm/sed arms already scan.
+//
+// `(?:\\\n|[^\n;|&])*?` is that same one-simple-command scope with the ONE way a
+// simple command legally spans lines: a backslash-newline. `node \` + newline +
+// `-e "…unlinkSync(p)"` is ordinary multi-line Bash and was invisible, because a
+// newline-excluding span cannot reach a flag on the next line. Everything else
+// about the bound is unchanged — a bare newline, `;`, `|` and `&` still end it.
+const INTERPRETER_EVAL_FLAG_RE = new RegExp(
+  String.raw`\b${INTERPRETER_NAME}\b(?:\\\n|[^\n;|&])*?(?:^|\s)${EVAL_FLAG}\b\s*=?\s*`,
+  'g',
+);
+
+function interpreterEvalBodies(command: string): string[] {
+  const bodies: string[] = [];
+  INTERPRETER_EVAL_FLAG_RE.lastIndex = 0;
+  for (let match = INTERPRETER_EVAL_FLAG_RE.exec(command); match; match = INTERPRETER_EVAL_FLAG_RE.exec(command)) {
+    const rest = command.slice(match.index + match[0].length);
+    const quote = rest[0];
+    if (quote === '"' || quote === "'") {
+      const quoted = (quote === '"' ? /^"((?:\\.|[^"\\])*)"/ : /^'([^']*)'/).exec(rest);
+      bodies.push(quoted ? quoted[1]! : rest.slice(1));
+    } else {
+      bodies.push(rest); // unquoted or unterminated body: scan the remainder
+    }
+  }
+  // A heredoc is the other way an interpreter is handed code, and it carries no
+  // eval flag at all: `python3 - <<'PY' … os.unlink(p) … PY`. Same body, same
+  // vocabulary, and it reached the gate as a pure noop until this arm existed.
+  for (const span of heredocSpans(command)) {
+    if (span.interpreterRead) bodies.push(command.slice(span.bodyStart, span.bodyEnd));
+  }
+  return bodies;
+}
+
+// Two questions, not one, and only the first needs a vocabulary.
+//
+// `EVAL_BODY_WRITE_RE` answers "is this body a write" about a path this module
+// does NOT own — `src/app.ts`, a build artifact — where Traffic One has no
+// anchor to hang a judgement on, so a capability vocabulary is the only
+// instrument available and its incompleteness is a genuine residual.
+//
+// THAT RESIDUAL IS NOW MEASURED AT THE GATE RATHER THAN REASONED ABOUT, because
+// a disclosure nobody drove is indistinguishable from one that is wrong. In a
+// `subagents` fixture where `rm -f src/components/Button.tsx`, `echo x >` onto
+// it and `require('fs').unlinkSync` on it all deny with `run-team-shell` (3/3
+// positive controls), these reach `noop`:
+// `zipfile.ZipFile('src/components/Button.tsx','w')`,
+// `Pathname.new('src/components/Button.tsx').delete`,
+// `os.close(os.open('src/components/Button.tsx', 1|512|1024))`, and — reasoned,
+// not executed, because php is not installed here —
+// `new SplFileObject('src/…','w')`. Each of the first three is the same call
+// that erases a runtime sidecar when the path is one Traffic One owns, where the
+// read-anchored judgement below refuses it without knowing the verb.
+//
+// The fix is not to widen this alternation by four spellings: that is the shape
+// three rounds were defeated at, and the fourth arrives with the next peer. It
+// is a separate design question — what anchor `src/**` could have that plays the
+// role `.traffic-one` plays here — and it is deliberately NOT answered in the
+// round that measured it.
+//
+// `trafficOnePathsNamedOutsideRead` answers about Traffic One's OWN tree, where
+// the anchor exists, and it asks the inverse question: is the path named by
+// anything that is not a read? A peer erased an `architecture-input-v1.json`
+// with `ruby -e "Pathname.new(p).delete"` and `python3 -c
+// "zipfile.ZipFile(p,'w')"` while `File.delete(p)` on the identical path drew
+// `architecture-input-shell-unverified` — three spellings of one capability,
+// one of them in the vocabulary. The inverse question answers all three without
+// knowing any of them, and answers the fourth nobody has written yet.
+function interpreterEvalWrite(command: string): boolean {
+  return interpreterEvalBodies(command).some((body) => (
+    EVAL_BODY_WRITE_RE.test(body) || trafficOnePathsNamedOutsideRead(body).length > 0
+  ));
+}
+
+// `sed`/`perl` are a write only when an actual in-place flag appears among the
+// option tokens that PRECEDE the script/file arguments. The old free-span match
 // (`/\bsed\b[\s\S]*-i/`) turned pure reads into writes whenever ANY later text
 // merely contained "-i" — observed 8c-codex: `sed -n '1,240p' … known-issues.md`
 // (the "-i" inside the filename) denied the tester's read-only orientation, and
 // the same pattern inside a heredoc BODY voided the digest carve-out below.
 // GNU's postfix form (`sed 's/…/…/' -i file`) is deliberately not chased — the
 // canonical `sed -i` spelling stays caught without the filename false positives.
-function sedInPlaceFlag(command: string): boolean {
-  const sedRe = /\bsed\b/g;
-  for (let match = sedRe.exec(command); match; match = sedRe.exec(command)) {
-    for (const token of command.slice(match.index + match[0].length).split(/\s+/)) {
-      if (!token) continue;
+//
+// `perl -i` is here because leaving it out was an asymmetry with a false
+// justification attached: the comment above the eval vocabulary used to excuse it
+// as "a flag, not a verb, which the sed arm does not chase either", and the sed
+// arm is this function. `perl -i -pe 's/.*//' <record>` and `perl -pi -e …` erase
+// a record as completely as `rm` and were both noop end to end.
+//
+// perl's option run needs a tighter test than sed's, because perl has options
+// that take an ATTACHED argument: `/^-[a-zA-Z]*i/` matches `-MList::Util` (M, L,
+// i…) and would refuse `perl -MList::Util -e 'print 1'`, a read. Only the
+// bundleable no-argument switches may precede the `i` — which is per-binary, so
+// the grammar lives in `IN_PLACE_EDITORS` beside the binary names rather than as
+// an `isPerl` branch here. That branch is what made `ruby -i` and
+// `awk -i inplace` unreachable: adding a name to a two-name alternation is a
+// spelling fix, and this capability has five binaries.
+function inPlaceEditFlag(command: string): boolean {
+  IN_PLACE_EDITOR_RE.lastIndex = 0;
+  for (let match = IN_PLACE_EDITOR_RE.exec(command); match; match = IN_PLACE_EDITOR_RE.exec(command)) {
+    const name = match[0].replace(/^.*[\s;&|('"`/]/, '');
+    const editor = IN_PLACE_EDITORS.find((candidate) => candidate.binary === name);
+    if (!editor) continue;
+    const tokens = command.slice(match.index + match[0].length).split(/\s+/).filter(Boolean);
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index]!;
       if (!token.startsWith('-') || token === '--') break; // script/file args end the option run
+      if (editor.optionsWithArgument?.includes(token)) { index += 1; continue; }
       if (token === '--in-place' || token.startsWith('--in-place=')) return true;
-      if (/^-[a-zA-Z]*i/.test(token)) return true; // -i, -i.bak, -ni, -Ei…
+      if (!editor.shortRun.test(token)) continue;
+      // gawk's `-i` is `--include`; only the `inplace` extension edits in place.
+      if (editor.requiresArgument && tokens[index + 1] !== editor.requiresArgument) continue;
+      return true; // -i, -i.bak, -ni, -pi, -Ei…
     }
   }
   return false;
 }
 
+// Verbs and tools that destroy or overwrite content, as a plain shell command.
+// Split from `shellCommandHasWritePrimitive` because the run-state carve-out
+// below must disqualify on exactly the same set: a carve-out that knows about
+// fewer primitives than the write check is a carve-out that exempts a write.
+//
+// The OVERWRITE tools name their destination in a way no generic operand scan
+// sees (`dd of=`, `install`/`rsync`'s last operand, `tar -C`), and they must be
+// the command rather than an argument — `npm install` is not a write.
+//
+// The COMPRESSORS were in no verb set at all, which is the same shape of gap
+// one layer out: `gzip <file>` deletes the original and leaves `<file>.gz`, so
+// it destroys a file as completely as `rm` does, and nothing here had ever been
+// defeated by it. `-c`/`-k`/`-l`/`-t` send the result elsewhere or nowhere, and
+// the redirect arm judges those.
+function destructiveShellVerb(scanned: string): boolean {
+  const compressor = new RegExp(
+    `${COMMAND_START}${COMMAND_WORD_PREFIX}${REPLACING_COMPRESSOR}\\b([^\\n;|&]*)`,
+  ).exec(scanned);
+  if (compressor && !compressorKeepsInput((compressor[1] || '').split(/\s+/))) return true;
+  const namedOutput = new RegExp(
+    `${COMMAND_START}${COMMAND_WORD_PREFIX}(${NAMED_OUTPUT_TOOL})\\b([^\\n;|&]*)`,
+  ).exec(scanned);
+  if (namedOutput
+    && namedOutputDestinations(namedOutput[1] || '', (namedOutput[2] || '').split(/\s+/).filter(Boolean)).length > 0) {
+    return true;
+  }
+  return new RegExp(`${VERB_ANCHOR}${COMMAND_WORD_PREFIX}${DESTRUCTIVE_VERB}\\b`).test(scanned)
+    || new RegExp(`${COMMAND_START}${COMMAND_WORD_PREFIX}${OVERWRITE_TOOL}\\b`).test(scanned)
+    || new RegExp(`${COMMAND_START}${COMMAND_WORD_PREFIX}dd\\b[^\\n;|&]*\\bof=(?!\\/dev\\/null\\b)`).test(scanned)
+    // Only an EXTRACT writes; `tar -c` reads the tree into an archive.
+    || new RegExp(`${COMMAND_START}${COMMAND_WORD_PREFIX}tar\\b[^\\n;|&]*\\s-(?:-extract|[a-zA-Z]*x)`).test(scanned);
+}
+
 // A nested shell body (`bash -c '…'`, `sh -lc "…"`) IS a command: its quoted
-// text must keep participating in the write-primitive scan below.
-const NESTED_SHELL_EXEC_RE = /\b(?:ba|z|da|k)?sh\b[^\n;|&]*\s-[a-zA-Z]*c\b/;
+// text must keep participating in the write-primitive scan below. `fish` was
+// missing, so `fish -c 'rm <record>'` had its body stripped as data.
+const NESTED_SHELL_EXEC_RE = new RegExp(String.raw`\b${SHELL_NAME}\b(?:\\\n|[^\n;|&])*\s-[a-zA-Z]*c\b`);
 
 // Quoted spans are DATA to the outer shell: `awk '{ if (length > m) … }'`,
 // `echo "usage: cmd > out"`, and grep patterns must not read as redirects or
@@ -138,12 +370,12 @@ export function shellCommandHasWritePrimitive(command: string): boolean {
     || /\btee\b/.test(scanned)
     || /\bcat\b[\s\S]*<</.test(scanned)
     // Interpreter eval bodies live INSIDE quotes — scan the raw command.
-    || INTERPRETER_EVAL_WRITE_RE.test(command)
-    || sedInPlaceFlag(scanned)
+    || interpreterEvalWrite(command)
+    || inPlaceEditFlag(scanned)
     // mkdir creates no file content and carries no implementation ownership.
     // Treating it as a source write rejects foreground architect scaffolding in
     // Devin Local. Destructive/copying/content primitives remain gated.
-    || /(?:^|[\s;&|])(?:[^\s;&|]*\/)?(?:rm|mv|cp|ln|touch|truncate)\b/.test(scanned)
+    || destructiveShellVerb(scanned)
     || /(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(scanned);
 }
 
@@ -173,28 +405,68 @@ export function commandAppearsToWriteBuildArtifact(command: unknown): boolean {
 // through the Write tool so plan-content validation still runs.
 const RUN_STATE_TARGET_RE = /^(?:\.\/)?\.traffic-one\/(?:digests|fix-cycles|runs)\/|\/\.traffic-one\/(?:digests|fix-cycles|runs)\//;
 
+interface HeredocSpan {
+  /** First index of the body (the newline that ends the operator line). */
+  bodyStart: number;
+  /** One past the last body index (the newline before the terminator word). */
+  bodyEnd: number;
+  /** Was this heredoc fed to an interpreter or a shell, i.e. is it CODE? */
+  interpreterRead: boolean;
+  /** Did the body run to the end of the command without its terminator? */
+  unterminated: boolean;
+}
+
+/**
+ * Every `<<TERM … TERM` region of a command, with the one distinction the
+ * detectors need: whether the READER is an interpreter.
+ *
+ * Walked once here so `stripHeredocBodies`, `heredocBodies` and the eval-body
+ * scan cannot disagree about where a body starts and ends.
+ */
+function heredocSpans(command: string): HeredocSpan[] {
+  const heredocRe = new RegExp(HEREDOC_OPERATOR_SOURCE, 'g');
+  const spans: HeredocSpan[] = [];
+  let cursor = 0;
+  for (let m = heredocRe.exec(command); m; m = heredocRe.exec(command)) {
+    if (m.index < cursor) continue; // operator text inside an already-walked body
+    const term = m[1] || m[2] || m[3] || '';
+    const operatorEnd = m.index + m[0].length;
+    const bodyStart = command.indexOf('\n', operatorEnd);
+    if (bodyStart === -1) break; // operator with no body at all
+    const interpreterRead = heredocReaderIsInterpreter(command, operatorEnd);
+    const termRe = new RegExp(`\\n[\\t ]*${term}[\\t ]*(?=\\n|$)`);
+    const terminator = termRe.exec(command.slice(bodyStart));
+    const bodyEnd = terminator ? bodyStart + terminator.index : command.length;
+    spans.push({ bodyStart, bodyEnd, interpreterRead, unterminated: !terminator });
+    if (!terminator) break;
+    cursor = bodyEnd;
+    heredocRe.lastIndex = cursor;
+  }
+  return spans;
+}
+
 // Heredoc BODIES are quoted data, not commands. A reviewer digest whose text
 // merely cites `sed -i`, `rm`, or an output redirect must not void the
 // run-state carve-out (observed 8c-codex: the digest heredoc was denied because
 // a finding mentioned `sed -i`). Remove each `<<TERM … TERM` body before the
 // disqualifier/target scans; the redirect that feeds the heredoc target
 // (`cat > path <<'EOF'`) precedes the operator, so it survives the strip.
+//
+// UNLESS an interpreter or a shell is reading it, in which case the body is the
+// command and removing it is a fail-open. Stripping unconditionally is why
+// `bash <<'SH' … node -e "…unlinkSync(<record>)" … SH` reported a write
+// primitive with ZERO write targets — the primitive came from the raw text and
+// the target scan ran on the stripped copy — and why `python3 - <<'PY' …
+// os.unlink(<record>) … PY` reported no write at all. The reader test is
+// PER-HEREDOC, so a digest that quotes `python3 <<'PY'` in its findings stays
+// data.
 function stripHeredocBodies(command: string): string {
-  const heredocRe = /<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
   let result = '';
   let cursor = 0;
-  for (let m = heredocRe.exec(command); m; m = heredocRe.exec(command)) {
-    if (m.index < cursor) continue; // operator text inside an already-stripped body
-    const term = m[1] || m[2] || m[3] || '';
-    const operatorEnd = m.index + m[0].length;
-    const bodyStart = command.indexOf('\n', operatorEnd);
-    if (bodyStart === -1) { result += command.slice(cursor, operatorEnd); cursor = command.length; break; }
-    result += command.slice(cursor, bodyStart);
-    const termRe = new RegExp(`\\n[\\t ]*${term}[\\t ]*(?=\\n|$)`);
-    const terminator = termRe.exec(command.slice(bodyStart));
-    if (!terminator) { cursor = command.length; break; } // unterminated: body runs to the end
-    cursor = bodyStart + terminator.index; // resume at the newline before TERM
-    heredocRe.lastIndex = cursor;
+  for (const span of heredocSpans(command)) {
+    if (span.interpreterRead) continue;
+    result += command.slice(cursor, span.bodyStart);
+    cursor = span.unterminated ? command.length : span.bodyEnd;
   }
   return result + command.slice(cursor);
 }
@@ -213,32 +485,17 @@ function stripHeredocBodies(command: string): string {
  */
 export function heredocBodies(command: unknown): string {
   if (typeof command !== 'string' || !command.trim()) return '';
-  const heredocRe = /<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
-  const bodies: string[] = [];
-  let cursor = 0;
-  for (let m = heredocRe.exec(command); m; m = heredocRe.exec(command)) {
-    if (m.index < cursor) continue; // operator text inside an already-collected body
-    const term = m[1] || m[2] || m[3] || '';
-    const operatorEnd = m.index + m[0].length;
-    const bodyStart = command.indexOf('\n', operatorEnd);
-    if (bodyStart === -1) break;
-    const rest = command.slice(bodyStart + 1);
-    const termRe = new RegExp(`\\n[\\t ]*${term}[\\t ]*(?=\\n|$)`);
-    const terminator = termRe.exec(command.slice(bodyStart));
-    if (!terminator) { bodies.push(rest); break; } // unterminated: body runs to the end
-    bodies.push(command.slice(bodyStart + 1, bodyStart + terminator.index));
-    cursor = bodyStart + terminator.index;
-    heredocRe.lastIndex = cursor;
-  }
-  return bodies.join('\n');
+  return heredocSpans(command)
+    .map((span) => command.slice(span.bodyStart + 1, span.bodyEnd))
+    .join('\n');
 }
 
 export function shellWriteTargetsStateDir(command: unknown): boolean {
   if (typeof command !== 'string' || !command.trim()) return false;
   const scanned = stripHeredocBodies(command);
-  if (INTERPRETER_EVAL_WRITE_RE.test(scanned)) return false;
-  if (sedInPlaceFlag(scanned)) return false;
-  if (/(?:^|[\s;&|])(?:[^\s;&|]*\/)?(?:rm|mv|cp|ln|touch|truncate)\b/.test(scanned)) return false;
+  if (interpreterEvalWrite(scanned)) return false;
+  if (inPlaceEditFlag(scanned)) return false;
+  if (destructiveShellVerb(scanned)) return false;
   if (/(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(scanned)) return false;
   const targets: string[] = [];
   const redirectRe = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)((?:"[^"]+")|(?:'[^']+')|[^\s;&|<>]+)/g;
@@ -255,26 +512,63 @@ export function shellWriteTargetsStateDir(command: unknown): boolean {
 /**
  * Exact-ish Traffic One artifact targets named by a mutating shell command.
  * Heredoc bodies are stripped first so prose inside a digest cannot invent
- * extra targets. The caller still applies the normal project-root and role
+ * extra targets — except when an interpreter or a shell is READING the heredoc,
+ * because then the body is the command and stripping it hid the only place the
+ * path was written. Both the write question and the target scan run on the same
+ * text for that reason: asking one on the raw command and the other on the
+ * stripped copy is what produced `prim=true, targets=[]` on a heredoc-fed
+ * `unlinkSync`. The caller still applies the normal project-root and role
  * checks; this helper only makes redirect/tee/interpreter/sed/rm/cp paths
  * visible to the same pre-write gate used by Write/Edit/apply_patch.
  */
+/**
+ * Which Traffic One path literals are per-target WRITE PATHS.
+ *
+ * THE EXTRACTION IS SHARED AND THIS FILTER IS NOT, which is the honest version
+ * of a claim `sidecar-shell.ts` used to make for both. Finding the literals is
+ * a fact about text (`trafficOnePathLiterals`, one character class, one place
+ * to fix); deciding which of them this function may hand the gate is a fact
+ * about what its OUTPUT is for. Its output is a list of paths the gate runs
+ * per-target ownership checks on, so a literal that names no file — the
+ * `.traffic-one/runs` DIRECTORY, `.traffic-one` itself — belongs to the other
+ * judgement, which enumerates what lives under it and names those files
+ * instead. A peer measured the divergence and was right that it existed; it is
+ * a division of labour rather than a drift, and it is written down here now
+ * instead of being implied by a second regex.
+ *
+ * `fix-cycles/` is included so the orchestrator's verbatim transcription of the
+ * reviewer's findings is a visible write target: the finding-satisfiability
+ * gate must judge it. It adds no ownership deny — fix-cycle notes match no
+ * run-artifact/sidecar contract.
+ */
+const VISIBLE_WRITE_TARGET_RE =
+  /^(?:\/[^\s]*\/)?(?:\.\/)?\.traffic-one\/(?:(?:runs|digests|reports|fix-cycles)\/.+|deployments\.jsonl)$/;
+
+/**
+ * NORMALISED BEFORE EXTRACTION, and the normalisation is shared rather than
+ * mirrored. `withShellValuesResolved` is STAGE 4 of the pipeline contract (see
+ * shell-vocabulary.ts) — the one value model that resolves bindings and
+ * expansions TOGETHER — and it is the layer that answers for
+ * `rm -f "${F:-<sidecar>}"`, which erases a named `run.json` (ground-truthed)
+ * and which this judgement dropped for a different reason than its sibling did:
+ * the extractor yielded `-<sidecar>` and the anchor below rejects a leading `-`.
+ * Two judgements discarding the same live path for two unrelated reasons is the
+ * signature this lane keeps finding, and the answer is to fix the layer BELOW
+ * both of them rather than to teach each one a spelling.
+ *
+ * Round 8 called `withParameterDefaults` here, which replaced an expansion by
+ * its default WORD and therefore lost the name before any binding was read;
+ * `F=<sidecar>; rm -f "${F:-nosuch}"` reached this function as `rm -f nosuch`.
+ * The text this scan extracts from is now the text the shell would have run.
+ */
 export function shellTrafficOneWriteTargets(command: unknown): string[] {
   if (typeof command !== 'string' || !command.trim()) return [];
-  const scanned = stripHeredocBodies(command);
+  const scanned = withShellValuesResolved(stripHeredocBodies(command));
   if (!shellCommandHasWritePrimitive(scanned)) return [];
   const targets: string[] = [];
-  const targetRe =
-    // `fix-cycles/` is here so the orchestrator's verbatim transcription of the
-    // reviewer's findings is a visible write target, not an invisible one: the
-    // finding-satisfiability gate must judge it. It adds no ownership deny —
-    // fix-cycle notes match no run-artifact/sidecar contract.
-    /(?:^|[\s"'`=(:,\[])((?:\/[^\s"'`;|&<>,)\]}]*\/)?(?:\.\/)?\.traffic-one\/(?:(?:runs|digests|reports|fix-cycles)\/[^\s"'`;|&<>,)\]}]+|deployments\.jsonl))/g;
-  for (let match = targetRe.exec(scanned); match; match = targetRe.exec(scanned)) {
-    const target = (match[1] || '')
-      .replace(/["'`,;]+$/, '')
-      .replace(/\\/g, '/');
-    if (target) targets.push(target);
+  for (const literal of trafficOnePathLiterals(scanned)) {
+    const target = literal.replace(/["'`,;]+$/, '').replace(/\\/g, '/');
+    if (VISIBLE_WRITE_TARGET_RE.test(target)) targets.push(target);
   }
   return [...new Set(targets)];
 }

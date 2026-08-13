@@ -14,6 +14,7 @@ import {
   type CompiledI18nContractV1,
 } from './architecture-contract';
 import { lexicalMask } from './collapsed-source';
+import { readRegularFileOrThrow } from './bounded-read';
 
 export type I18nEnforcementFindingId =
   | 'STRUCT_I18N_RUNTIME'
@@ -644,7 +645,7 @@ export function projectDeclaresI18nRuntime(
   }
   for (const rel of manifests) {
     try {
-      const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, rel), 'utf8')) as Record<string, unknown>;
+      const manifest = JSON.parse(readRegularFileOrThrow(path.join(projectRoot, rel))) as Record<string, unknown>;
       for (const field of ['dependencies', 'devDependencies']) {
         const deps = manifest[field];
         if (deps && typeof deps === 'object' && !Array.isArray(deps)
@@ -711,7 +712,7 @@ function catalogEntries(
   try {
     text = Object.prototype.hasOwnProperty.call(contentOverrides || {}, catalog.path)
       ? contentOverrides![catalog.path]!
-      : fs.readFileSync(path.join(projectRoot, catalog.path), 'utf8');
+      : readRegularFileOrThrow(path.join(projectRoot, catalog.path));
   } catch {
     return null;
   }
@@ -793,7 +794,7 @@ function pluralFamilySatisfied(entries: Map<string, string>, logicalKey: string)
 
 function inferredJsonNamespaces(projectRoot: string, relative: string): string[] {
   try {
-    const value = JSON.parse(fs.readFileSync(path.join(projectRoot, relative), 'utf8')) as unknown;
+    const value = JSON.parse(readRegularFileOrThrow(path.join(projectRoot, relative))) as unknown;
     if (!value || typeof value !== 'object' || Array.isArray(value)) return ['common'];
     const entries = Object.entries(value as Record<string, unknown>).filter(([key]) => !key.startsWith('@'));
     const nested = entries
@@ -874,7 +875,7 @@ export function detectExistingI18nContract(
     }
     if (/Localizable\.xcstrings$/i.test(relative)) {
       try {
-        const raw = JSON.parse(fs.readFileSync(path.join(projectRoot, relative), 'utf8')) as {
+        const raw = JSON.parse(readRegularFileOrThrow(path.join(projectRoot, relative))) as {
           sourceLanguage?: string;
           strings?: Record<string, { localizations?: Record<string, unknown> }>;
         };

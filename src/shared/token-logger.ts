@@ -20,6 +20,7 @@ import {
 } from './state';
 
 import { LOG_REL_PATH, TOKEN_LOG_ENV_FLAG } from '../config/token-logger';
+import { toolResultContainer } from './tool-result';
 
 type Rec = Record<string, unknown>;
 
@@ -70,12 +71,29 @@ function readPhase(cwd: string, payload: Rec | null = null): Phase {
 
 // Append one entry. Safe to call from any hook; silently no-ops when disabled or
 // on write failure. Never throws.
-export function logToolUse(cwd: string, payloadInput: unknown): void {
+//
+// `canonicalToolInput` is the adapter-parsed input (`parsedToolInput(ctx.input.tool)`)
+// for hosts that do not put one in the payload — Cursor carries the command on the
+// parsed tool and nowhere in `raw`, so without it every Cursor row logged
+// `inputBytes: 0`. The payload's own field still wins where it exists, so the
+// hosts that had a number keep exactly the number they had.
+export function logToolUse(cwd: string, payloadInput: unknown, canonicalToolInput?: unknown): void {
   if (!isEnabled()) return;
   if (!payloadInput || typeof payloadInput !== 'object') return;
   const payload = payloadInput as Rec;
-  const toolInput = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
-  const toolResp = payload.tool_response || payload.tool_result;
+  const payloadToolInput = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : null;
+  const fallbackToolInput = canonicalToolInput && typeof canonicalToolInput === 'object' ? canonicalToolInput : null;
+  const toolInput = payloadToolInput ?? fallbackToolInput ?? {};
+  // The STRICT reader, because this is byte ACCOUNTING: `toolResultContainer`
+  // returns null when no host in the known space named a result container, and
+  // null must log 0 rather than fall back to the payload — the lenient reader
+  // would count the tool INPUT into the output total, which is worse than a zero
+  // because it looks like a measurement. Reading `tool_response || tool_result`
+  // was two of the four wrapper spellings and no container at all, so measured on
+  // one payload from each of the five host families only Claude's produced a
+  // non-zero `outputBytes`; the other four logged a tool result of size 0 and an
+  // `estTokens` short by the whole result.
+  const toolResp = toolResultContainer(payload);
   const inputBytes = readSizeFromValue(toolInput);
   const outputBytes = readSizeFromValue(toolResp);
   const phase = readPhase(cwd, payload);

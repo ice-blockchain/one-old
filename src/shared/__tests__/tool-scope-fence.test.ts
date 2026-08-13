@@ -117,20 +117,43 @@ function countStateReads(body: () => void): number {
   // `import * as fs` yields an ESM namespace whose members are getter-only, so
   // the counter is installed on the CJS module object the runtime code actually
   // calls through.
-  const fsModule = createRequire(__filename)('fs') as { readFileSync: typeof fs.readFileSync };
-  const real = fsModule.readFileSync;
+  //
+  // THE OPEN IS COUNTED AS WELL AS THE READ, and counting only the read made this
+  // instrument BLIND — measured, in the direction that reports a clean lower
+  // number. Every state read now goes through shared/bounded-read.ts, which opens
+  // the path (O_RDONLY|O_NONBLOCK), asks `fstat` whether the DESCRIPTOR is a
+  // regular file, and only then calls `readFileSync(fd)` — an FD, not a path — so
+  // a spy keyed on a string argument saw ZERO reads for a fixture that reads the
+  // state file twice. The equality this test asserts survived it (0 === 0); only
+  // the `plain > 0` fixture guard noticed, which is the whole reason it is there.
+  // The other three read-counting spies in this repo (retention.test.ts and both
+  // plan-migration suites) already patch both, for the same reason.
+  const fsModule = createRequire(__filename)('fs') as {
+    openSync: typeof fs.openSync;
+    readFileSync: typeof fs.readFileSync;
+  };
+  const realOpen = fsModule.openSync;
+  const realRead = fsModule.readFileSync;
   let reads = 0;
+  const isState = (file: unknown): boolean => typeof file === 'string' && file.endsWith('.one.json');
+  // No double counting: a bounded read is one `openSync(path)` plus one
+  // `readFileSync(fd)`, and only the first has a string to match.
+  fsModule.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+    if (isState(args[0])) reads += 1;
+    return (realOpen as (...a: unknown[]) => number)(...args);
+  }) as typeof fs.openSync;
   fsModule.readFileSync = ((
     file: Parameters<typeof fs.readFileSync>[0],
     options?: Parameters<typeof fs.readFileSync>[1],
   ) => {
-    if (typeof file === 'string' && file.endsWith('.one.json')) reads += 1;
-    return (real as (...args: unknown[]) => unknown)(file, options);
+    if (isState(file)) reads += 1;
+    return (realRead as (...args: unknown[]) => unknown)(file, options);
   }) as typeof fs.readFileSync;
   try {
     body();
   } finally {
-    fsModule.readFileSync = real;
+    fsModule.openSync = realOpen;
+    fsModule.readFileSync = realRead;
   }
   return reads;
 }
@@ -239,6 +262,151 @@ test('a call at the container itself is refused, naming the workspace and its me
   });
 });
 
+// A CONTAINER NESTED IN A CONTAINER, which is reachable rather than exotic:
+// `blockingCommittedMode` returns '' for a directory whose only mode is
+// `workspace`, so registering members inside a directory that is itself a
+// registered member is permitted, and flow.ts's container onboarding carries a
+// `depth` parameter because the nesting is anticipated. Report the inner one
+// with the OUTER's registry and `workspaceAnchoring` finds it in the outer's
+// member list and answers `member` — a workspace root that every gate would
+// then mint a plan, run state and role claims at, which is the exact state
+// `writeWorkspaceMemberRegistry` refuses to create ("a container is not an
+// upgrade of a project").
+//
+// TWO different guards answer this, at two different points in the same walk,
+// and they are pinned SEPARATELY below rather than by one shared assertion —
+// the previous arrangement ran three shapes through one `assert` line, so both
+// guards failed at the same file:line and a regression could not say which door
+// had opened. Each door now has its own test, its own message, and a fixture
+// guard pinning the precondition that routes its shapes to it.
+//
+//   DOOR A — the acceptance clause's `!container` skip, taken when the walk
+//     STOPS at the inner container. It stops there when the inner container
+//     would be returned by the leak test on its own terms, i.e. it owns a
+//     project marker and no enclosing declaration disqualifies it.
+//   DOOR B — `handDownToMember`'s own-registry arm, taken when the walk climbs
+//     PAST the inner container and the outer's redirect hands it back down.
+//     Two ways to force that: the outer declaring package-manager workspaces
+//     (so the inner fails the leak test), or the inner owning no project marker.
+
+/** Everything both doors assert about a container registered inside a container. */
+function nestedContainers(root: string, opts: { outerDeclares: boolean; innerMarker: boolean }): {
+  outer: string; inner: string; app: string;
+} {
+  const outer = path.join(root, 'outer');
+  writeState(outer, { mode: 'workspace', onboardingComplete: true, workspaceMembers: [{ path: 'inner' }] });
+  write(path.join(outer, 'package.json'),
+    `${JSON.stringify(opts.outerDeclares ? { name: 'outer', workspaces: ['inner'] } : { name: 'outer' })}\n`);
+  fs.mkdirSync(path.join(outer, '.git'), { recursive: true });
+  const inner = path.join(outer, 'inner');
+  writeState(inner, { mode: 'workspace', onboardingComplete: true, workspaceMembers: [{ path: 'app' }] });
+  if (opts.innerMarker) write(path.join(inner, 'package.json'), `${JSON.stringify({ name: 'inner' })}\n`);
+  return { outer, inner, app: memberDir(inner, 'app') };
+}
+
+/** The half both doors share: the inner container is answered by ITS OWN registry. */
+function assertInnerAnsweredByItsOwnRegistry(inner: string, app: string, door: string): void {
+  const atInner = resolveToolScope(writeTo(inner, path.join(inner, 'README.md')));
+  assert.equal(atInner.projectRoot, inner,
+    `${door}: the ROOT must not move — retention asks resolveProjectRoot(dir) !== dir and deletes on a yes`);
+  const { reason } = refuse(atInner);
+  assert.ok(reason.includes('app'),
+    `${door}: refused against ITS OWN registry — naming the outer's members would mean the outer answered`);
+
+  // And the fence still works INSIDE it: the inner container owns `app`, so a
+  // write there anchors to `app` with the inner container carried, not the outer.
+  const intoApp = resolveToolScope(writeTo(inner, path.join(app, 'src', 'main.ts')));
+  assert.equal(intoApp.projectRoot, app);
+  assert.equal(intoApp.workspace.kind, 'member');
+  assert.equal(intoApp.workspace.kind === 'member' ? intoApp.workspace.container : '', inner,
+    `${door}: the member belongs to the container that registered it, which is the inner one`);
+  assert.equal(workspaceMemberRefusal(intoApp), null);
+}
+
+test("DOOR A — the acceptance clause's `!container` skip: the walk STOPS at the inner container", () => {
+  withRoot((root) => {
+    const { outer, inner, app } = nestedContainers(root, { outerDeclares: false, innerMarker: true });
+    // FIXTURE GUARD for this door: nothing may disqualify the inner container
+    // from being returned where the walk meets it, or the shape silently
+    // migrates to door B and this test stops measuring its own guard.
+    assert.equal(resolveProjectRootDetailed(inner).workspaceContainer, inner,
+      'FIXTURE the walk must reach the inner container itself, not be handed down to it');
+    assert.equal(fs.existsSync(path.join(inner, 'package.json')), true,
+      'FIXTURE the inner container owns a project marker, which is what lets the walk stop there');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(outer, 'package.json'), 'utf8')).workspaces, undefined,
+      'FIXTURE the outer declares no package-manager workspaces, so the inner survives the leak test');
+
+    const atInner = resolveToolScope(writeTo(inner, path.join(inner, 'README.md')));
+    assert.notEqual(atInner.workspace.kind, 'member',
+      'the `!container` skip is the guard here: without it the acceptance clause reports the inner container'
+      + ' with the OUTER registry, workspaceAnchoring finds it in the outer\'s member list, and every gate'
+      + ' mints a plan, run state and role claims at a workspace root');
+    assertInnerAnsweredByItsOwnRegistry(inner, app, 'door A');
+  });
+});
+
+const HANDED_DOWN_SHAPES = [
+  { id: 'outer declares package-manager workspaces', outerDeclares: true, innerMarker: true },
+  { id: 'inner owns no project marker', outerDeclares: false, innerMarker: false },
+] as const;
+
+for (const shape of HANDED_DOWN_SHAPES) {
+  test(`DOOR B — handDownToMember's own-registry arm: the walk climbs PAST the inner container (${shape.id})`, () => {
+    withRoot((root) => {
+      const { inner, app } = nestedContainers(root, shape);
+      // FIXTURE GUARD for this door: the walk must NOT be able to stop at the
+      // inner container, so the outer's redirect is the only thing that can
+      // name it — which is the arm this test exists for.
+      const disqualified = shape.outerDeclares || !fs.existsSync(path.join(inner, 'package.json'));
+      assert.equal(disqualified, true,
+        'FIXTURE this shape must prevent the walk from stopping at the inner container');
+
+      const atInner = resolveToolScope(writeTo(inner, path.join(inner, 'README.md')));
+      assert.notEqual(atInner.workspace.kind, 'member',
+        'the own-registry arm is the guard here: without it the hand-down reports the inner container with'
+        + ' the OUTER registry, and the fence answers `member` for a workspace root');
+      assertInnerAnsweredByItsOwnRegistry(inner, app, `door B (${shape.id})`);
+    });
+  });
+}
+
+// The hand-down asks `committedProjectState` and NOT `readWorkspaceMemberRegistry`,
+// and the difference is visible on exactly one input: a member whose own
+// `.one.json` is ILLEGIBLE. Pinned because the argument for the choice was
+// written down at length and held to account by nothing — swapping the two reads
+// left every test in this tree green, so the reasoning was decoration.
+//
+// With `committedProjectState`, an unreadable member state answers "not a
+// container" and the member is handed down normally, carrying the container that
+// registered it. With the registry reader it answers `illegible`, which is not
+// `none`, so the member would be reported as a container in its own right and
+// every call inside it refused — a new deny for a merge conflict in a member's
+// state file, which is a routine event.
+test('a member whose own state is ILLEGIBLE is still a member, not a container nobody can write in', () => {
+  withRoot((root) => {
+    const outer = path.join(root, 'outer');
+    writeState(outer, { mode: 'workspace', onboardingComplete: true, workspaceMembers: [{ path: 'inner' }] });
+    write(path.join(outer, 'package.json'), `${JSON.stringify({ name: 'outer', workspaces: ['inner'] })}\n`);
+    fs.mkdirSync(path.join(outer, '.git'), { recursive: true });
+    const inner = memberDir(outer, 'inner');
+    write(path.join(inner, '.traffic-one', '.one.json'), '{ "mode": "new-pro\n');
+
+    const detailed = resolveProjectRootDetailed(inner);
+    assert.equal(detailed.root, inner, 'the root is the member, as it is for any other member');
+    assert.equal(detailed.workspaceContainer, outer,
+      'and the container carried is the one that REGISTERED it — reading the registry here instead would'
+      + ' report the member as its own container on the strength of a file nobody could read');
+    assert.equal(detailed.workspaceRegistry?.kind, 'members',
+      'the registry carried is the outer\'s member list, never an `illegible` verdict about the member itself');
+
+    const scope = resolveToolScope(writeTo(inner, path.join(inner, 'src', 'main.ts')));
+    assert.equal(scope.projectRoot, inner);
+    assert.equal(scope.workspace.kind, 'member');
+    assert.equal(workspaceMemberRefusal(scope), null,
+      'a torn `.one.json` in a member must not refuse every write inside it');
+  });
+});
+
 test('a target in an UNREGISTERED subdirectory is refused with the same shape', () => {
   withRoot((root) => {
     const ws = container(root, [{ path: 'api' }]);
@@ -262,6 +430,149 @@ test('a call spanning two members is refused, counting and naming both', () => {
     assert.match(reason, /spans 2 members/);
     assert.ok(reason.includes('api') && reason.includes('web'), 'both members are named');
     assert.match(reason, /Split it into one call per member/);
+  });
+});
+
+// ── OVERLAPPING ENTRIES, OVER THE WHOLE MATRIX ───────────────────────────────
+//
+// A workspace may register both a directory and a subdirectory of it, and the
+// deeper entry wins for anything inside it. One fixture is not enough to say
+// that, and the single fixture that used to stand here is the reason this is a
+// matrix now: it wrote `workspaces: ['apps']` at the container, and that one key
+// is what let the resolution walk climb past the shallower member after the
+// deeper-member guard declined. Delete the key and the same test shape becomes
+// a REGRESSED one — the walk stopped at the shallower member, and the two exits
+// below the guard both answer with `container: ''`, so `scope.workspace.kind`
+// came back `'none'` and the fence could not refuse anything:
+//
+//   overlapping entry  root   container  kind        cross-member span
+//   absent             apps   ws         unresolved  REFUSED
+//   present            apps   ''         none        ALLOWED
+//
+// Over the four axes below, the guard as first written moved 6 of 12 rows: 3
+// fixed and 3 regressed. Each cell therefore asserts BOTH halves — the root
+// (attribution: which member owns the plan, the run state and the role claims)
+// and the fence (whether a genuinely cross-member call is refused) — because the
+// defect was to get one right while silently dropping the other.
+//
+// THE AXES. `memberDeclares` implies `memberMarker`, since a `workspaces` array
+// lives inside package.json; that is what makes 2 x 3 x 2 twelve rows and not
+// sixteen. Every row registers `apps`, `apps/web` and `other`, onboards `apps`
+// and `other`, and asks about a file inside `apps/web`.
+const OVERLAP_SHAPES = [false, true].flatMap((containerDeclares) => (
+  ([[false, false], [true, false], [true, true]] as const).flatMap(([memberMarker, memberDeclares]) => (
+    [false, true].map((deeperOnboarded) => ({
+      label: `container${containerDeclares ? '' : ' does not'} declare`
+        + `, member ${memberMarker ? 'owns a marker' : 'owns none'}${memberDeclares ? ' and declares' : ''}`
+        + `, deeper member ${deeperOnboarded ? 'onboarded' : 'stateless'}`,
+      containerDeclares,
+      memberMarker,
+      memberDeclares,
+      deeperOnboarded,
+    }))
+  ))
+));
+
+test('overlapping entries: every shape anchors to the deeper member AND keeps the fence armed', () => {
+  assert.equal(OVERLAP_SHAPES.length, 12, 'the matrix must still be the full 12 shapes');
+  for (const shape of OVERLAP_SHAPES) {
+    withRoot((root) => {
+      const ws = container(root, [{ path: 'apps' }, { path: 'apps/web' }, { path: 'other' }]);
+      write(path.join(ws, 'package.json'),
+        `${JSON.stringify(shape.containerDeclares ? { name: 'ws', workspaces: ['apps'] } : { name: 'ws' })}\n`);
+      fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+
+      const apps = path.join(ws, 'apps');
+      if (shape.memberMarker) {
+        write(path.join(apps, 'package.json'),
+          `${JSON.stringify(shape.memberDeclares ? { name: 'apps', workspaces: ['web'] } : { name: 'apps' })}\n`);
+      }
+      write(path.join(apps, 'src', 'main.ts'), 'export const boot = (): number => 0;\n');
+      writeState(apps, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+
+      const web = memberDir(apps, 'web');
+      if (shape.deeperOnboarded) writeState(web, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+      const other = memberDir(ws, 'other');
+      writeState(other, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+
+      // ATTRIBUTION. Asked of the resolver directly as well as through the tool
+      // scope, because the 16 hook entry points that call
+      // `resolveProjectRoot(ctx.cwd, …)` — session start, prompt submit, the
+      // model gate, subagent bind, graphify, page-speed, the onboarding-gate
+      // stop, doctor, the cleanup and reset runners — never build a scope at all,
+      // and it is their answer the regression moved.
+      const detailed = resolveProjectRootDetailed(path.join(web, 'src'));
+      assert.equal(detailed.root, web, `${shape.label}: the deeper member owns work inside it`);
+      assert.equal(detailed.workspaceContainer, ws,
+        `${shape.label}: the container must be carried, or every consumer of the fence goes quiet`);
+      assert.equal(detailed.workspaceRegistry?.kind, 'members', shape.label);
+
+      const intoWeb = resolveToolScope(writeTo(ws, path.join(web, 'src', 'main.ts')));
+      assert.equal(intoWeb.projectRoot, web, shape.label);
+      assert.equal(intoWeb.workspace.kind, 'member', shape.label);
+      assert.equal(intoWeb.workspace.kind === 'member' ? intoWeb.workspace.container : '', ws, shape.label);
+      assert.equal(workspaceMemberRefusal(intoWeb), null, `${shape.label}: a single-member call is not refused`);
+
+      const intoApps = resolveToolScope(writeTo(ws, path.join(apps, 'src', 'main.ts')));
+      assert.equal(intoApps.projectRoot, apps,
+        `${shape.label}: and the shallower member still owns everything else under it`);
+
+      // THE FENCE. Two genuinely different members, in both target orders — the
+      // resolver anchors on the LAST target, so a one-order assertion passes
+      // while half the population is unfenced.
+      for (const targets of [
+        [path.join(web, 'src', 'main.ts'), path.join(other, 'src', 'main.ts')],
+        [path.join(other, 'src', 'main.ts'), path.join(web, 'src', 'main.ts')],
+      ]) {
+        const { reason } = refuse(resolveToolScope(ctx(ws, 'Write', 'file-write', { paths: targets })));
+        assert.match(reason, /spans 2 members/, `${shape.label}: ${path.basename(path.dirname(targets[1]!))} last`);
+      }
+
+      // And the deepest-match rule the registry side implements: reverse the
+      // scan and both targets collapse onto the shallower member, so a call
+      // crossing them looks single-member and is allowed.
+      const { reason } = refuse(resolveToolScope(ctx(ws, 'Write', 'file-write', {
+        paths: [path.join(apps, 'src', 'main.ts'), path.join(web, 'src', 'main.ts')],
+      })));
+      assert.match(reason, /spans 2 members/, shape.label);
+    });
+  }
+});
+
+// The COUNTING side of the identity rule the matcher applies. Two spellings of
+// one directory are one member, so a call touching both spans one member and is
+// not refused — and the count in the refusal text, when there is one, is a count
+// of directories rather than of strings.
+test('two spellings of ONE member directory are one member, not a span of two', () => {
+  withRoot((root) => {
+    const probe = path.join(root, 'CaseProbe');
+    fs.mkdirSync(probe, { recursive: true });
+    const folds = fs.existsSync(path.join(root, 'caseprobe'));
+    fs.rmSync(probe, { recursive: true, force: true });
+
+    const ws = container(root, [{ path: 'api' }, { path: 'web' }]);
+    const api = memberDir(ws, 'api');
+    const web = memberDir(ws, 'web');
+    const spanOneDir = ctx(ws, 'Write', 'file-write', {
+      paths: [path.join(api, 'src', 'main.ts'), path.join(ws, 'Api', 'src', 'other.ts')],
+    });
+    if (folds) {
+      const scope = resolveToolScope(spanOneDir);
+      assert.equal(scope.workspace.kind, 'member',
+        'both targets are in one directory on this volume, so the call names exactly one member');
+      assert.equal(workspaceMemberRefusal(scope), null,
+        'the fence counted two spellings as two members and refused a single-member call');
+    } else {
+      // On a case-sensitive volume `<ws>/Api` really is a second, unregistered
+      // directory, and the refusal is the correct answer — the same one rule.
+      const { reason } = refuse(resolveToolScope(spanOneDir));
+      assert.match(reason, /not part of any member/);
+    }
+    // And two genuinely different members are still two, whatever the volume does.
+    const { reason } = refuse(resolveToolScope(ctx(ws, 'Write', 'file-write', {
+      paths: [path.join(api, 'src', 'main.ts'), path.join(web, 'src', 'main.ts')],
+    })));
+    assert.match(reason, /spans 2 members/);
   });
 });
 

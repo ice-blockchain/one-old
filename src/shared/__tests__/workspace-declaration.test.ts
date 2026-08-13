@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -156,6 +157,84 @@ test('workspace declaration: an UNREADABLE declaration file is opaque, and is st
   });
 });
 
+// ── the two shapes the `catch` above could never see ─────────────────────────
+// The row above plants a DIRECTORY, which throws immediately and therefore
+// exercises the catch. A FIFO and a device node do not throw: they never
+// return, so the catch that reports them "unreadable" is unreachable prose.
+//
+// DRIVEN AT THIS CALL SITE before the bound (.tmp/bounded3/p1-before.txt, one
+// child per shape under a parent `spawnSync({timeout: 8000, killSignal:
+// 'SIGKILL'})`, load 2.54 of 10 cpus): a FIFO killed at 8 012 ms, a symlink to
+// `/dev/zero` killed at 8 057 ms, a regular file answering in 0 ms. After:
+// both answer `opaque` in 0 ms.
+//
+// `pnpm-workspace.yaml` is a TRACKED path — git records a committed symlink as
+// mode 120000 — so the hostile object arrives on an ordinary clone, with no
+// local process, and hook/paths.ts:149 reaches this function on the resolver
+// every hook entry runs. That is why these rows are worth a child process each.
+//
+// IN A CHILD, and killed with SIGKILL rather than spawnSync's default SIGTERM.
+// A blocking open stops this runner's own timer with it and `npm test` passes
+// no `--test-timeout`, so an in-process row would hang the WHOLE SUITE if the
+// bound regressed. SIGTERM happens to interrupt `open(2)` on a FIFO on this
+// platform; that is a platform assumption the row does not need, and a kill
+// that fails leaves the same wedge these rows exist to prevent.
+function declarationInChild(root: string, label: string): { kind: string; why?: string } {
+  const driver = path.join(root, 'drive-declaration.cjs');
+  fs.writeFileSync(driver, [
+    'const mod = require(process.argv[2]);',
+    'process.stdout.write(JSON.stringify(mod.readWorkspaceDeclaration(process.argv[3])));',
+  ].join('\n'), 'utf8');
+
+  const run = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', driver, path.join(__dirname, '..', 'hook', 'workspace-declaration.ts'), root],
+    { encoding: 'utf8', timeout: 20_000, killSignal: 'SIGKILL' },
+  );
+  assert.equal(run.signal, null,
+    `${label}: readWorkspaceDeclaration must RETURN rather than block on the open. Killed by signal means the `
+    + `bound is gone, and this is the resolver every hook entry runs. stderr: ${run.stderr || ''}`);
+  assert.equal(run.status, 0, `${label}: ${run.stderr || ''}`);
+  return JSON.parse(run.stdout) as { kind: string; why?: string };
+}
+
+test('workspace declaration: a FIFO at pnpm-workspace.yaml is opaque in BOUNDED time — SIGKILLed at 8 012 ms before', () => {
+  if (process.platform === 'win32') return;
+  withRoot((root) => {
+    write(path.join(root, 'package.json'), '{"name":"container","private":true}\n');
+    const file = path.join(root, 'pnpm-workspace.yaml');
+    try {
+      execFileSync('mkfifo', [file], { stdio: 'ignore' });
+    } catch {
+      return; // no mkfifo: the shape is unreachable here, not unpinned
+    }
+    assert.equal(fs.lstatSync(file).isFIFO(), true, 'FIXTURE the planted entry must really be a FIFO');
+
+    const declaration = declarationInChild(root, 'FIFO');
+    assert.equal(declaration.kind, 'opaque',
+      'presence, unopened — never `none`, which would mean the container declares nothing and hand the '
+      + 'deletion side a licence it must not have');
+    assert.match(declaration.why ?? '', /pnpm-workspace\.yaml is unreadable \(not-a-regular-file\)/,
+      'and the reason NAMES the shape, so an operator can tell our refusal from the filesystem\'s');
+    assert.equal(fs.lstatSync(file).isFIFO(), true, 'the FIFO survives the read that refused it');
+  });
+});
+
+test('workspace declaration: a committed symlink to /dev/zero is opaque in BOUNDED time — SIGKILLed at 8 057 ms before', () => {
+  if (process.platform === 'win32' || !fs.existsSync('/dev/zero')) return;
+  withRoot((root) => {
+    write(path.join(root, 'package.json'), '{"name":"container","private":true}\n');
+    const file = path.join(root, 'pnpm-workspace.yaml');
+    fs.symlinkSync('/dev/zero', file);
+    assert.equal(fs.statSync(file).isCharacterDevice(), true,
+      'FIXTURE the link must really resolve to a character device');
+
+    const declaration = declarationInChild(root, '/dev/zero link');
+    assert.equal(declaration.kind, 'opaque');
+    assert.match(declaration.why ?? '', /not-a-regular-file/);
+  });
+});
+
 test('workspace declaration: no declaration at all is `none`, which is a different fact from opaque', () => {
   withRoot((root) => {
     assert.equal(readWorkspaceDeclaration(root).kind, 'none', 'an empty directory declares nothing');
@@ -167,6 +246,39 @@ test('workspace declaration: no declaration at all is `none`, which is a differe
     assert.equal(readWorkspaceDeclaration(root).kind, 'none', 'a workspaces object with no packages array');
     write(path.join(root, 'package.json'), '{ not json at all\n');
     assert.equal(readWorkspaceDeclaration(root).kind, 'none', 'a corrupt package.json declares nothing');
+  });
+});
+
+test('workspace declaration: the opaque/none distinction is LATENT — no production consumer observes it', () => {
+  // AN HONEST RECORD RATHER THAN A CLAIM, and the claim it replaces is in this
+  // module's own type docblock, which called `opaque` "the load-bearing arm".
+  //
+  // The distinction is real at the type: `none` means nothing here declares a
+  // workspace, `opaque` means something does but its member list could not be
+  // established, and conflating them would either withdraw resolution from a
+  // genuine workspace root or grant deletion authority on a list nobody could
+  // read. But in the tree as it stands the ONLY production consumer is
+  // `workspaceClaimsDescendant`, and it tests `kind !== 'patterns'` — which
+  // folds the two arms together. Every behaviour anyone can observe today is
+  // identical for both.
+  //
+  // So the fact is pinned in the direction that will actually catch something:
+  // when a consumer DOES start distinguishing them, this row reds and whoever
+  // wrote it has to come back and delete this note. That is a cheaper instrument
+  // than a speculative consumer written to justify the arm, and it does not
+  // pretend the distinction is currently observed.
+  withRoot((root) => {
+    const none = readWorkspaceDeclaration(root);
+    assert.equal(none.kind, 'none', 'FIXTURE an empty directory');
+
+    declarePkg(root, ['packages/[a-z]*']);
+    const opaque = readWorkspaceDeclaration(root);
+    assert.equal(opaque.kind, 'opaque', 'FIXTURE a declaration whose members cannot be established');
+
+    const descendant = path.join(root, 'packages', 'ui');
+    assert.equal(workspaceClaimsDescendant(root, descendant), false,
+      'the only production consumer answers the same for both arms — if this line ever needs two different '
+      + 'expectations, the distinction has stopped being latent and the type docblock must say so');
   });
 });
 

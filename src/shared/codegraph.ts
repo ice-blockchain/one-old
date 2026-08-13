@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SKIP_DIRS, SKIP_FILES } from '../config/reporting';
+import { readRegularFileOrThrow } from './bounded-read';
 import { SOURCE_EXTS } from './detection';
 import { globToRegExp } from './scope';
 
@@ -52,7 +53,7 @@ export function graphifyGraphIsEmpty(cwd: string): boolean {
     const graphPath = path.join(cwd, GRAPHIFY_GRAPH_JSON_REL);
     const size = fs.statSync(graphPath).size;
     if (size > GRAPHIFY_EMPTY_MAX_BYTES) return false; // far too large to be empty
-    const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8')) as { nodes?: unknown };
+    const graph = JSON.parse(readRegularFileOrThrow(graphPath)) as { nodes?: unknown };
     const nodes = graph.nodes;
     const count = Array.isArray(nodes) ? nodes.length : Number(nodes);
     return Number.isFinite(count) && count === 0;
@@ -67,7 +68,7 @@ export function graphifyGraphIsEmpty(cwd: string): boolean {
 // detect emptiness without importing a runner. The runner re-exports it.
 export function gitnexusGraphIsEmpty(cwd: string): boolean {
   try {
-    const meta = JSON.parse(fs.readFileSync(path.join(cwd, GITNEXUS_REL, 'meta.json'), 'utf8')) as { stats?: { files?: unknown; nodes?: unknown } };
+    const meta = JSON.parse(readRegularFileOrThrow(path.join(cwd, GITNEXUS_REL, 'meta.json'))) as { stats?: { files?: unknown; nodes?: unknown } };
     const stats = meta && typeof meta.stats === 'object' && meta.stats ? meta.stats : null;
     if (!stats) return false;
     const files = Number(stats.files);
@@ -223,11 +224,15 @@ export function applyCodeGraphScanIgnore(
   let prev: string | null = null;
   try {
     existed = fs.existsSync(ignorePath);
-    prev = existed ? fs.readFileSync(ignorePath, 'utf8') : null;
+    prev = existed ? readRegularFileOrThrow(ignorePath) : null;
     let seed = prev || '';
     let seededFromGitignore = false;
     if (!existed && opts.seedFromGitignore) {
-      try { seed = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8'); seededFromGitignore = true; } catch { seed = ''; }
+      // The most clone-deliverable path in the tree: git records a symlink as
+      // mode 120000, so `git clone` of a hostile repo plants this one with no
+      // local process at all. The catch here could not run before — the read
+      // never returned to throw into it.
+      try { seed = readRegularFileOrThrow(path.join(cwd, '.gitignore')); seededFromGitignore = true; } catch { seed = ''; }
     }
     // Degenerate-seed guard: if the .gitignore seed would make graphify scan zero
     // source files, drop it and write only our own patterns (which never match
@@ -288,8 +293,8 @@ const PROVIDER_SUFFIX = '.provider';
 // already IS this skill and the source is a re-emitted duplicate.
 function sameSkillBody(sourceDir: string, destDir: string): boolean {
   try {
-    return fs.readFileSync(path.join(sourceDir, 'SKILL.md'), 'utf8')
-      === fs.readFileSync(path.join(destDir, 'SKILL.md'), 'utf8');
+    return readRegularFileOrThrow(path.join(sourceDir, 'SKILL.md'))
+      === readRegularFileOrThrow(path.join(destDir, 'SKILL.md'));
   } catch {
     return false; // unreadable → treat as different and preserve both
   }

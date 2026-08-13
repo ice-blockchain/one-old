@@ -4,7 +4,6 @@
 // blocking.
 
 import * as crypto from 'crypto';
-import * as fs from 'fs';
 import * as path from 'path';
 import { opencodeUnitTimeoutMs, unitLivenessWindowMs } from '../../config/opencode-timeouts';
 import { writeJson } from '../fsjson';
@@ -25,6 +24,7 @@ import {
   type OpenCodeUnitStatus,
   type OpenCodeUnitStatusEntry,
 } from './types';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 function safePathSegment(value: string): string {
   return (value || 'run').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'run';
@@ -68,7 +68,7 @@ export function parseAllowedFiles(value: unknown): string[] {
 export function opencodeAssignmentHash(cwd: string, runId: string): string | null {
   try {
     const file = path.join(runDir(cwd, runId), 'assignments.json');
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    const parsed = JSON.parse(readRegularFileOrThrow(file)) as unknown;
     return sha256(stableJson(parsed));
   } catch {
     return null;
@@ -125,7 +125,7 @@ export function writeOpenCodeQueue(cwd: string, queue: OpenCodeQueue): void {
 
 function readStatuses(cwd: string, runId: string): OpenCodeUnitStatusEntry[] {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(runDir(cwd, runId), 'opencode-units.json'), 'utf8')) as unknown;
+    const parsed = JSON.parse(readRegularFileOrThrow(path.join(runDir(cwd, runId), 'opencode-units.json'))) as unknown;
     return Array.isArray(parsed) ? parsed.filter((v): v is OpenCodeUnitStatusEntry => Boolean(v && typeof v === 'object')) : [];
   } catch {
     return [];
@@ -139,7 +139,7 @@ export function readOpenCodeUnitStatuses(cwd: string, runId: string): OpenCodeUn
 export function readOpenCodeQueue(cwd: string, runId: string): OpenCodeQueue | null {
   if (!runId) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(runDir(cwd, runId), 'opencode-queue.json'), 'utf8')) as unknown;
+    const parsed = JSON.parse(readRegularFileOrThrow(path.join(runDir(cwd, runId), 'opencode-queue.json'))) as unknown;
     if (!parsed || typeof parsed !== 'object') return null;
     const rec = parsed as OpenCodeQueue;
     if (rec.version !== 1 || !Array.isArray(rec.units)) return null;

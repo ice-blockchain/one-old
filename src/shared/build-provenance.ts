@@ -17,10 +17,10 @@
 // here would compile under tsx and then fail to resolve in the shipped runtime.
 // Same reasoning, verbatim, as runners/doctor/plugin-identity.ts.
 
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { pluginRoot } from './paths';
+import { readRegularFileOrThrow } from './bounded-read';
 
 /**
  * A provenance record as the reader below hands it out.
@@ -81,7 +81,7 @@ function withValidatedSourceHash(record: Record<string, unknown>): BuildProvenan
  */
 export function readBuildProvenance(file: string): BuildProvenanceRecord | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    const parsed = JSON.parse(readRegularFileOrThrow(file)) as unknown;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? withValidatedSourceHash(parsed as Record<string, unknown>)
       : null;

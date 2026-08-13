@@ -5,7 +5,7 @@
 // don't author (the 13co deny classes all began with de-novo authoring).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -18,6 +18,7 @@ import {
   scaffoldFileContent,
   type ArchitectureInputV1,
 } from '../architecture-contract';
+import { greenfieldEvidence } from '../greenfield-evidence';
 import {
   projectDeclaresSlot,
   slotAcceptsScaffold,
@@ -1512,7 +1513,93 @@ test('projectOwnedGitignore returns the owner bytes and none of Traffic One\'s',
     // byte counts as the project's here for the same reason — nobody can say
     // which of them we wrote.
     writeFileAt(cwd, '.gitignore', `${GITIGNORE_BLOCK_START}\nnode_modules/\n`);
-    assert.match(projectOwnedGitignore(cwd), /node_modules\//, 'a malformed pair is all theirs');
+    assert.match(projectOwnedGitignore(cwd) ?? '', /node_modules\//, 'a malformed pair is all theirs');
+  });
+});
+
+// ── the `.gitignore` read is BOUNDED, and `null` is not `''` ─────────────────
+//
+// DRIVEN before the fix, one shape per child under a 12 000 ms SIGKILL alarm:
+// a committed `.gitignore -> /dev/zero` SIGKILLed `projectOwnedGitignore` at
+// 12 070 ms (round-1 peer) and at 12 090 ms re-driven against a byte-verified
+// copy carrying the bare read; after, `null` in 161 ms
+// (.tmp/bounded2/{before,after}-owned-devzero.txt). `ensureProjectGitignore`
+// seventy lines below this function was ALREADY safe — it opens O_RDWR and
+// fstat-guards before reading — so one file both knew the rule and broke it.
+//
+// THE FOLD THIS SUITE EXISTS TO FORBID is the obvious repair rather than the
+// hang: `greenfieldEvidence` answers TRUE on empty bytes, so returning `''` for
+// a shape we cannot read says "the project stated nothing about git", and the
+// one production consumer spends that on `ensureInitialCommit({ initIfNeeded:
+// true })` — an unasked `git init`, `add -A` and a commit authored as Traffic
+// One over a tree whose `.gitignore` was never read. The `absent` arm keeps `''`
+// because no `.gitignore` really is a project that stated nothing.
+//
+// The blocking shapes are read in a CHILD under `timeout:` for the reason
+// fsjson-bounded-read.test.ts states: node's test timeout is a timer on the
+// event loop a blocked synchronous read is holding, so an in-process row would
+// WEDGE this suite instead of failing it.
+
+const ARCHITECTURE_CONTRACT_MODULE = path.join(__dirname, '..', 'architecture-contract', 'index.ts');
+
+function ownedGitignoreInChild(cwd: string, label: string): string | null {
+  const driver = path.join(cwd, 'drive-owned.cjs');
+  fs.writeFileSync(driver, [
+    'const m = require(process.argv[2]);',
+    'process.stdout.write(JSON.stringify({ v: m.projectOwnedGitignore(process.argv[3]) }));',
+  ].join('\n'), 'utf8');
+  const run = spawnSync(process.execPath, ['--import', 'tsx', driver, ARCHITECTURE_CONTRACT_MODULE, cwd], {
+    encoding: 'utf8',
+    timeout: 20_000,
+  });
+  assert.equal(run.signal, null,
+    `${label}: projectOwnedGitignore must RETURN rather than block in open(2). stderr: ${run.stderr || ''}`);
+  assert.equal(run.status, 0, `${label}: ${run.stderr || ''}`);
+  return (JSON.parse(run.stdout) as { v: string | null }).v;
+}
+
+test('a FIFO .gitignore is BOUNDED and answers null, never the greenfield-licensing empty string', () => {
+  withTempDir((cwd) => {
+    try {
+      execFileSync('mkfifo', [path.join(cwd, '.gitignore')], { stdio: 'ignore' });
+    } catch {
+      return; // no mkfifo: the shape is unreachable rather than unpinned
+    }
+    assert.equal(fs.lstatSync(path.join(cwd, '.gitignore')).isFIFO(), true, 'FIXTURE the entry really is a FIFO');
+    assert.equal(ownedGitignoreInChild(cwd, 'FIFO'), null,
+      'something IS there and we cannot see it, so the project may well have spoken');
+  });
+});
+
+test('a .gitignore symlinked to /dev/zero is BOUNDED and answers null — driven at 12 070 ms before', () => {
+  if (process.platform === 'win32' || !fs.existsSync('/dev/zero')) return;
+  withTempDir((cwd) => {
+    fs.symlinkSync('/dev/zero', path.join(cwd, '.gitignore'));
+    assert.equal(fs.statSync(path.join(cwd, '.gitignore')).isCharacterDevice(), true,
+      'FIXTURE the link really resolves to a character device');
+    assert.equal(ownedGitignoreInChild(cwd, '/dev/zero link'), null);
+  });
+});
+
+test('an unreadable .gitignore vetoes the unasked git init that an empty answer would license', () => {
+  // A DIRECTORY, so this row costs no child — `open(O_RDONLY)` on one returns
+  // EISDIR immediately. It pins the CONSEQUENCE rather than the return value:
+  // this is `runners/opencode/index.ts`'s guard inlined, and it must veto.
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.gitignore'));
+    const owned = projectOwnedGitignore(cwd);
+    assert.equal(owned, null, 'a directory at .gitignore is presence we cannot read, not absence');
+    assert.equal(
+      owned !== null && greenfieldEvidence(cwd, owned), false,
+      'the delegation runner must not `git init` + `add -A` + commit as Traffic One over a tree whose '
+      + '.gitignore it could not read. greenfieldEvidence answers TRUE on empty bytes, so folding this '
+      + 'shape into `\'\'` licenses exactly that — and its own docblock has always claimed both arms '
+      + 'fail toward NOT greenfield when they cannot be read.',
+    );
+    // And the genuinely absent case still reads as greenfield, which is the
+    // whole point of keeping the two apart.
+    fs.rmdirSync(path.join(cwd, '.gitignore'));
+    assert.equal(projectOwnedGitignore(cwd), '', 'no .gitignore is still a project that stated nothing');
   });
 });
 

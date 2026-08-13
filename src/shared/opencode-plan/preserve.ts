@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { readRegularFileResult, type BoundedRead } from '../bounded-read';
 import { readOpenCodeQueue } from '../opencode-queue/store';
 import { T1_DIR } from '../opencode-queue/types';
 import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits } from '../opencode-roles/plan-units';
@@ -28,12 +29,35 @@ function snapshotPath(cwd: string, runId: string): string {
   return path.join(cwd, T1_DIR, 'runs', runId, 'opencode-plan-block.md');
 }
 
+/**
+ * BOUNDED (shared/bounded-read.ts), and this reader is the one the plan gate's
+ * OWN bounded read hands its cue to — which is why it is here rather than
+ * outside the boundary.
+ *
+ * `planReadinessViolations` (plan-guard/plan-readiness/index.ts) evaluates
+ * `planOnDiskMissingOpenCodeBlock(projectRoot) && !restorePlanOpenCodeDelegateBlock(...)`.
+ * The first reader was bounded first; on a planted `.traffic-one/plan.md` it
+ * correctly answers "no block", which ADVANCES the `&&` chain into
+ * `restorePlanOpenCodeDelegateBlock` — which read the same path with a bare
+ * `fs.readFileSync`. MEASURED with only the first half bounded: the plan gate
+ * still SIGKILLed at 12 017 ms on a FIFO and 12 085 ms on a symlink to
+ * `/dev/zero`, with the planted path as the last logged read (.tmp/bounded-reads,
+ * load 7.23 → 10.07 of 10 cpus). Bounding one of two readers of the same path
+ * on the same expression is not bounding the path; it is moving the block one
+ * call to the right, and a boundary drawn by MODULE would have missed this
+ * because the second reader lives under `shared/`.
+ *
+ * THREE STATES, not `string | null`, because the caller below writes. See
+ * `restorePlanOpenCodeDelegateBlock`: absent licenses CREATING plan.md from the
+ * preserved block, and unreadable must not.
+ */
+function readPlanText(file: string): BoundedRead {
+  return readRegularFileResult(file);
+}
+
 function readTextOrNull(file: string): string | null {
-  try {
-    return fs.readFileSync(file, 'utf8');
-  } catch {
-    return null;
-  }
+  const read = readPlanText(file);
+  return read.kind === 'text' ? read.text : null;
 }
 
 function isAcceptedBlock(blockText: string): boolean {
@@ -138,7 +162,18 @@ function stripDelegateMarkers(planText: string): string {
  */
 export function restorePlanOpenCodeDelegateBlock(cwd: string, runId: string): boolean {
   if (!runId) return false;
-  const plan = readTextOrNull(planPath(cwd)) ?? '';
+  // ABSENT and UNREADABLE are split here, and the `?? ''` this replaces folded
+  // them. Absent is a legitimate repair: there is no plan.md, nothing is lost,
+  // and the write below CREATES it from the preserved block. Unreadable is the
+  // opposite — something IS there, we could not see it, and the same write
+  // would destroy it. That fold was already a hazard for EACCES and EIO (a plan
+  // nobody could read was replaced by the block alone) and became a second hang
+  // once the read was bounded: `writeFileSync` on a FIFO with no reader blocks
+  // exactly the way `open(2)` for reading does, so folding a non-regular object
+  // into "empty plan" would have carried the wedge from line 141 to line 147.
+  const read = readPlanText(planPath(cwd));
+  if (read.kind === 'unreadable') return false;
+  const plan = read.kind === 'text' ? read.text : '';
   if (parsePlanDelegationUnits(plan).length > 0) return false;
   const block = preservedOpenCodeDelegateBlock(cwd, runId);
   if (!block) return false;

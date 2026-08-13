@@ -20,6 +20,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFileOrThrow } from './bounded-read';
 
 // Git's own upward search for the repository that owns `projectRoot`: either the
 // git dir we can inspect, or `unresolvable` — a `.git` that is plainly there and
@@ -41,7 +42,7 @@ function resolveGitDir(projectRoot: string): string | null | 'unresolvable' {
       // a pointer we cannot follow is a repository whose history is real and
       // simply out of reach, never an empty directory.
       if (stat.isFile()) {
-        const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf8'))?.[1];
+        const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(readRegularFileOrThrow(dotGit))?.[1];
         return pointer ? path.resolve(cursor, pointer) : 'unresolvable';
       }
       return 'unresolvable'; // a socket/device at `.git`: unknowable, not absent
@@ -58,7 +59,7 @@ function resolveGitDir(projectRoot: string): string | null | 'unresolvable' {
 // common dir it points at, so without this a worktree reads as ref-less.
 function gitRefsRoot(gitDir: string): string {
   try {
-    const commonDir = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+    const commonDir = readRegularFileOrThrow(path.join(gitDir, 'commondir')).trim();
     if (commonDir) return path.resolve(gitDir, commonDir);
   } catch {
     // An ordinary git dir owns its own refs.
@@ -71,7 +72,7 @@ function gitRefsRoot(gitDir: string): string {
 // and of a repo mid-`checkout -b` on top of real history (refs elsewhere).
 function hasAnyRef(refsRoot: string): boolean {
   try {
-    const packed = fs.readFileSync(path.join(refsRoot, 'packed-refs'), 'utf8');
+    const packed = readRegularFileOrThrow(path.join(refsRoot, 'packed-refs'));
     if (packed.split(/\r?\n/).some((line) => /^[0-9a-f]{7,64}\s+\S/i.test(line))) return true;
   } catch {
     // No packed-refs file: loose refs are the only remaining evidence.
@@ -108,7 +109,7 @@ export function hasCommittedHistory(projectRoot: string): boolean {
   if (gitDir === 'unresolvable') return true;
   let head: string;
   try {
-    head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    head = readRegularFileOrThrow(path.join(gitDir, 'HEAD')).trim();
   } catch {
     // `git init` writes HEAD before anything else, and `git status` calls a
     // `.git` without one "not a git repository" — so this is a bare marker

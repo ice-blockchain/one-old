@@ -7,20 +7,42 @@
 //      tool reaches, so every arm of the read — absent, corrupt, unreadable, a
 //      legible non-workspace, a malformed entry — has to land somewhere
 //      deliberate, and `absent` and `corrupt` must not land in the same place.
-//   2. THE DEFAULT PATH IS UNCHANGED. Nothing in the tree carries this mode, so
-//      every resolution answer must be byte-identical to what it was — and
-//      identical BY CONSTRUCTION, which is why the first comparison the reader
-//      makes is against `mode` and why nothing below it opens a file.
-//   3. THE REDIRECT ONLY EVER MOVES DOWNWARD. shared/retention.ts deletes a
+//   2. THE MODE-KEYED PATH IS UNCHANGED, which is narrower than the claim this
+//      line used to make and is the only version of it that is true. A project
+//      whose `.one.json` is LEGIBLE and carries any of the three incumbent modes
+//      resolves byte-identically to what it did, BY CONSTRUCTION: the first
+//      comparison the registry reader makes is against `mode` and nothing below
+//      it opens a file.
+//
+//      "The default path is unchanged, nothing in the tree carries this mode"
+//      was the old wording and it is FALSE. `readWorkspaceMemberRegistry`
+//      classifies ILLEGIBILITY before it looks at the mode, so an ancestor whose
+//      state file cannot be parsed — a git merge conflict is the routine
+//      trigger — answers `indeterminate` whether or not it is a workspace, and
+//      `nearestOnboardedRoot`'s `indeterminate` disjunct then shelters every
+//      state-bearing directory beneath it from the leaked-root sweep. Measured:
+//      a stray under a legible ordinary parent is reported, the same stray under
+//      a conflicted one is not. That population carries no `mode` at all, which
+//      is exactly why "nothing carries this mode" did not bound it.
+//   3. THE REDIRECT NEVER MOVES A ROOT UPWARD. shared/retention.ts deletes a
 //      nested `.traffic-one` when `resolveProjectRoot(dir) !== dir`, so a change
 //      that could move a self-resolution off itself would be a data-loss change.
+//      Stated as a bound on the DIRECTION rather than as "only ever moves
+//      downward", because the file's behaviour now includes an arm that moves
+//      nothing and WITHHOLDS an upward move somebody else would have made — the
+//      `indeterminate` shelter above, which keeps a directory resolving to
+//      itself. Both are the same safe direction; only the second is a move.
 //
-// Every test here is named in the mutation table in the lane report: each one is
-// the test that goes red when one specific guard is neutered on its own.
+// THE MUTATION TABLE IN THE LANE REPORT NAMES MOST OF THESE TESTS, not all of
+// them: each named one is the test that goes red when one specific guard is
+// neutered on its own. Three rows here were added after that table was written
+// (the illegible-ancestor shelter and its legible control, and the opaque
+// container's freeze) and are pinned by measurement rather than by a mutant.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'fs';
+import { createRequire } from 'module';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -29,9 +51,11 @@ import {
   isRegisteredWorkspaceMember,
   readWorkspaceMemberRegistry,
   resolveProjectRoot,
+  resolveProjectRootDetailed,
   workspaceMembershipOf,
 } from '../hook/paths';
 import {
+  dedupeMemberDirectories,
   deriveMemberIdBase,
   deriveMemberIdDisambiguated,
   enclosingRegisteredMember,
@@ -706,8 +730,9 @@ test('member opt-out: an opted-out member is not managed, and that is EXACTLY wh
     assert.equal(isRegisteredWorkspaceMember(kept), true);
     assert.equal(isRegisteredWorkspaceMember(out), false,
       'opting a member out must remove its member standing — otherwise the flag records nothing');
-    assert.equal(workspaceMembershipOf(out).kind, 'not-member',
-      'and it is a POSITIVE negative, not an inability: the registry was perfectly legible');
+    assert.equal(workspaceMembershipOf(out).kind, 'vouched-not-member',
+      'no member standing — and not the POSITIVE negative an unlisted directory gets either, because'
+      + ' this workspace did consider this directory and the answer it recorded was no');
 
     // The behaviour is IDENTICAL to never having been listed. That is the whole
     // claim: opt-out adds a recorded decision, never a new authority.
@@ -727,6 +752,28 @@ test('member opt-out: an opted-out member is not managed, and that is EXACTLY wh
       resolveProjectRoot(path.join(unlisted, 'legacy-scripts', 'src')).replace(unlisted, ws),
       'an opted-out member resolves the way an unregistered directory of the same shape does',
     );
+
+    // ── the one axis where the equivalence is a DATA LOSS ────────────────────
+    //
+    // Everything above is the AUTHORITY axis, where "identical to never having
+    // been listed" is the documented promise and is kept. On the DELETION axis
+    // the same equivalence takes the directory's memory of ever having been
+    // managed: an onboarded member owning no project marker, flipped to
+    // opted-out, stopped resolving to itself, `isLeakedNestedRoot` reported its
+    // live `.traffic-one` and the next SessionStart sweep removed it — the flag
+    // whose entire contract is "leave this directory alone" deleting its state.
+    const parked = memberDir(ws, 'parked');
+    writeStateFile(parked, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+    writeStateFile(ws, {
+      mode: WORKSPACE_PROJECT_MODE,
+      onboardingComplete: true,
+      workspaceMembers: [{ path: 'storefront' }, { path: 'parked', optOut: true }],
+    });
+    assert.equal(isRegisteredWorkspaceMember(parked), false,
+      'opting out still removes every scrap of member standing — that half is unchanged');
+    assert.equal(resolveProjectRoot(parked, undefined, { workspaceAuthority: 'membership' }), parked,
+      'but the directory the workspace decided to LEAVE ALONE must keep its own state');
+    assert.deepEqual(plannedLeaks(ws), [], 'and the sweep plans nothing anywhere in the shape');
   });
 });
 
@@ -1090,6 +1137,762 @@ test('workspace members: nominating one directory twice with different terms is 
       assert.equal(outcome.outcome, 'rejected', JSON.stringify(outcome));
       assert.match(outcome.outcome === 'rejected' ? outcome.why : '', /nominated twice with different terms/,
         'picking one silently would record an opt-out the caller meant to revoke, or revoke one it meant to keep');
+    }
+  });
+});
+
+// ── 4. two ways a registry entry and its directory can fall out of step ──────
+//
+// The registry is a list of directories, and the two tests below are the two
+// ways the list and the disk can disagree while the AUTHOR believes they agree:
+// an entry that names a directory INSIDE another entry (both correct, and the
+// deepest one has to win), and an entry whose spelling differs from the
+// directory's while naming the same directory (a typo the filesystem forgives).
+// Both were resolved to the wrong member; one of them was resolved to deletion.
+
+/** A member that also holds committed state of its own — an onboarded member. */
+function onboardedMemberDir(container: string, id: string): string {
+  const dir = memberDir(container, id);
+  writeStateFile(dir, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+  return dir;
+}
+
+test('workspace members: overlapping registry entries resolve to the DEEPEST one, even from a stateless directory', () => {
+  withRoot((root) => {
+    // A container registering BOTH `apps` and `apps/web`. `memberPathVerdict`
+    // accepts each on its own terms and `writeWorkspaceMemberRegistry` permits
+    // the pair, so this is a shape the product can produce, not a hand-forged
+    // one — and `enclosingRegisteredMember` documents the deepest-match rule
+    // with exactly this example.
+    const ws = path.join(root, 'ws');
+    fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+    write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws', workspaces: ['apps'] })}\n`);
+    workspaceRoot(ws, ['apps', 'apps/web']);
+    // The shallower member is ONBOARDED and the deeper one is not, which is the
+    // only arrangement that reaches the defect: the walk up from `apps/web`
+    // stops at `apps`'s own committed state one level below the container, so
+    // the container's redirect — the only code that implements deepest-match —
+    // never runs unless the acceptance clause declines.
+    const apps = onboardedMemberDir(ws, 'apps');
+    const web = memberDir(apps, 'web');
+    const registry = readWorkspaceMemberRegistry(ws);
+
+    assert.equal(enclosingRegisteredMember(ws, registry, path.join(web, 'src')), web,
+      'the pure rule: the deepest registered entry enclosing the target wins');
+    assert.equal(enclosingRegisteredMember(ws, registry, apps), apps,
+      'and a target that IS the shallower member still resolves to it');
+
+    // MEASURED AT A STATELESS DIRECTORY, which is the point of this row. `web`
+    // and `web/src` hold no state, so no retention sweep ever evaluates them and
+    // no deletion table can see this: the whole cost is ATTRIBUTION.
+    for (const [label, dir] of [['the member itself', web], ['a source dir inside it', path.join(web, 'src')]] as const) {
+      const detailed = resolveProjectRootDetailed(dir);
+      assert.equal(detailed.root, web,
+        `${label}: work in the deeper member must not be attributed to the shallower one — every gate,`
+        + ' plan, run state and role claim follows this answer, and a write from here into `apps` stops'
+        + ' looking cross-member to the fence once both sides resolve to `apps`');
+      assert.equal(detailed.workspaceContainer, ws, `${label}: carrying the container that registered it`);
+    }
+
+    // And the shallower member is undisturbed: it is still its own root, still
+    // a member, and still not a deletion candidate.
+    assert.equal(resolveProjectRoot(apps, undefined, { workspaceAuthority: 'membership' }), apps,
+      'the shallower member still resolves to ITSELF, which is what makes retention keep its state');
+    assert.equal(workspaceMembershipOf(apps).kind, 'member');
+    assert.deepEqual(plannedLeaks(ws), [], 'and no sweep action anywhere in the shape');
+  });
+});
+
+test('workspace members: once the deeper member is onboarded too, both keep their own roots', () => {
+  withRoot((root) => {
+    const ws = path.join(root, 'ws');
+    fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+    write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws', workspaces: ['apps'] })}\n`);
+    workspaceRoot(ws, ['apps', 'apps/web']);
+    const apps = onboardedMemberDir(ws, 'apps');
+    const web = onboardedMemberDir(apps, 'web');
+
+    for (const member of [apps, web]) {
+      assert.equal(resolveProjectRoot(member, undefined, { workspaceAuthority: 'membership' }), member,
+        'each overlapping member is its own root — the direction retention reads as KEEP');
+      const detailed = resolveProjectRootDetailed(member);
+      assert.equal(detailed.root, member);
+      assert.equal(detailed.workspaceContainer, ws);
+    }
+    assert.equal(resolveProjectRootDetailed(path.join(web, 'src')).root, web);
+    assert.deepEqual(plannedLeaks(ws), []);
+  });
+});
+
+/**
+ * Does this volume fold case? Asked of the volume the fixture lives on rather
+ * than assumed from `process.platform`, because the answer is a property of the
+ * FILESYSTEM: a case-sensitive APFS volume and a case-insensitive one both exist
+ * on macOS, and a `ciopfs` mount exists on Linux.
+ */
+function volumeFoldsCase(root: string): boolean {
+  const probe = path.join(root, 'CaseProbe');
+  fs.mkdirSync(probe, { recursive: true });
+  try {
+    return fs.existsSync(path.join(root, 'caseprobe'));
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Does this volume treat NFC and NFD as one name — a SECOND axis, not a
+ * restatement of case folding.
+ *
+ * APFS is normalization-insensitive in BOTH its case-sensitive and its
+ * case-insensitive variant, so a table row keyed on `volumeFoldsCase` would
+ * assert the wrong thing on a case-sensitive APFS image. Probed the same way and
+ * for the same reason: this is a property of the filesystem, and the whole
+ * argument for identity matching is that the platform is asked instead of
+ * guessed at.
+ */
+function volumeFoldsNormalization(root: string): boolean {
+  const probe = path.join(root, 'caf\u00e9-probe');            // NFC
+  fs.mkdirSync(probe, { recursive: true });
+  try {
+    return fs.existsSync(path.join(root, 'cafe\u0301-probe')); // NFD
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+test('workspace members: a registry entry is matched by FILESYSTEM IDENTITY, so a case typo cannot delete a member', () => {
+  withRoot((root) => {
+    const folds = volumeFoldsCase(root);
+    const normalizes = volumeFoldsNormalization(root);
+
+    // Every spelling of `api` a committed `.one.json` could plausibly carry,
+    // plus the ones that must NOT match anything. `want` is what the entry
+    // should claim about the real directory `<ws>/api`:
+    //   'same'     — the entry names the same directory, so the member resolves
+    //                to itself and its state survives. On a case-SENSITIVE
+    //                volume the case rows genuinely name a directory that does
+    //                not exist, so they fall to 'other' there — and that is the
+    //                right answer, not a gap: `<ws>/Api` and `<ws>/api` really
+    //                are two directories there, and unregistered state inside a
+    //                workspace really is the packages/ui leak. One rule, the
+    //                platform's own, gives both answers correctly, which is
+    //                exactly what a hand-written folding table could not do.
+    //   'other'    — a different directory; the entry claims nothing here.
+    //   'declined' — `memberPathVerdict` refuses the entry, so the whole
+    //                registry goes opaque and grants nothing at all.
+    //
+    // THE FOURTH COLUMN is the directory the row is about, defaulting to `api`.
+    // It exists for one row: the only spelling difference a folding table is
+    // MOST likely to get wrong is not case at all but Unicode normalization, and
+    // testing that needs a non-ASCII directory to be wrong about.
+    //
+    // A RESIDUAL THIS TABLE MAKES VISIBLE AND CANNOT CLOSE: the `folds` rows are
+    // harmless where they were authored and expensive where the repository lands.
+    // A registry entry carrying a case typo, committed on macOS, matches by
+    // identity there and costs nothing; cloned onto a case-sensitive Linux
+    // filesystem the entry names a directory that does not exist, the member
+    // stops being recognised, and the sweep takes its `.one.json`. `.one.json` is
+    // a TRACKED file, so the typo travels with the repository. Nothing in this
+    // module can fix that — the two platforms genuinely disagree about how many
+    // directories there are — and the fix belongs to whatever writes registry
+    // entries (`writeWorkspaceMemberRegistry` records the spelling it validated,
+    // which is why a product-written registry cannot carry this).
+    const SPELLINGS: readonly [entry: string, want: 'same' | 'other' | 'declined', why: string, dir?: string][] = [
+      ['api', 'same', 'the exact spelling'],
+      ['./api', 'same', 'a ./ prefix, normalized away by the entry validator'],
+      ['api/', 'same', 'a trailing slash, normalized away'],
+      ['  api  ', 'same', 'surrounding whitespace, trimmed'],
+      ['api\\', 'same', 'a Windows separator, normalized then stripped'],
+      ['Api', folds ? 'same' : 'other', 'the committed typo this test exists for'],
+      ['API', folds ? 'same' : 'other', 'shouted'],
+      ['aPi', folds ? 'same' : 'other', 'mixed case'],
+      ['ApI/', folds ? 'same' : 'other', 'mixed case plus a trailing slash'],
+      ['Api/', folds ? 'same' : 'other', 'capitalized plus a trailing slash'],
+      // NOT a case row, and not the `'\u0041pi'` row this replaces: that escape
+      // is byte-identical to `'Api'` above it, so it re-measured the same input
+      // and left the table's own stated hazard — "whatever Unicode normalization
+      // does that nobody here has tested" — untested. This row is the test.
+      ['cafe\u0301', normalizes ? 'same' : 'other',
+        'the same name in NFD where the directory is NFC — the difference a folding table forgets', 'caf\u00e9'],
+      ['apiary', 'other', 'a name this one is a PREFIX of'],
+      ['ap', 'other', 'a name that is a prefix of this one'],
+      ['api2', 'other', 'a sibling with a digit'],
+      ['web', 'other', 'a genuinely unrelated directory that really exists'],
+      ['nosuchdir', 'other', 'a directory that does not exist at all'],
+      ['api-', 'other', 'a trailing hyphen is part of the name, not punctuation to strip'],
+      ['.', 'declined', 'the container itself is never its own member'],
+      ['../api', 'declined', 'an entry escaping the workspace'],
+      ['/api', 'declined', 'an absolute entry'],
+      ['ap*', 'declined', 'a glob — a registry lists directories, never patterns'],
+      ['node_modules/api', 'declined', 'an entry under a dependency directory'],
+    ];
+    assert.equal(SPELLINGS.length, 22, 'the table is the evidence; keep its size honest');
+
+    for (const [entry, want, why, dir] of SPELLINGS) {
+      const ws = path.join(root, `s-${Buffer.from(entry).toString('hex')}`);
+      fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+      write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+      writeStateFile(ws, {
+        mode: WORKSPACE_PROJECT_MODE, onboardingComplete: true, workspaceMembers: [{ path: entry }],
+      });
+      // The delete-exposed half of the shape: the member owns NO project marker
+      // of its own, so nothing but the registry stands between its state and the
+      // leaked-nested-root sweep.
+      const api = path.join(ws, dir ?? 'api');
+      writeStateFile(api, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+      write(path.join(api, 'src', 'main.ts'), 'export const boot = (): number => 0;\n');
+      fs.mkdirSync(path.join(ws, 'web'), { recursive: true });
+      // Named by no entry in the table, on any row: the control for "identity
+      // matching did not start handing membership to whatever is lying around".
+      const unrelated = path.join(ws, 'unrelated');
+      fs.mkdirSync(unrelated, { recursive: true });
+      const label = `${JSON.stringify(entry)} (${why})`;
+
+      const registry = readWorkspaceMemberRegistry(ws);
+      assert.equal(registry.kind, want === 'declined' ? 'opaque' : 'members', `${label}: registry arm`);
+      assert.equal(enclosingRegisteredMember(ws, registry, path.join(api, 'src')), want === 'same' ? api : null,
+        `${label}: the member the deepest-match rule finds`);
+      assert.equal(isRegisteredWorkspaceMember(api), want === 'same', `${label}: membership verdict`);
+
+      // The consequence, which is the whole reason identity is the primary test.
+      const resolved = resolveProjectRoot(api, undefined, { workspaceAuthority: 'membership' });
+      if (want === 'same') {
+        assert.equal(resolved, api,
+          `${label}: the member must resolve to ITSELF — anything else is what retention reads as a leaked`
+          + ' nested root, and the sweep then removes this member\'s live state');
+        assert.deepEqual(plannedLeaks(ws), [], `${label}: and the sweep plans nothing`);
+        assert.equal(resolveProjectRootDetailed(api).workspaceContainer, ws,
+          `${label}: recognised as a member OF this container, not merely left alone`);
+      } else if (want === 'other') {
+        assert.notEqual(resolved, api,
+          `${label}: an entry that names some OTHER directory must not silently anchor this one`);
+      } else {
+        // A DECLINED entry poisons the registry, so the container's member list
+        // could not be ENUMERATED — and an unreadable list is not evidence that
+        // this directory is unregistered. Every one of these five rows used to
+        // resolve `api` to the container, which is precisely what retention
+        // reads as a leaked nested root, so the sweep removed the live state of
+        // a member the registry named correctly on the row above. All five are
+        // reachable from bytes an agent's Write tool produces.
+        assert.equal(registry.kind, 'opaque', `${label}: fixture — this row is the unreadable-registry half`);
+        assert.equal(resolved, api,
+          `${label}: a registry nobody could enumerate must not license taking this directory's state`);
+        assert.deepEqual(plannedLeaks(ws), [],
+          `${label}: and the sweep plans nothing while the registry stays unreadable`);
+        // The other axis is untouched: withholding a deletion is not granting
+        // authority, and `isRegisteredWorkspaceMember` above already said no.
+        assert.equal(resolveProjectRootDetailed(api).workspaceContainer, ws,
+          `${label}: the container is still reported, so the fence engages and no gate operates here`);
+      }
+      // Never, on any row: a directory nobody registered picking up membership
+      // from a spelling that was meant for somebody else.
+      assert.equal(enclosingRegisteredMember(ws, registry, path.join(unrelated, 'src')), null,
+        `${label}: control — a genuinely unrelated directory is claimed by nothing`);
+      assert.equal(isRegisteredWorkspaceMember(unrelated), false, `${label}: control, through the membership verdict`);
+    }
+  });
+});
+
+test('workspace members: a correctly-spelled registry pays NO identity syscall at all', () => {
+  withRoot((root) => {
+    // The cost the two-pass structure exists for. Instrumented on a 60-member
+    // workspace over 200 warm calls, the single-pass form built the whole
+    // identity set at the first depth whose spelling missed: 61 `statSync` per
+    // resolution from inside a member, 65 at six levels deep, against 0 before
+    // member identity existed. Every one of them was spent on the registry shape
+    // that is overwhelmingly the common one — the correctly spelled one — and
+    // this row is what keeps it at zero.
+    const ws = path.join(root, 'ws');
+    fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+    write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+    const names = Array.from({ length: 12 }, (unused, index) => `m${String(index).padStart(2, '0')}`);
+    workspaceRoot(ws, names);
+    for (const name of names) {
+      const dir = memberDir(ws, name);
+      writeStateFile(dir, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+    }
+    const member = path.join(ws, 'm07');
+    const deep = path.join(member, 'a', 'b', 'c');
+    fs.mkdirSync(deep, { recursive: true });
+    const registry = readWorkspaceMemberRegistry(ws);
+
+    const fsModule = createRequire(__filename)('fs') as { statSync: typeof fs.statSync };
+    const real = fsModule.statSync;
+    let stats = 0;
+    fsModule.statSync = ((target: fs.PathLike, ...rest: unknown[]) => {
+      stats += 1;
+      return (real as (...args: unknown[]) => unknown)(target, ...rest) as fs.Stats;
+    }) as typeof fs.statSync;
+    try {
+      for (const [label, from] of [['the member itself', member], ['three levels inside it', deep]] as const) {
+        stats = 0;
+        assert.equal(enclosingRegisteredMember(ws, registry, from), member, `${label}: the answer is unchanged`);
+        assert.equal(stats, 0,
+          `${label}: matching cost ${stats} statSync on a registry whose every entry is spelled exactly right —`
+          + ' the identity pass must only run at the depths that could still beat the spelling match');
+      }
+    } finally {
+      fsModule.statSync = real;
+    }
+  });
+});
+
+test('workspace members: a DEEPER entry matched only by identity still beats a shallower spelling match', () => {
+  withRoot((root) => {
+    if (!volumeFoldsCase(root)) return;
+    // The row that forbids the cheap version of the two-pass structure. Returning
+    // the deepest SPELLING match without looking deeper by identity would answer
+    // `apps` here — and then `apps/web`'s own state stops resolving to itself,
+    // which is exactly what retention reads as a leaked nested root. An
+    // optimization would have reintroduced the deletion the matcher exists to
+    // prevent, so the second pass runs at every depth deeper than the first
+    // pass's answer.
+    const ws = path.join(root, 'ws');
+    fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+    write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+    workspaceRoot(ws, ['apps', 'apps/Web']);       // the deeper entry carries the typo
+    const apps = onboardedMemberDir(ws, 'apps');
+    const web = onboardedMemberDir(apps, 'web');
+    const registry = readWorkspaceMemberRegistry(ws);
+
+    assert.equal(enclosingRegisteredMember(ws, registry, path.join(web, 'src')), web,
+      'the deepest match wins whether it was found by spelling or by identity');
+    assert.equal(enclosingRegisteredMember(ws, registry, path.join(apps, 'src')), apps,
+      'and the shallower member still owns everything the deeper one does not');
+    assert.equal(resolveProjectRoot(web, undefined, { workspaceAuthority: 'membership' }), web,
+      'so the deeper member resolves to ITSELF, which is what retention reads as KEEP');
+    assert.deepEqual(plannedLeaks(ws), [], 'and nothing in the shape is swept');
+  });
+});
+
+// ── 4. the two axes identity moves in opposite directions ────────────────────
+//
+// Identity matching is PROTECTIVE on the deletion axis and a WIDENING on the
+// authority axis, and the same mechanism produces both. An entry that reaches a
+// directory it does not name — a symlink — must therefore be granted enough
+// standing that the sweep never takes the target's state, and none at all for
+// the fence, the claim and the plan. Picking one axis loses the other.
+
+/** A container registering `entry`, plus a real member `other` to span against. */
+function laundering(root: string, name: string, entry: string, plant: (ws: string) => string): {
+  ws: string; target: string; other: string;
+} {
+  const ws = path.join(root, name);
+  fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+  write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+  workspaceRoot(ws, [entry, 'other']);
+  const other = memberDir(ws, 'other');
+  writeStateFile(other, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+  return { ws, target: plant(ws), other };
+}
+
+test('workspace members: a symlinked entry protects its target from the sweep and grants it NOTHING else', () => {
+  withRoot((root) => {
+    for (const [label, entry, plant] of [
+      ['a sibling the registry never names', 'x', (ws: string) => {
+        const secret = memberDir(ws, 'secret');
+        writeStateFile(secret, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+        fs.symlinkSync(secret, path.join(ws, 'x'), 'dir');
+        return secret;
+      }],
+      ['a DEEPER directory, so the entry is not even the same depth', 'y', (ws: string) => {
+        const inner = memberDir(ws, path.join('deep', 'inner'));
+        writeStateFile(inner, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+        fs.symlinkSync(inner, path.join(ws, 'y'), 'dir');
+        return inner;
+      }],
+    ] as const) {
+      const { ws, target } = laundering(root, `launder-${entry}`, entry, plant);
+      const registry = readWorkspaceMemberRegistry(ws);
+
+      // AUTHORITY: nothing. The entry points at this directory, so no gate may
+      // treat it as a project of its own — pre-identity behaviour, and the
+      // widening a `dev:ino` comparison on its own reintroduced. A ghost entry
+      // needs no privilege to try this: nothing has to be overwritten.
+      assert.equal(enclosingRegisteredMember(ws, registry, path.join(target, 'src')), null,
+        `${label}: an entry that POINTS AT a directory must not make it a member`);
+      assert.equal(isRegisteredWorkspaceMember(target), false, `${label}: nor a member by the exact predicate`);
+      assert.equal(workspaceMembershipOf(target).kind, 'vouched-not-member',
+        `${label}: and the verdict says which of the two it is, rather than denying silently`);
+
+      // DELETION: full protection. The directory resolves to ITSELF, which is
+      // what retention reads as KEEP, and the sweep plans nothing.
+      assert.equal(resolveProjectRoot(target, undefined, { workspaceAuthority: 'membership' }), target,
+        `${label}: the target's own state must never be swept for standing we declined to grant it`);
+      assert.deepEqual(plannedLeaks(ws), [], `${label}: and the sweep plans nothing at all`);
+      // The container is still reported, which is what makes the fence engage
+      // and refuse instead of treating the directory as a standalone project.
+      assert.equal(resolveProjectRootDetailed(target).workspaceContainer, ws, label);
+
+      // The LINK PATH itself keeps full standing: the registry names it, and a
+      // name the workspace wrote is standing on its own terms whatever sits at
+      // that name. Only the directory the link happens to reach is demoted, so
+      // the demotion cannot be reached by declining registered spellings.
+      assert.equal(isRegisteredWorkspaceMember(path.join(ws, entry)), true,
+        `${label}: the registered spelling is a member even though a link sits at it`);
+    }
+  });
+});
+
+// TWO SIDES, AND THE SECOND ONE HAD NO ROW AT ALL. `registryEnclosureOf` stats
+// two things: every ENTRY the registry names, and the CANDIDATE — the directory
+// whose fate is being decided. Only the entry side was injected on, which left
+// the candidate-side guard entirely unpinned: replacing it with a "no entry
+// reaches this" answer survived the whole file. It is not dead code — with that
+// mutant applied, an injected failure on the member's OWN directory flips it
+// from keep to container and the sweep plans its state directory. The two rows
+// below differ in exactly one value, `blocked`.
+for (const [side, spelling] of [
+  ['the ENTRY the registry names', 'Api'],
+  ['the CANDIDATE — the member\'s own directory, whose fate is being decided', 'api'],
+] as const) {
+  test(`workspace members: an INDETERMINATE identity may not license a deletion (${side})`, () => {
+    withRoot((root) => {
+      // A member matched only by identity — the committed entry carries a case
+      // typo — whose `statSync` fails transiently: EACCES, EIO, a network mount
+      // blipping, an antivirus or Spotlight hold. Closed for membership is OPEN
+      // for deletion, and this is the row that says so.
+      if (!volumeFoldsCase(root)) return;    // nothing to match by identity here
+      const ws = path.join(root, `transient-${spelling}`);
+      fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+      write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+      workspaceRoot(ws, ['Api']);
+      // The delete-exposed shape: the member owns no project marker, so only the
+      // registry stands between its state and the sweep.
+      const api = path.join(ws, 'api');
+      writeStateFile(api, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+      write(path.join(api, 'src', 'main.ts'), 'export const boot = (): number => 0;\n');
+      assert.equal(resolveProjectRoot(api, undefined, { workspaceAuthority: 'membership' }), api,
+        'FIXTURE without the failure the member resolves to itself, so the row measures the failure');
+
+      // The counter is installed on the CJS module object the runtime calls
+      // through: `import * as fs` yields getter-only namespace members.
+      const fsModule = createRequire(__filename)('fs') as { statSync: typeof fs.statSync };
+      const real = fsModule.statSync;
+      const blocked = path.join(ws, spelling);
+      // EACCES is the headline case; the rest are the errnos `fsIdentity` also
+      // refuses to read as evidence, and each one of them kills the mutant on
+      // its own.
+      for (const errno of ['EACCES', 'EPERM', 'EIO', 'ELOOP', 'ENAMETOOLONG', 'EMFILE', 'ETIMEDOUT']) {
+        let refused = 0;
+        fsModule.statSync = ((target: fs.PathLike, ...rest: unknown[]) => {
+          if (path.resolve(String(target)) === blocked) {
+            refused += 1;
+            const error = new Error(`${errno}: injected, stat '${String(target)}'`) as Error & { code: string };
+            error.code = errno;
+            throw error;
+          }
+          return (real as (...args: unknown[]) => unknown)(target, ...rest) as fs.Stats;
+        }) as typeof fs.statSync;
+        try {
+          const where = `${side} / ${errno}`;
+          const verdict = workspaceMembershipOf(api);
+          assert.equal(verdict.kind, 'vouched-not-member',
+            `${where}: we could not establish membership, and "could not tell" is not the same answer as "no"`);
+          assert.ok(refused > 0, `${where}: FIXTURE the injected failure must actually have been reached`);
+          assert.equal(isRegisteredWorkspaceMember(api), false,
+            `${where}: fail CLOSED for authority — an unestablished membership grants nothing`);
+          assert.equal(resolveProjectRoot(api, undefined, { workspaceAuthority: 'membership' }), api,
+            `${where}: and fail closed for DATA — a transient stat failure must not turn a live member into a`
+            + ' leaked nested root and take its .one.json');
+          assert.deepEqual(plannedLeaks(ws), [], `${where}: the sweep plans nothing while the failure lasts`);
+        } finally {
+          fsModule.statSync = real;
+        }
+      }
+    });
+  });
+}
+
+// The identity union closed STAT-level indeterminacy. REGISTRY-level
+// indeterminacy is the other half of the same hazard and was wide open: the
+// membership walk answers before `registryEnclosureOf` is ever reached, so the
+// arm that folds an unestablished answer into the protected verdict never ran.
+// Every shape below is bytes an agent's Write tool produces, and every one of
+// them deleted the state of a member the registry named CORRECTLY on the line
+// above it.
+test('workspace members: a registry nobody could ENUMERATE may not license a deletion either', () => {
+  withRoot((root) => {
+    const POISON: readonly [label: string, plant: (ws: string) => void][] = [
+      ['a malformed second entry beside the good one', (ws) => writeStateFile(ws, {
+        mode: WORKSPACE_PROJECT_MODE,
+        onboardingComplete: true,
+        workspaceMembers: [{ path: 'api' }, { path: 'packages/*' }],
+      })],
+      ['a non-string entry', (ws) => writeStateFile(ws, {
+        mode: WORKSPACE_PROJECT_MODE,
+        onboardingComplete: true,
+        workspaceMembers: [{ path: 'api' }, { path: 7 }],
+      })],
+      ['two entries colliding on one id', (ws) => writeStateFile(ws, {
+        mode: WORKSPACE_PROJECT_MODE,
+        onboardingComplete: true,
+        workspaceMembers: [{ path: 'api' }, { path: 'other', id: 'api' }],
+      })],
+      ['a non-array members field', (ws) => writeStateFile(ws, {
+        mode: WORKSPACE_PROJECT_MODE,
+        onboardingComplete: true,
+        workspaceMembers: { api: true },
+      })],
+      ['a corrupt container state file', (ws) => write(
+        path.join(ws, '.traffic-one', '.one.json'), '{ "mode": "workspace"\n',
+      )],
+    ];
+
+    for (const [label, plant] of POISON) {
+      const ws = path.join(root, `poison-${Buffer.from(label).toString('hex').slice(0, 12)}`);
+      fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+      write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+      // The delete-exposed shape, exactly as everywhere else in this file: an
+      // onboarded member owning no project marker of its own.
+      const api = path.join(ws, 'api');
+      writeStateFile(api, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+      write(path.join(api, 'src', 'main.ts'), 'export const boot = (): number => 0;\n');
+
+      // FIXTURE: with a legible registry naming the same member, everything holds.
+      workspaceRoot(ws, ['api']);
+      assert.equal(isRegisteredWorkspaceMember(api), true, `${label}: FIXTURE the legible control is a member`);
+      assert.equal(resolveProjectRoot(api, undefined, { workspaceAuthority: 'membership' }), api, label);
+
+      plant(ws);
+      const verdict = workspaceMembershipOf(api);
+      assert.equal(verdict.kind, 'indeterminate',
+        `${label}: a registry that could not be enumerated is an inability, never a finding about this directory`);
+      assert.equal(isRegisteredWorkspaceMember(api), false,
+        `${label}: fail CLOSED for authority — nothing is granted on the strength of bytes nobody could read`);
+      assert.equal(resolveProjectRoot(api, undefined, { workspaceAuthority: 'membership' }), api,
+        `${label}: and fail closed for DATA — one malformed entry must not take a correctly-registered`
+        + " member's .one.json");
+      assert.deepEqual(plannedLeaks(ws), [], `${label}: the sweep plans nothing while the registry is unreadable`);
+      // THE TWO AXES PART COMPANY ON THE LAST SHAPE, and only there. Withholding
+      // the deletion grants no authority in either case, but the container is
+      // only REPORTED when the state file parsed and said `mode: 'workspace'`:
+      // an `opaque` registry is a demonstrable container with an unusable list,
+      // so the fence must engage and refuse its members. A file that does not
+      // parse cannot say even that — and reporting it as a container refuses
+      // every gated call under any directory whose parent merely got
+      // merge-conflicted, which is a freeze with nothing on the other side of
+      // it. See the `indeterminate` disjunct's note in hook/paths.ts.
+      const illegible = verdict.kind === 'indeterminate' && verdict.registry.kind === 'illegible';
+      assert.equal(resolveProjectRootDetailed(api).workspaceContainer, illegible ? '' : ws, label);
+    }
+  });
+});
+
+// ENOENT and ENOTDIR are evidence about a NAME, which is sound for an ENTRY and
+// self-contradictory for the CANDIDATE: the caller asking is standing in a
+// directory because it found committed state there, so a name reaching nothing
+// while that state is still readable is a rename in flight — a `git checkout`
+// swapping the tree under a session sweep — and not a directory that stopped
+// existing.
+test('workspace members: an absent CANDIDATE that still holds state is a race, not a finding', () => {
+  withRoot((root) => {
+    if (!volumeFoldsCase(root)) return;   // the member is matched by identity here
+    const ws = path.join(root, 'racing');
+    fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+    write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+    workspaceRoot(ws, ['Api']);
+    const api = path.join(ws, 'api');
+    writeStateFile(api, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+    assert.equal(resolveProjectRoot(api, undefined, { workspaceAuthority: 'membership' }), api,
+      'FIXTURE without the race the member resolves to itself');
+
+    const fsModule = createRequire(__filename)('fs') as { statSync: typeof fs.statSync };
+    const real = fsModule.statSync;
+    for (const errno of ['ENOENT', 'ENOTDIR']) {
+      let refused = 0;
+      fsModule.statSync = ((target: fs.PathLike, ...rest: unknown[]) => {
+        if (path.resolve(String(target)) === api) {
+          refused += 1;
+          const error = new Error(`${errno}: injected, stat '${String(target)}'`) as Error & { code: string };
+          error.code = errno;
+          throw error;
+        }
+        return (real as (...args: unknown[]) => unknown)(target, ...rest) as fs.Stats;
+      }) as typeof fs.statSync;
+      try {
+        assert.equal(workspaceMembershipOf(api).kind, 'vouched-not-member',
+          `${errno}: the name reached nothing while its state file did not — that is an inability, not a finding`);
+        assert.ok(refused > 0, `${errno}: FIXTURE the injected failure must actually have been reached`);
+        assert.equal(resolveProjectRoot(api, undefined, { workspaceAuthority: 'membership' }), api,
+          `${errno}: a candidate that reaches nothing while its own state file is still readable is a`
+          + ' rename in flight, and the sweep must not act inside that window');
+        assert.deepEqual(plannedLeaks(ws), [], `${errno}: nothing is planned`);
+      } finally {
+        fsModule.statSync = real;
+      }
+    }
+
+    // The positive negative is untouched: a directory that genuinely is not
+    // there has no state file, so it stays the finding it has always been.
+    assert.equal(workspaceMembershipOf(path.join(ws, 'nosuchdir')).kind, 'not-member',
+      'a legible registry that does not list a directory nothing lives in is still a POSITIVE negative');
+  });
+});
+
+test('workspace members: member directories are counted by identity, not by spelling', () => {
+  withRoot((root) => {
+    const ws = path.join(root, 'ws');
+    fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+    const api = memberDir(ws, 'api');
+    const web = memberDir(ws, 'web');
+    const folds = volumeFoldsCase(root);
+    // The counting side of the question `enclosingRegisteredMember` answers on
+    // the matching side: `<ws>/api` and `<ws>/Api` are ONE directory where the
+    // volume folds, so a fence counting by string reports a span of two about a
+    // call that spans one.
+    assert.deepEqual(dedupeMemberDirectories([api, path.join(ws, 'Api')]), folds ? [api] : [api, path.join(ws, 'Api')],
+      'two spellings of one directory count once — and two genuine directories still count twice');
+    assert.deepEqual(dedupeMemberDirectories([api, web]), [api, web], 'two real members are two');
+    assert.deepEqual(dedupeMemberDirectories([api, api]), [api], 'and the plain repeat still collapses');
+    // A directory we cannot stat stays SEPARATE: merging what we cannot prove is
+    // one would under-count a span and allow a cross-member call, which is the
+    // unsafe direction for this consumer.
+    const ghost = path.join(ws, 'nosuchdir');
+    assert.deepEqual(dedupeMemberDirectories([ghost, path.join(ws, 'alsonone')]), [ghost, path.join(ws, 'alsonone')]);
+  });
+});
+
+test('workspace members: identity matching does not resurrect an entry naming a FILE or a ghost directory', () => {
+  withRoot((root) => {
+    const ws = path.join(root, 'ws');
+    fs.mkdirSync(path.join(ws, '.git'), { recursive: true });
+    write(path.join(ws, 'package.json'), `${JSON.stringify({ name: 'ws' })}\n`);
+    workspaceRoot(ws, ['api', 'ghost', 'notes']);
+    const api = memberDir(ws, 'api');
+    write(path.join(ws, 'notes'), 'a FILE, not a directory\n');
+    const registry = readWorkspaceMemberRegistry(ws);
+
+    assert.equal(enclosingRegisteredMember(ws, registry, path.join(api, 'src')), api, 'the real member still resolves');
+    // A ghost entry keeps its pre-existing meaning: it claims a descendant
+    // spelled the same way, and stats nothing. Nothing about identity matching
+    // may widen or narrow that.
+    assert.equal(enclosingRegisteredMember(ws, registry, path.join(ws, 'ghost', 'src')), path.join(ws, 'ghost'),
+      'an entry naming no real directory still claims a target spelled the same way');
+    assert.equal(enclosingRegisteredMember(ws, registry, path.join(ws, 'elsewhere')), null,
+      'and claims nothing else');
+    // A FILE cannot be a member: its inode must not enter the comparison set,
+    // or a registry typo of a different shape would grant membership to
+    // whatever else happens to be hard-linked to it.
+    assert.equal(enclosingRegisteredMember(ws, registry, path.join(ws, 'notes')), path.join(ws, 'notes'),
+      'the exact spelling is unchanged — this entry was always matched by name');
+    const link = path.join(ws, 'notes-copy');
+    fs.linkSync(path.join(ws, 'notes'), link);
+    assert.equal(enclosingRegisteredMember(ws, registry, link), null,
+      'but a second hard link to that file is NOT a member: only directories carry member identity');
+  });
+});
+
+// ── 4. the population the mode never bounded ─────────────────────────────────
+//
+// `readWorkspaceMemberRegistry` decides ILLEGIBILITY two lines before it looks
+// at `mode`, so `workspaceMembershipOf` answers `indeterminate` for ANY ancestor
+// whose `.one.json` cannot be parsed — workspace or not. These three rows are
+// the measurement behind property 2's correction: the shelter is real, it is
+// wider than "a container", and it stops at the authority axis.
+
+/** An ordinary git repository whose committed state file is merge-conflicted. */
+function conflictedRepo(root: string): string {
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  write(path.join(repo, 'package.json'), `${JSON.stringify({ name: 'repo' })}\n`);
+  write(path.join(repo, '.traffic-one', '.one.json'),
+    '<<<<<<< HEAD\n{"mode":"new-project"}\n=======\n{"mode":"existing-codebase"}\n>>>>>>> theirs\n');
+  return repo;
+}
+
+/** A Go-package-shaped stray: full state, no project marker of its own. */
+function strayNestedRoot(parent: string): string {
+  const stray = path.join(parent, 'strategies');
+  write(path.join(stray, 'main.go'), 'package strategies\n');
+  writeStateFile(stray, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+  return stray;
+}
+
+test('workspace members: an UNPARSEABLE ordinary ancestor shelters a stray beneath it from the sweep', () => {
+  withRoot((root) => {
+    const repo = conflictedRepo(root);
+    const stray = strayNestedRoot(repo);
+    // The shelter, stated as the resolver states it: the stray answers with
+    // ITSELF, which is what retention's `resolveProjectRoot(dir) !== dir` reads
+    // as KEEP.
+    assert.equal(resolveProjectRoot(stray), stray,
+      'a directory under an ancestor nobody could parse must resolve to itself — treating unreadable'
+      + ' bytes as evidence that it is unregistered is the inversion this module refuses everywhere else');
+    assert.deepEqual(plannedLeaks(root), [],
+      'and the SessionStart sweep must therefore plan no deletion inside it');
+    // NOT A WORKSPACE ANYWHERE IN THIS FIXTURE, which is the whole point of the
+    // row: the sheltering ancestor carries no `mode: 'workspace'` and could not
+    // be read to see whether it does.
+    assert.equal(workspaceMembershipOf(stray).kind, 'indeterminate');
+  });
+});
+
+test('workspace members: the LEGIBLE twin of that ancestor still reports the stray', () => {
+  withRoot((root) => {
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    write(path.join(repo, 'package.json'), `${JSON.stringify({ name: 'repo' })}\n`);
+    writeStateFile(repo, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+    const stray = strayNestedRoot(repo);
+
+    // NON-VACUITY for the row above: the shelter is the unparseable file, not
+    // the fixture. Same tree, one legible byte-range, and the leak comes back.
+    assert.equal(resolveProjectRoot(stray), repo,
+      'a stray inside a legible repository still climbs past itself');
+    assert.deepEqual(plannedLeaks(root), [path.join('repo', 'strategies', '.traffic-one')],
+      'and is still healed by the sweep — the mercury/strategies case, unchanged');
+  });
+});
+
+test('workspace members: an unparseable ancestor withholds a deletion WITHOUT freezing the gates', () => {
+  withRoot((root) => {
+    const repo = conflictedRepo(root);
+    // A legitimate, independently onboarded project under the same conflicted
+    // ancestor. It is nobody's member and the ancestor is not a workspace.
+    const app = memberDir(repo, 'app');
+    writeStateFile(app, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+
+    const resolved = resolveProjectRootDetailed(app);
+    assert.equal(resolved.root, app, 'it is its own root, as it always was');
+    // THE AUTHORITY HALF IS NARROWED, and this row is why. Reporting a container
+    // here engages the member fence, and an `illegible` registry resolves no
+    // member — so every gated call in this project would be refused as
+    // `workspace-member-unresolved` because a file one level up got
+    // merge-conflicted. `opaque` still reports (it PARSED and said
+    // `mode: 'workspace'`); `illegible` cannot say even that.
+    assert.equal(resolved.workspaceContainer, '',
+      'an ancestor whose mode nobody could read must not be reported as a workspace container');
+    assert.equal(resolved.workspaceRegistry, null);
+  });
+});
+
+test('workspace members: a MALFORMED registry is strictly worse than no registry, and the note says so', () => {
+  withRoot((root) => {
+    // The measurement behind the corrected note above `validateMemberEntry`.
+    // Three containers, one member shape, one question: does the member resolve
+    // to itself and keep a container-free scope?
+    const rows: [label: string, plant: (ws: string) => void, container: string][] = [
+      ['no registry at all', () => { /* nothing */ }, ''],
+      ['a legible registry naming the member', (ws) => { workspaceRoot(ws, ['api']); }, 'ws'],
+      ['a malformed registry', (ws) => {
+        writeStateFile(ws, { mode: WORKSPACE_PROJECT_MODE, onboardingComplete: true, workspaceMembers: { api: true } });
+      }, 'ws'],
+    ];
+    for (const [label, plant, expectContainer] of rows) {
+      const ws = path.join(root, label.replace(/[^a-z]+/g, '-'));
+      fs.mkdirSync(ws, { recursive: true });
+      plant(ws);
+      const api = memberDir(ws, 'api');
+      writeStateFile(api, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+      const resolved = resolveProjectRootDetailed(api);
+      assert.equal(resolved.root, api, `${label}: the member is its own root`);
+      assert.equal(
+        resolved.workspaceRegistry ? resolved.workspaceRegistry.kind : 'none',
+        expectContainer ? (label.includes('malformed') ? 'opaque' : 'members') : 'none',
+        label,
+      );
     }
   });
 });

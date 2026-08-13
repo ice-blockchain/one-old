@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as path from 'path';
 
 import { AGENT_ROLES } from '../../config/performance';
+import { COPILOT_AGENTS_REL } from '../materialize/copilot-agents';
 import {
   acceptableSpawnTypes,
   canonicalHostAgentType,
@@ -51,6 +53,18 @@ test('hosts whose custom types are never registered pin the built-in as PRIMARY'
   // 9cc08b53 removed the context pack that used to carry the role doc inline,
   // which left Codex children with the kernel excerpt and nothing else.
   assert.equal(codex.contractPath, '.traffic-one/agents/senior-frontend.md');
+
+  // Copilot was the one host with a non-null contract path and NO row here, and it
+  // was the one pointing at a directory this product never writes (`.copilot/`,
+  // while the writer has always used `.github/agents/`). The consequence was
+  // silent by construction: the only consumer is an `existsSync` guard, so a
+  // child got the kernel excerpt with nothing reporting why. The expectation is
+  // DERIVED from the writer's own constant rather than spelled again, so renaming
+  // the directory reds here instead of quietly unbinding the two.
+  const copilot = hostSpawnType('copilot', 'senior-frontend');
+  assert.equal(copilot.parameter, 'name');
+  assert.equal(copilot.contractPath, path.join(COPILOT_AGENTS_REL, 'senior-frontend.agent.md'));
+  assert.equal(copilot.contractPath, '.github/agents/senior-frontend.agent.md');
 });
 
 test('a fallback spawn records the CANONICAL type so it reuses the published bootstrap', () => {

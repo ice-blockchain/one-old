@@ -9,16 +9,25 @@
 //
 // The settled part first, so nobody re-litigates it: a divergent spelling does
 // NOT break mutual exclusion. Every lock in the runDir family is a DIRECTORY,
-// created by a non-recursive `mkdirSync` (EEXIST is the compare-and-set) or by
-// `renameSync` onto a directory path (ENOTEMPTY, because the owner file is
-// written INTO the pending dir before the rename). Two spellings of one project
-// name the same INODE, so exclusion holds. What a divergent spelling costs is
-// in-process CACHE MISSES on string-keyed maps.
+// created by a non-recursive `mkdirSync` (EEXIST is the compare-and-set — the
+// non-recursive part is the whole of it, since `recursive: true` succeeds on an
+// existing directory) or by `renameSync` onto a directory path (ENOTEMPTY —
+// which holds ONLY because the owner file is written INTO the pending dir before
+// the rename; onto an EMPTY directory the rename succeeds). Two spellings of one
+// project name the same INODE, so exclusion holds. What a divergent spelling
+// costs is in-process CACHE MISSES on string-keyed maps.
 //
-// One of those misses would be worse than a wasted lookup, and the last section
-// of this file is what keeps it unreachable: a `heldLocks` re-entrancy miss in
-// state/project-state-lock.ts would make a process contend with a lock it
-// already owns, spin to the acquisition deadline and throw.
+// That paragraph is now DRIVEN rather than argued, in
+// lock-path-spelling-exclusion.test.ts beside this file: three spellings across
+// three lock families, plus the cross-process reproduction's numbers and the
+// measured cost of the one miss that matters.
+//
+// One of those misses used to be worse than a wasted lookup: a `heldLocks`
+// re-entrancy miss in state/project-state-lock.ts made a process contend with a
+// lock it already owns, spin to the acquisition deadline and throw. That is now
+// fixed in the lock itself — on contention it recognises its own pid and token
+// on the owner file and re-enters — so the last section of this file is an early
+// warning rather than the thing standing between a hook and a throw.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -334,7 +343,26 @@ test('projectRootHash does NOT case-fold, and switching to realpathSync.native w
 
 // ── the $HOME self-heal names the bucket its own reader reads ────────────────
 
-const HOME_ENV_KEYS = ['HOME', 'XDG_STATE_HOME', 'TRAFFIC_ONE_PROJECT_PREFS_PATH', 'TRAFFIC_ONE_STATE_PATH'] as const;
+const HOME_ENV_KEYS = [
+  'HOME', 'XDG_STATE_HOME', 'TRAFFIC_ONE_PROJECT_PREFS_PATH', 'TRAFFIC_ONE_STATE_PATH',
+  'TRAFFIC_ONE_ASK_USE_PLUGIN',
+] as const;
+
+/**
+ * BOTH values of the ask-first question, declared instead of inherited — the
+ * population guard in `shared/__tests__/durable-writer-rule.test.ts` requires
+ * whoever reads the fence to say which configuration they read it under, and for
+ * the two tests below the honest answer is "either, and that is the point".
+ *
+ * They read the RECORDED use-plugin answer (`readPluginUseChoice`) out of the
+ * per-user machine bucket, and the consent fence never governs that bucket:
+ * `projectRootForStatePath` resolves it to null through MACHINE_OWNED_ENTRIES,
+ * and the deleter under test uses a raw `fs.rmSync`. So the bucket the reader
+ * names — the whole subject of these tests — cannot depend on the ask-first
+ * value, and pinning one would have stated exactly nothing while looking like a
+ * decision. The loop asserts the independence instead.
+ */
+const ASK_FIRST_VALUES = ['1', '0'] as const;
 
 /**
  * A session whose $HOME is a SYMLINK — `/etc/auto_home` mounts, a relocated home,
@@ -342,7 +370,10 @@ const HOME_ENV_KEYS = ['HOME', 'XDG_STATE_HOME', 'TRAFFIC_ONE_PROJECT_PREFS_PATH
  * non-canonical spelling, and the sweep below runs at the top of EVERY
  * SessionStart in EVERY project.
  */
-function withSymlinkedHome(fn: (ctx: { home: string; realHome: string; machineDir: string }) => void): void {
+function withSymlinkedHome(
+  askFirst: string,
+  fn: (ctx: { home: string; realHome: string; machineDir: string }) => void,
+): void {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), TMP_PREFIX)));
   const saved = Object.fromEntries(HOME_ENV_KEYS.map((k) => [k, process.env[k]]));
   const realHome = path.join(base, 'real-home');
@@ -350,6 +381,7 @@ function withSymlinkedHome(fn: (ctx: { home: string; realHome: string; machineDi
   fs.mkdirSync(realHome, { recursive: true });
   fs.symlinkSync(realHome, home);
   process.env.HOME = home;
+  process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = askFirst;
   delete process.env.XDG_STATE_HOME; // the shipped default is what makes <$HOME>/.traffic-one the machine dir
   delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   delete process.env.TRAFFIC_ONE_STATE_PATH;
@@ -367,53 +399,59 @@ function withSymlinkedHome(fn: (ctx: { home: string; realHome: string; machineDi
 }
 
 test('the stray-artifact self-heal reclaims the $HOME bucket even when $HOME is a symlink', () => {
-  withSymlinkedHome((ctx) => {
-    const bucket = path.dirname(defaultProjectPrefsPath(ctx.home));
-    fs.mkdirSync(path.join(bucket, 'onboarding', 'claude'), { recursive: true });
-    fs.writeFileSync(path.join(bucket, 'preferences.json'), JSON.stringify({ hosts: {} }), 'utf8');
+  for (const askFirst of ASK_FIRST_VALUES) {
+    withSymlinkedHome(askFirst, (ctx) => {
+      const where = `TRAFFIC_ONE_ASK_USE_PLUGIN=${askFirst}`;      const bucket = path.dirname(defaultProjectPrefsPath(ctx.home));
+      fs.mkdirSync(path.join(bucket, 'onboarding', 'claude'), { recursive: true });
+      fs.writeFileSync(path.join(bucket, 'preferences.json'), JSON.stringify({ hosts: {} }), 'utf8');
 
-    // FIXTURE READBACK — the bucket name really is the realpath one, and really
-    // is NOT the name a second `sha256(path.resolve(home))` derivation produces.
-    assert.equal(fs.realpathSync(ctx.home), ctx.realHome, 'HOME is a symlink to a different path');
-    assert.equal(path.basename(bucket), projectRootHash(ctx.realHome), 'the bucket is named by the REAL home');
-    assert.notEqual(
-      path.basename(bucket),
-      require('crypto').createHash('sha256').update(path.resolve(ctx.home)).digest('hex'),
-      'FIXTURE and NOT by the symlinked spelling — otherwise this test proves nothing',
-    );
-    assert.equal(readPluginUseChoice(ctx.home), null, 'FIXTURE no use-plugin answer is on record for $HOME');
-    assert.equal(fs.existsSync(bucket), true, 'FIXTURE the bucket exists before the sweep');
+      // FIXTURE READBACK — the bucket name really is the realpath one, and really
+      // is NOT the name a second `sha256(path.resolve(home))` derivation produces.
+      assert.equal(fs.realpathSync(ctx.home), ctx.realHome, 'HOME is a symlink to a different path');
+      assert.equal(path.basename(bucket), projectRootHash(ctx.realHome), 'the bucket is named by the REAL home');
+      assert.notEqual(
+        path.basename(bucket),
+        require('crypto').createHash('sha256').update(path.resolve(ctx.home)).digest('hex'),
+        'FIXTURE and NOT by the symlinked spelling — otherwise this test proves nothing',
+      );
+      assert.equal(readPluginUseChoice(ctx.home), null, `FIXTURE no use-plugin answer is on record for $HOME (${where})`);
+      assert.equal(fs.existsSync(bucket), true, 'FIXTURE the bucket exists before the sweep');
 
-    removeStrayProjectArtifactsFromGlobalDir();
+      removeStrayProjectArtifactsFromGlobalDir();
 
-    assert.equal(
-      fs.existsSync(bucket), false,
-      'the deleter must name the bucket through projectRootHash — the function that CREATED it. '
-      + 'A re-derived sha256(path.resolve(home)) misses it entirely under a symlinked $HOME, '
-      + 'while readPluginUseChoice one line up reads the realpath bucket.',
-    );
-  });
+      assert.equal(
+        fs.existsSync(bucket), false,
+        `${where}: the deleter must name the bucket through projectRootHash — the function that CREATED it. `
+        + 'A re-derived sha256(path.resolve(home)) misses it entirely under a symlinked $HOME, '
+        + 'while readPluginUseChoice one line up reads the realpath bucket. The machine bucket is outside '
+        + 'the consent fence, so the sweep owes the same answer under either ask-first value.',
+      );
+    });
+  }
 });
 
 // The guard has to survive the fix: this is a DELETER that now hits a target it
 // previously missed, so the "only when unanswered" half is what stops it eating
 // a recorded answer on every SessionStart in every unrelated project.
 test('a recorded $HOME answer still stops the self-heal, symlinked home included', () => {
-  withSymlinkedHome((ctx) => {
-    for (const enabled of [true, false]) {
-      recordPluginUseChoice(ctx.home, enabled, 'wizard');
-      const bucket = path.dirname(defaultProjectPrefsPath(ctx.home));
-      assert.equal(fs.existsSync(bucket), true, 'FIXTURE the answer landed in the bucket');
+  for (const askFirst of ASK_FIRST_VALUES) {
+    withSymlinkedHome(askFirst, (ctx) => {
+      for (const enabled of [true, false]) {
+        recordPluginUseChoice(ctx.home, enabled, 'wizard');
+        const bucket = path.dirname(defaultProjectPrefsPath(ctx.home));
+        assert.equal(fs.existsSync(bucket), true, 'FIXTURE the answer landed in the bucket');
 
-      removeStrayProjectArtifactsFromGlobalDir();
+        removeStrayProjectArtifactsFromGlobalDir();
 
-      resetPluginUseCache();
-      assert.equal(
-        readPluginUseChoice(ctx.home)?.enabled, enabled,
-        `a recorded ${enabled ? 'consent' : 'decline'} for a symlinked $HOME survives the sweep`,
-      );
-    }
-  });
+        resetPluginUseCache();
+        assert.equal(
+          readPluginUseChoice(ctx.home)?.enabled, enabled,
+          `a recorded ${enabled ? 'consent' : 'decline'} for a symlinked $HOME survives the sweep `
+          + `(TRAFFIC_ONE_ASK_USE_PLUGIN=${askFirst}: an answer on record governs itself either way)`,
+        );
+      }
+    });
+  }
 });
 
 // ── why the heldLocks re-entrancy miss is UNREACHABLE ────────────────────────
@@ -424,13 +462,34 @@ test('a recorded $HOME answer still stops the self-heal, symlinked home included
 // rename onto the lock directory it already owns, get ENOTEMPTY, and spin to the
 // 1s deadline before throwing out of a hook.
 //
-// A second spelling can only enter by an independent RE-DERIVATION of the
-// project root, and there is exactly one place each: shared/paths.ts
-// projectRoot() and shared/hook/paths.ts resolveProjectRoot(). This test proves
-// neither is reachable from inside any lock body, by module-level import closure
-// over every module that acquires the lock. Import closure OVER-approximates
-// call reachability, so an empty result is a proof; adding a lock acquisition to
-// a module that can reach a resolver turns this red.
+// A second spelling enters by an independent RE-DERIVATION of the project root,
+// and the two NAMED resolvers are shared/paths.ts projectRoot() and
+// shared/hook/paths.ts resolveProjectRoot(). The first test below proves neither
+// is reachable from inside any lock body, by module-level import closure over
+// every module that acquires the lock. Import closure OVER-approximates call
+// reachability, so an empty result is a proof; adding a lock acquisition to a
+// module that can reach a resolver turns this red.
+//
+// THAT IS NOT THE WHOLE PROPERTY, and the difference is worth stating plainly
+// rather than leaving the reader to infer it. The property that matters is "no
+// second spelling of the project root reaches a nested acquisition", and the
+// two resolvers are not the only things that mint one: there are two dozen
+// `realpathSync`-family calls inside the same closure (shared/paths.ts's own
+// safeRealpath, fs-nofollow's realPathWithMissingTail, qa-report, git,
+// prefs-store, authoring-root …), and every one of them turns a spelling into a
+// DIFFERENT spelling. The resolver test cannot see any of them.
+//
+// So the coverage is split in two, and neither half is the whole thing:
+//   - no lock body can reach a project-root RESOLVER (the closure test);
+//   - every `withProjectStateLock` acquisition passes a THREADED IDENTIFIER
+//     rather than an expression derived on the spot (the second test).
+// Together they cover the routes a re-derived spelling can actually take to an
+// acquisition. What stays uncovered, said out loud: an identifier that was
+// itself assigned from a realpath call earlier in the same function. Nothing
+// mechanical here sees that, and the reason it is tolerable is the last test in
+// this file's sibling — the memo miss costs the acquisition deadline, and item 4
+// removed even that (state/project-state-lock.ts now recognises its own pid and
+// token on contention and re-enters), so the residue is a slow path, not a throw.
 
 const SRC_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -454,8 +513,8 @@ function resolveSpec(fromFile: string, spec: string): string | null {
 
 // Static imports, re-exports, and the lazy `require()`/`import()` escapes the
 // state modules use to break dependency cycles — all three can pull a module in.
-function localImportsOf(file: string): string[] {
-  const text = fs.readFileSync(file, 'utf8');
+function localImportsOf(file: string, source?: string): string[] {
+  const text = source ?? fs.readFileSync(file, 'utf8');
   const specs = new Set<string>();
   for (const m of text.matchAll(/(?:^|\n)\s*(?:import|export)[\s\S]*?from\s+['"]([^'"]+)['"]/g)) specs.add(m[1]!);
   for (const m of text.matchAll(/(?:require|import)\(\s*['"]([^'"]+)['"]\s*\)/g)) specs.add(m[1]!);
@@ -465,6 +524,17 @@ function localImportsOf(file: string): string[] {
     if (resolved) files.push(resolved);
   }
   return files;
+}
+
+/**
+ * Does `file` import `targetFile` at all, by any of the three shapes that bring
+ * a module in here — static import, re-export, and the lazy `require()`/
+ * `import()` the state modules use to break cycles? Deliberately coarser than
+ * "binds this name": the qualifier a caller writes is a naming choice, the
+ * import is not, so the import is what the offender scan keys on.
+ */
+function importsModule(file: string, text: string, targetFile: string): boolean {
+  return localImportsOf(file, text).includes(targetFile);
 }
 
 test('no withProjectStateLock body can reach either project-root resolver', () => {
@@ -502,15 +572,70 @@ test('no withProjectStateLock body can reach either project-root resolver', () =
   // Its projectRoot() export is the other re-derivation, so pin that nobody in
   // the closure CALLS it. (core/context.ts and shared/hook/trace.ts do, and
   // neither is in the closure.)
+  //
+  // EVERY SPELLING OF THE CALL, not the one today's two callers happen to use.
+  // Pinning the literal `paths.projectRoot(` made the scan a coincidence rather
+  // than a guard: a closure module writing `import { projectRoot } from
+  // '../paths'` and calling it bare was the identical hazard and stayed green,
+  // and so did any namespace import not named `paths`. What decides it is the
+  // IMPORT, not the prefix — a file that pulls in shared/paths at all is scanned
+  // for `projectRoot(` under any qualifier, and a file that does not cannot call
+  // it. That gate is also what keeps core/types.ts's `projectRoot(input:
+  // HookInput): string` interface member — a declaration, not a call — out.
+  const pathsModule = path.join(SRC_ROOT, 'shared', 'paths.ts');
+  const CALL = /(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)?projectRoot\s*\(/;
   const offenders: string[] = [];
   for (const file of closure) {
-    if (file === path.join(SRC_ROOT, 'shared', 'paths.ts')) continue; // its own definition
-    fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+    if (file === pathsModule) continue; // its own definition
+    const text = fs.readFileSync(file, 'utf8');
+    const seesPaths = importsModule(file, text, pathsModule);
+    text.split('\n').forEach((line, i) => {
       if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) return;
-      if (/\bpaths\.projectRoot\s*\(/.test(line) || /\bresolveProjectRoot\s*\(/.test(line)) {
+      if (/\bresolveProjectRoot\s*\(/.test(line) || (seesPaths && CALL.test(line))) {
         offenders.push(`${path.relative(SRC_ROOT, file)}:${i + 1}`);
       }
     });
   }
-  assert.deepEqual(offenders, [], 'a lock body can now re-derive a project root through these call sites');
+  assert.deepEqual(
+    offenders, [],
+    'a lock body can now re-derive a project root through these call sites. Both resolvers hand back a '
+    + 'spelling the outer frame may not be holding: heldLocks is keyed by the lock PATH STRING, so the '
+    + 'nested acquisition misses it, renames onto the lock directory this process already owns, and takes '
+    + 'the contention path. Thread the outer cwd through as a parameter instead of re-resolving it.',
+  );
+});
+
+// The other route to a re-derived spelling, and the one the resolver scan above
+// is structurally blind to: the ACQUISITION SITE ITSELF. `withProjectStateLock`
+// takes whatever expression the caller writes, and `withProjectStateLock(
+// fs.realpathSync(cwd), …)` re-derives a spelling without going anywhere near
+// either named resolver. All twenty of today's sites pass a bare identifier that
+// was threaded in as a parameter; this keeps it that way, which is the cheap
+// half of the two dozen realpath calls the closure contains.
+test('every withProjectStateLock acquisition is handed a threaded identifier, not a derived expression', () => {
+  const sources = listTsFiles(SRC_ROOT).filter((f) => !f.includes(`${path.sep}__tests__${path.sep}`));
+  const lockDefinition = path.join(SRC_ROOT, 'shared', 'state', 'project-state-lock.ts');
+  const sites: { readonly at: string; readonly arg: string }[] = [];
+  for (const file of sources) {
+    if (file === lockDefinition) continue;
+    fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) return;
+      const m = /withProjectStateLock\s*(?:<[^>]*>)?\s*\(\s*([^,]+?)\s*,/.exec(line);
+      if (m) sites.push({ at: `${path.relative(SRC_ROOT, file)}:${i + 1}`, arg: m[1]! });
+    });
+  }
+
+  // FIXTURE READBACK — a renamed helper leaves this at zero sites and the
+  // assertion below passes on an empty list.
+  assert.ok(sites.length >= 15, `FIXTURE expected ~20 acquisition sites, found ${sites.length}`);
+
+  const derived = sites.filter((site) => !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(site.arg));
+  assert.deepEqual(
+    derived, [],
+    'a lock acquisition is being handed an EXPRESSION rather than a threaded identifier. There are two '
+    + 'dozen realpath-family calls inside this closure and any of them, spliced in here, mints a second '
+    + 'spelling of a project an outer frame may already hold — which the resolver scan above cannot see, '
+    + 'because it looks for the two named resolvers and a realpath call is neither. Bind the value the '
+    + 'caller was given and pass that.',
+  );
 });

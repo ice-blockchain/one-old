@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readCompiledArchitecture } from './architecture-contract';
+import { readRegularFileOrThrow } from './bounded-read';
 
 // Canonical, unambiguous Tailwind utilities. Deliberately narrow: generic
 // words that appear in hand-written CSS class names (`container`, `card`,
@@ -69,7 +70,7 @@ export function tailwindUtilityEvidence(text: string): TailwindUtilityEvidence {
 
 function readJsonSafe(file: string): Record<string, unknown> | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    const parsed = JSON.parse(readRegularFileOrThrow(file)) as unknown;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : null;

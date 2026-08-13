@@ -10,6 +10,7 @@ import {
 import type {  TierId } from '../config/model-tiers';
 import {  VALID_AGENT_ROLES } from '../config/state';
 import { isNonProjectRoot } from './authoring-root';
+import { readOwnerEntry } from './bounded-read';
 import { trustworthyAgeSince } from './clock-skew';
 import {
   capabilityProfileForRun,
@@ -114,7 +115,17 @@ function reclaimStalePolicyLock(lockPath: string, ownerPath: string): boolean {
   }
   if (entries.length !== 1 || entries[0] !== path.basename(ownerPath)) return false;
   let owner: Rec;
-  try { owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Rec; } catch { return false; }
+  // BOUNDED (shared/bounded-read.ts). Anything but a regular file at the owner
+  // name is not a record this protocol wrote, and it refuses the reclaim exactly
+  // as unparseable bytes do below — presence with no liveness evidence is not
+  // evidence of death. The bare read this replaces had no bound at all: a FIFO
+  // or a device node under the lock directory never returned, so the retry
+  // loop's deadline was unreachable rather than generous.
+  try {
+    const bytes = readOwnerEntry(ownerPath);
+    if (bytes === null) return false;
+    owner = JSON.parse(bytes) as Rec;
+  } catch { return false; }
   const at = typeof owner.at === 'number' ? owner.at : 0;
   // A record with no stamp at all is a different question from a stamp no clock
   // could have produced, and this file's answer to it stays fail-closed. What
@@ -187,7 +198,16 @@ function acquirePolicyLock(filePath: string): PolicyLock | null {
 // directory of whoever acquired it next.
 function releasePolicyLock(lock: PolicyLock): void {
   try {
-    const owner = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')) as Rec;
+    // BOUNDED, and the release is a blocking reader in its own right rather than
+    // a consistency edit: anybody who can write in the lock directory can replace
+    // our own owner file with a FIFO, and a hook that hangs on the way OUT is the
+    // same unreportable outcome as one that hangs on the way in — with the work
+    // already done and the lease still held. A non-regular file lands on the same
+    // branch as a foreign token: we cannot prove we own this, so we remove
+    // nothing and the stale reclaim above collects it after one window.
+    const bytes = readOwnerEntry(lock.ownerPath);
+    if (bytes === null) return;
+    const owner = JSON.parse(bytes) as Rec;
     if (owner.token !== lock.token) return;
     fs.unlinkSync(lock.ownerPath);
   } catch {

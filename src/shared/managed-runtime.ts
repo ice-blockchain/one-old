@@ -28,6 +28,7 @@ import * as path from 'path';
 
 import { runtimeAsset, type RuntimeAsset, type RuntimeKind } from '../config/managed-runtimes';
 import { managedRuntimeDir } from './toolchain-paths';
+import { readRegularFileOrThrow } from './bounded-read';
 
 export type { RuntimeKind } from '../config/managed-runtimes';
 
@@ -215,7 +216,7 @@ function downloadAndExtract(asset: RuntimeAsset, finalDir: string): { ok: boolea
     const sumsFile = path.join(tmpRoot, 'sums');
     const sums = childDownload(asset.checksumUrl, sumsFile, '', CHECKSUM_TIMEOUT_MS);
     if (!sums.ok) return { ok: false, error: `checksum fetch failed: ${sums.error}` };
-    const expected = parseChecksum(asset.checksumStyle, fs.readFileSync(sumsFile, 'utf8'), asset.archiveName);
+    const expected = parseChecksum(asset.checksumStyle, readRegularFileOrThrow(sumsFile), asset.archiveName);
     if (!expected) return { ok: false, error: 'could not resolve checksum for the asset' };
 
     // 2. tarball, verified against the expected hash.

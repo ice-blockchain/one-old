@@ -38,6 +38,7 @@ import {
   readJson,
   readText,
   removePath,
+  stateWritePermitted,
   writeJson,
   writeTextFile,
 } from '../fsjson';
@@ -103,6 +104,26 @@ function refusal(op: string): StateWriteRecord {
   const found = records.find((record) => record.op === op && !record.ok);
   assert.ok(found, `expected a recorded ${op} refusal, got ${JSON.stringify(records)}`);
   return found;
+}
+
+/**
+ * Does this volume fold case? The two rows about the containment check's exact
+ * half are guarded on OPPOSITE answers, so both need this and neither may read it
+ * off its own fixture: the sibling-checkout fixture cannot be BUILT where case
+ * folds (`mkdir proj` then `symlink Proj/.traffic-one` is EEXIST — measured), so
+ * the question has to be answerable before the fixture exists. Answered from a
+ * probe pair, which is buildable either way.
+ */
+function volumeFoldsCase(base: string): boolean {
+  const probe = path.join(base, 'case-probe');
+  fs.mkdirSync(probe, { recursive: true });
+  try {
+    return fs.statSync(path.join(base, 'CASE-PROBE')).ino === fs.statSync(probe).ino;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true });
+  }
 }
 
 // ── (b) the FINAL component: O_NOFOLLOW ──────────────────────────────────────
@@ -293,6 +314,167 @@ test('the state dir ITSELF being the planted link is refused, not declared conta
   assert.equal(appendTextFile(target, 'pwned\n'), false);
   assert.equal(removePath(target), false);
   assert.equal(fs.readFileSync(secret, 'utf8'), SECRET, 'a symlinked state dir was written through');
+});
+
+test('a state dir link that RE-CASES the project root is refused, and a re-cased state dir is not', (t) => {
+  // THE POLARITY SPLIT IN THE CONTAINMENT CHECK, both halves in one row, because
+  // each is the other's control and either alone would pass a broken predicate.
+  //
+  // The comparison is asymmetric: the STATE_DIR segment is compared against a
+  // CONSTANT this file supplies, while the project-root prefix is caller text on
+  // both sides. `pathWithin` folds both, and on the ROOT prefix that is fail-OPEN —
+  // MEASURED on a real case-sensitive APFS volume, a project `Proj` whose
+  // `.traffic-one` links to a DISTINCT sibling checkout `proj`: `permitted=true`,
+  // `wrote=true`, and the sibling's state file overwritten. Substituting an exact
+  // compare for both halves closes that and also refuses `.Traffic-One`, a spelling
+  // the upstream classifier deliberately admits. So: exact for the root, folded for
+  // the segment — see `withinExactly` for what the second half costs and why it is
+  // still the better trade.
+  //
+  // Driven here without a case-sensitive volume by the same trick the plan-migration
+  // fence uses: an ABSOLUTE link target that re-spells the project segment resolves
+  // to a path character-different from the root and case-EQUAL to it. One
+  // directory, one inode — a legitimate layout on this filesystem, and it must
+  // still be refused, because the predicate that would permit it permits the
+  // sibling checkout too.
+  //
+  // THE LINK IS INSIDE THE STATE DIR, not the state dir itself, and that detail is
+  // the whole row: a re-cased `.traffic-one` link resolves to a path that leaves
+  // `.traffic-one` altogether, so the FOLDING half refuses it on its own and the
+  // exact half is never consulted — measured, that fixture passes with the exact
+  // check deleted. An intermediate link that keeps the `.traffic-one` segment and
+  // re-cases only the ROOT isolates the one comparison this half is about.
+  //
+  // AND IT IS VACUOUS ON A CASE-SENSITIVE VOLUME, which is where the defect it is
+  // about actually lives. The row below builds the escape itself for that
+  // filesystem; this one covers the platforms where that escape cannot exist.
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-symlink-fence-recase-')));
+  fixtures.push(base);
+  const project = path.join(base, 'Proj');
+  const stateDir = path.join(project, '.traffic-one');
+  fs.mkdirSync(path.join(stateDir, 'real-runs'), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'real-runs', 'victim.json'), SECRET, 'utf8');
+  fs.symlinkSync(path.join(base, 'PROJ', '.traffic-one', 'real-runs'), path.join(stateDir, 'runs'), 'dir');
+  drainStateWrites();
+
+  if (!volumeFoldsCase(base)) {
+    // A row that measures nothing SAYS so. Returning quietly and reporting `ok` is
+    // the false-green shape this fence keeps rediscovering, and it costs one line
+    // to make the CI log on the other platform say what it did.
+    t.diagnostic('case-SENSITIVE volume: the re-cased link target does not exist here, so the link dangles and both '
+      + 'predicates refuse — this half measures nothing. The sibling-checkout row is what covers the exact '
+      + 'predicate on this filesystem.');
+  } else {
+    assert.equal(fs.statSync(path.join(stateDir, 'runs')).ino, fs.statSync(path.join(stateDir, 'real-runs')).ino,
+      'FIXTURE the link and the real directory are ONE directory, so this row is about the PREDICATE');
+    const target = path.join(stateDir, 'runs', 'victim.json');
+    assert.equal(stateWritePermitted(target), false,
+      'a resolved path that re-spells the project root is not contained in it: folding this comparison is what '
+      + 'reached a sibling checkout on a case-sensitive filesystem');
+    assert.equal(writeJson(target, { pwned: true }), false);
+    assert.equal(refusal('write-json').errno, 'escapes-state-dir');
+    assert.equal(fs.readFileSync(path.join(stateDir, 'real-runs', 'victim.json'), 'utf8'), SECRET);
+    // THE CONTROL, and it is not optional: the row above must not be passing
+    // because this fixture refuses everything. Same state dir, no link.
+    assert.equal(stateWritePermitted(path.join(stateDir, 'real-runs', 'ok.json')), true,
+      'and an ordinary path in the SAME state dir is permitted, or this refusal proves nothing');
+  }
+
+  // THE SECOND HALF OF THE SAME COMPARISON, and this one runs on every filesystem:
+  // the caller spells the state DIR in a different case. What that spelling does NOT
+  // do is decide state-ness — the classifier upstream matches STATE_DIR
+  // case-insensitively, so `.Traffic-One` is already this project's state and
+  // already inside the consent fence (measured, both volume kinds). So the fold HERE
+  // does not widen a refusal, as an earlier version of this comment claimed; it
+  // suppresses one, and it is kept for the reasons `withinExactly` records —
+  // including the measured cost on a case-sensitive volume, where the permitted
+  // write lands in a second, distinct in-project directory. This row is the pin on
+  // that decision: an exact compare on both halves turns `permitted` from true to
+  // false here.
+  const plain = path.join(base, 'plain');
+  fs.mkdirSync(path.join(plain, '.traffic-one'), { recursive: true });
+  drainStateWrites();
+  assert.equal(stateWritePermitted(path.join(plain, '.Traffic-One', 'x.json')), true,
+    'a re-cased STATE DIR segment is permitted, deliberately: the fold there is a decision with a recorded cost, '
+    + 'not the fail-closed side');
+  assert.equal(stateWritePermitted(path.join(plain, '.traffic-one', 'x.json')), true,
+    'and the canonical spelling is permitted, or this pair of rows proves nothing');
+});
+
+test('the SIBLING-CHECKOUT escape itself, where the filesystem makes it buildable', (t) => {
+  // THE DEFECT, DIRECTLY, on the only filesystem it exists on. The row above is
+  // vacuous on a case-SENSITIVE volume, and until this one existed the exact half
+  // of the containment check had NO assertion at all there. MEASURED on a mounted
+  // case-sensitive APFS volume, against the five suites the `fence-linux` CI job
+  // runs: with this row skipped, DELETING the exact half outright survives 80/80,
+  // and the control — this row skipped, the source untouched — is 79/79, so the
+  // survival is an absent assertion rather than a broken fixture. With the row
+  // present that same deletion is 1 kill, and it is this row.
+  //
+  // The job runs this suite on ubuntu-latest, where this row is the load-bearing
+  // one and the row above is the vacuous one: exact mirror images. What has NOT
+  // been established is that a real ext4/xfs kernel resolves and unlinks the way
+  // the mounted image does — that is UNVERIFIED-PENDING-CI until the job's first
+  // run, and the reason this row asserts through the production primitives rather
+  // than against a recorded expectation.
+  //
+  // A project `Proj` whose whole state dir is a link into a DISTINCT sibling
+  // checkout `proj` — the shape a monorepo of two case-variant checkouts, or a
+  // careless `ln -s`, produces. Folding the root prefix declares the sibling's
+  // state file contained in THIS project and the write lands on it; exact refuses.
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-symlink-fence-sibling-')));
+  fixtures.push(base);
+  if (volumeFoldsCase(base)) {
+    // Not skipped silently: on this volume `proj` and `Proj` are ONE directory, so
+    // the fixture cannot be built at all (`symlinkSync` is EEXIST — the state dir
+    // is already there), and a row that measures nothing must say so.
+    t.diagnostic('the probe reports a case-FOLDING volume: `proj` and `Proj` are one directory, so the '
+      + 'sibling-checkout escape cannot be '
+      + 'built here and this row measures nothing. The re-cased-link row above is what covers the exact predicate on '
+      + 'this filesystem.');
+    return;
+  }
+
+  const victim = path.join(base, 'proj', '.traffic-one', 'victim.json');
+  fs.mkdirSync(path.dirname(victim), { recursive: true });
+  fs.writeFileSync(victim, SECRET, 'utf8');
+  const project = path.join(base, 'Proj');
+  fs.mkdirSync(project, { recursive: true });
+  fs.symlinkSync(path.join('..', 'proj', '.traffic-one'), path.join(project, '.traffic-one'), 'dir');
+  drainStateWrites();
+
+  const target = path.join(project, '.traffic-one', 'victim.json');
+  assert.equal(stateWritePermitted(target), false,
+    'a resolved path in a case-variant SIBLING checkout is not contained in this project: folding the root prefix '
+    + 'is what reached it');
+  assert.equal(writeJson(target, { pwned: true }), false, 'the refusal must be reported to the caller');
+  assert.equal(refusal('write-json').errno, 'escapes-state-dir');
+  assert.equal(fs.readFileSync(victim, 'utf8'), SECRET, 'the sibling checkout keeps its state file, byte for byte');
+  // THE CONTROL, and it is the same real directory: addressed as its own project
+  // it is permitted. So what is refused above is the CROSSING and not the
+  // directory — a predicate that refused everything would pass the assertions
+  // above and prove nothing.
+  assert.equal(stateWritePermitted(path.join(base, 'proj', '.traffic-one', 'ok.json')), true,
+    'the same real state dir, addressed as its own project, is permitted');
+});
+
+test('a project rooted at the VOLUME ROOT can still write its own state', () => {
+  // DECISION ONLY — `stateWritePermitted` performs and records nothing, which is
+  // the only reason this shape can be asserted at all: nothing here may write to
+  // `/`.
+  //
+  // projectRootForStatePath deliberately supports that root (`abs.slice(0, at) ||
+  // path.sep`, measured: it classifies `/.traffic-one/x.json` as a project rooted
+  // at `/` on both volume kinds), and adding a root-PREFIX comparison to the
+  // containment check silently took every state write for it away — `'/'.split(
+  // path.sep)` is `['', '']` and no real child segment equals `''`. MEASURED
+  // before the fix: permitted=false with the check, true without it. The folding
+  // predicate has the same hole, so this is not about exactness; it is about
+  // comparing the root prefix at all.
+  assert.equal(stateWritePermitted(path.join(path.sep, '.traffic-one', 'x.json')), true,
+    'a project whose root IS the volume root is a supported shape, and every state write for it was refused');
+  assert.equal(stateWritePermitted(path.join(path.sep, '.traffic-one', 'runs', '1', 'run.json')), true,
+    'nested state under that root too, or the fix only reached the shallowest path');
 });
 
 // ── what must NOT change ─────────────────────────────────────────────────────

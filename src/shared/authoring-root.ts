@@ -17,11 +17,12 @@ import * as path from 'path';
 
 import { pluginRoot } from './paths';
 import { globalTrafficOneDir } from './state/traffic-one-paths';
+import { readRegularFileOrThrow } from './bounded-read';
 
 function manifestNameIsTrafficOne(manifestPath: string): boolean {
   try {
     if (!fs.existsSync(manifestPath)) return false;
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const manifest = JSON.parse(readRegularFileOrThrow(manifestPath));
     return Boolean(manifest && manifest.name === 'traffic-one');
   } catch {
     return false;
@@ -49,7 +50,7 @@ function hasPluginSourceTree(root: string): boolean {
     const hasSourceEntry = fs.existsSync(path.join(root, 'src', 'gen', 'index.ts'))
       || fs.existsSync(path.join(root, 'src', 'build', 'build-runtime.ts'));
     if (!hasSourceEntry) return false;
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const pkg = JSON.parse(readRegularFileOrThrow(pkgPath));
     return Boolean(pkg && pkg.name === 'traffic-one');
   } catch {
     return false;

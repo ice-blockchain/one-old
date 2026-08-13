@@ -12,7 +12,7 @@ import { asString } from '../adapters/coerce';
 import { parseApplyPatch, patchOperationPaths, patchTextFromToolInput } from './apply-patch';
 import { isNonProjectRoot } from './authoring-root';
 import { isPathWithin, resolveProjectRootDetailed, type WorkspaceContainerRegistry } from './hook/paths';
-import { enclosingRegisteredMember } from './hook/workspace-members';
+import { dedupeMemberDirectories, enclosingRegisteredMember } from './hook/workspace-members';
 import { obj } from './obj';
 import { pluginRoot } from './paths';
 import { makeSkillBlock } from './skill-block';
@@ -119,6 +119,68 @@ const WRITE_REDIRECT_RE = /(?:^|[\s])(?:\d*)>>?\s*(?!&)(?:"([^"]+)"|'([^']+)'|([
 const SHELL_WRITE_SIGNAL_RE = /(?:^|[\s;&|"'(])(?:touch|mkdir|tee|rm|rmdir|unlink|truncate|cp|mv|install|ln|rsync)\b|(?:^|[\s])(?:\d*)>>?\s*(?!&)/;
 const TRUSTED_PWD_RE = /(^|[^\\])\$(?:\{PWD\}|PWD(?=[\\/]|$))/g;
 
+// ── STAGE 2 OF THE PIPELINE CONTRACT: SCOPE AND ROOT RESOLUTION ──────────────
+//
+// (The contract for stages 3-6 — tokenization, expansion, extraction and
+// judgement — is stated in src/shared/shell-vocabulary.ts. This is the stage
+// ABOVE all of them: it decides which project the later stages are asked about,
+// so an error here is not a wrong answer, it is a right answer to the wrong
+// question, and no later stage can see that it happened.)
+//
+// THE CONTRACT: a path this stage reports must be one the command could really
+// name. When a fragment of command text cannot be resolved to a path, this stage
+// reports it as UNRESOLVED — never as a path, and never as nothing.
+//
+// The recognizers below deliberately do not parse shell. They do have to know
+// ONE thing about it, and until round 9 they did not: whether a quote character
+// OPENS or CLOSES. `rm -f "$R"/1715091785000/run.json` is one word — the shell
+// glues the closing quote to what follows — but the absolute-path recognizer
+// accepts any quote as a left delimiter, so it read the residue `/1715…/run.json`
+// as an ABSOLUTE path, and project resolution adopted `/1715091785000` as the
+// project root. Both judgements then ran against a root that does not exist and
+// found nothing: 144B/12f → 137B/11f at gate `noop`, ground-truthed, and the same
+// for the `for f in "$R"/*/run.json` spelling. Unquoted `$R/…/run.json` denied
+// and `rm -rf "$R"` denied, which is how narrow the escape was and how invisible:
+// one token, no diagnostic, in the permitting direction.
+//
+// A residue after a CLOSING quote is therefore not a path here. It is the tail of
+// a word whose head this stage cannot resolve, so the whole word joins
+// `unresolvedWriteTargets` when the command signals a write, and the caller
+// decides fail-closed with the text in hand.
+
+/** The indices in `text` at which a quote character CLOSES a quoted span. */
+function closingQuoteIndices(text: string): Set<number> {
+  const closes = new Set<number>();
+  let quote = '';
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (quote === "'") {
+      if (character === "'") { closes.add(index); quote = ''; }
+      continue;
+    }
+    if (character === '\\') { index += 1; continue; }
+    if (quote) {
+      if (character === quote) { closes.add(index); quote = ''; }
+      continue;
+    }
+    if (character === "'" || character === '"' || character === '`') quote = character;
+  }
+  return closes;
+}
+
+/**
+ * The whole shell WORD a matched operand belongs to, when the match began at a
+ * closing quote — `"$R"/<id>/run.json`, whose head is the part this stage cannot
+ * resolve. Reported unresolved rather than silently dropped.
+ */
+function wordAround(text: string, matchStart: number): string {
+  let from = matchStart;
+  while (from > 0 && !/[\s;&|<>()]/.test(text[from - 1]!)) from -= 1;
+  let to = matchStart;
+  while (to < text.length && !/[\s;&|<>()]/.test(text[to]!)) to += 1;
+  return text.slice(from, to);
+}
+
 function normalizeCommandCandidate(value: string): string {
   return value
     .replace(/\\ /g, ' ')
@@ -163,6 +225,17 @@ function commandTargets(command: string, base: string): CommandTargetScan {
   if (!command) return { targets: [], unresolvedWriteTargets: [] };
   const unresolvedWriteTargets: string[] = [];
   const writeSignaled = SHELL_WRITE_SIGNAL_RE.test(command);
+  const closes = closingQuoteIndices(command);
+  // Is this operand match a WORD CONTINUATION rather than an operand of its own?
+  // True when the delimiter the recognizer consumed is a closing quote. Records
+  // the word for the fail-closed arm and answers true so the caller skips it.
+  const continuesWord = (match: RegExpExecArray): boolean => {
+    const operand = match[1] || '';
+    const delimiter = match.index + match[0].length - operand.length - 1;
+    if (delimiter < match.index || !closes.has(delimiter)) return false;
+    if (writeSignaled) unresolvedWriteTargets.push(normalizeCommandCandidate(wordAround(command, delimiter)));
+    return true;
+  };
   const directoryPaths = new Set<string>();
   const directoryTargets: ToolScopeTarget[] = [];
   let directoryMatch: RegExpExecArray | null;
@@ -209,6 +282,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
   }
   COMMAND_ABSOLUTE_PATH_RE.lastIndex = 0;
   while ((match = COMMAND_ABSOLUTE_PATH_RE.exec(command))) {
+    if (continuesWord(match)) continue;
     const parsed = commandCandidate(match[1] || '', base);
     const candidate = parsed.value;
     if (!candidate || parsed.unresolved || candidate.includes('://')) continue;
@@ -226,6 +300,7 @@ function commandTargets(command: string, base: string): CommandTargetScan {
   // writers (rm/sed/install/custom scripts) without attempting shell expansion.
   COMMAND_RELATIVE_PATH_RE.lastIndex = 0;
   while ((match = COMMAND_RELATIVE_PATH_RE.exec(command))) {
+    if (continuesWord(match)) continue;
     const parsed = commandCandidate(match[1] || '', base);
     const candidate = parsed.value;
     if (!candidate || parsed.unresolved || candidate.includes('://')) continue;
@@ -509,7 +584,12 @@ function workspaceAnchoring(
     if (member) owned.push(member);
     else offending.push(anchor);
   }
-  const touched = [...new Set(owned)];
+  // BY IDENTITY, not by string, so the counting side answers the same question
+  // the matching side does. `enclosingRegisteredMember` is spelling-preserving by
+  // contract, so two targets in ONE directory reached under two spellings come
+  // back as two strings — and counting those as two members reported "spans 2
+  // members" about a call that spans one. See `dedupeMemberDirectories`.
+  const touched = dedupeMemberDirectories(owned);
   if (offending.length === 0 && touched.length === 1) {
     return { kind: 'member', container, member: touched[0]! };
   }

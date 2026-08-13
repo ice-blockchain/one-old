@@ -16,6 +16,7 @@ import * as path from 'path';
 
 import type { CompiledI18nContractV1 } from './architecture-contract';
 import type { I18nReference } from './i18n-enforcement';
+import { readRegularFileOrThrow } from './bounded-read';
 
 export interface I18nSeedResult {
   /** `namespace:key` identifiers that were written into at least one catalog. */
@@ -90,7 +91,7 @@ export function seedI18nCatalogKeys(
       if (!root) {
         let text: string;
         try {
-          text = fs.readFileSync(path.join(projectRoot, catalog.path), 'utf8');
+          text = readRegularFileOrThrow(path.join(projectRoot, catalog.path));
         } catch {
           continue; // a missing catalog FILE stays the validator's deny
         }

@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { readOwnerEntry } from './bounded-read';
 import { trustworthyAgeSince } from './clock-skew';
 import { detectHost } from './host';
 import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../config/opencode-mcp';
@@ -24,6 +25,7 @@ import {
   ONE_MCP_MANAGED_TOOLS,
   ONE_MCP_SERVER_NAME,
 } from '../config/one-mcp';
+import { readRegularFileOrThrow } from './bounded-read';
 
 export function codexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.CODEX_HOME && env.CODEX_HOME.trim() ? env.CODEX_HOME.trim() : path.join(os.homedir(), '.codex');
@@ -260,7 +262,15 @@ function observedCodexMcpLock(lockPath: string): CodexMcpLockOwner | null {
     if (entries.length !== 1) return null;
     const ownerName = entries[0] as string;
     const ownerPath = path.join(lockPath, ownerName);
-    const raw = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Record<string, unknown>;
+    // BOUNDED (shared/bounded-read.ts) — the fifth and last port of
+    // state/project-state-lock.ts's `observedLockOwner`. This lock guards a file
+    // under `$HOME`, so the population that can plant a shape at an
+    // `owner-<token>.json` name is anything else running as this user, and the
+    // bare read never returned on one. Not a regular file is not a record this
+    // protocol wrote; the abandoned arm decides on presence plus age.
+    const bytes = readOwnerEntry(ownerPath);
+    if (bytes === null) return null;
+    const raw = JSON.parse(bytes) as Record<string, unknown>;
     const token = typeof raw.token === 'string' ? raw.token : '';
     const pid = typeof raw.pid === 'number' ? raw.pid : Number.NaN;
     const createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : Number.NaN;
@@ -355,7 +365,12 @@ function acquireCodexMcpLock(configPath: string): CodexMcpLock {
 function releaseCodexMcpLock(lock: CodexMcpLock): void {
   const releasedPath = `${lock.dirPath}.${lock.token}.released`;
   try {
-    const raw = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')) as Record<string, unknown>;
+    // BOUNDED: the ownership proof reads a path inside the lock directory, and a
+    // release that hangs is the same unreportable outcome as an acquisition that
+    // hangs, with the work already done and the lease still held.
+    const bytes = readOwnerEntry(lock.ownerPath);
+    if (bytes === null) return;
+    const raw = JSON.parse(bytes) as Record<string, unknown>;
     if (raw.token !== lock.token) return;
     // Vacate the canonical pathname atomically. A crash during best-effort
     // cleanup can strand only this token-addressed tombstone, never a lock that
@@ -400,7 +415,7 @@ export function ensureCodexMcpServerRegistered(
       // Read only after acquiring the shared config lock. The public MCP
       // registration uses the same lock, so a cold append cannot be lost when
       // this transaction migrates an older whole-file snapshot.
-      const existing = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, 'utf8') : '';
+      const existing = fs.existsSync(cfgPath) ? readRegularFileOrThrow(cfgPath) : '';
       const expectedBlock = codexMcpServerBlock(serverPath, nodePath);
       const managedBlock = managedCodexMcpBlock(existing);
       if (managedBlock) {
@@ -438,7 +453,7 @@ export function ensureCodexOneMcpServerRegistered(env: NodeJS.ProcessEnv = proce
     return withCodexMcpLock(cfgPath, () => {
       // Re-read after acquiring the cross-process lock. Concurrent parent and
       // subagent SessionStart hooks must never both append the same TOML table.
-      const existing = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, 'utf8') : '';
+      const existing = fs.existsSync(cfgPath) ? readRegularFileOrThrow(cfgPath) : '';
       // Any same-name declaration is user-owned unless it is our own appended
       // block. In both cases, leave every byte untouched and rely on the
       // universal hook deny if the user independently enabled that server.
@@ -463,7 +478,7 @@ export function removeCodexOneMcpServerRegistration(
     const cfgPath = codexConfigPath(env);
     return withCodexMcpLock(cfgPath, () => {
       if (!fs.existsSync(cfgPath)) return 'absent';
-      const existing = fs.readFileSync(cfgPath, 'utf8');
+      const existing = readRegularFileOrThrow(cfgPath);
       const block = codexOneMcpServerBlock(DEFAULT_PUBLIC_ENDPOINT);
       const first = existing.indexOf(block);
       if (first < 0) {
@@ -479,7 +494,7 @@ export function removeCodexOneMcpServerRegistration(
       try {
         fs.writeFileSync(tmp, next, { encoding: 'utf8', mode: stat.mode & 0o777 });
         // Do not overwrite a user/Codex edit that landed after our snapshot.
-        if (fs.readFileSync(cfgPath, 'utf8') !== existing) return 'modified';
+        if (readRegularFileOrThrow(cfgPath) !== existing) return 'modified';
         fs.renameSync(tmp, cfgPath);
       } finally {
         try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }

@@ -1,6 +1,6 @@
 import * as path from 'path';
 
-import { documentedBinDir, runnerShimDirs } from './runner-shims';
+import { documentedBinDir } from './runner-shims';
 import { shellQuote } from './shell-quote';
 
 // The known wart this closes: pluginRootInfo() can resolve an 'unverified'
@@ -65,28 +65,57 @@ export function doctorShimPath(): string {
   return path.join(documentedBinDir(), 'doctor.cjs');
 }
 
-// The ONLY spellings a gate may treat as "this is doctor, let it through" —
-// and, by construction, exactly the spellings ensureRunnerShims() writes and
-// the runtime ever prints (doctorCommand / doctorShimCommand). Deriving them
-// from this one list is what makes "we never tell a user to run a command we
-// block" a structural property rather than something several functions have to
-// keep agreeing about.
+// The shim directories a gate exemption may anchor on — a SUBSET of the ones
+// ensureRunnerShims() writes into, and by construction a superset of the ones
+// the runtime ever prints (doctorShimCommand / resetCommand). Deriving the
+// printed and the admitted spellings from one place is what makes "we never
+// tell a user to run a command we block" a structural property rather than
+// something several functions have to keep agreeing about.
 //
-// No entry reads a *_PLUGIN_ROOT env var. Env is an INPUT to the hook process,
-// so anchoring a gate exemption on it would make the exemption's identity check
-// forgeable in principle (point a root at a directory holding an arbitrary
-// `scripts/doctor.cjs`):
+// THE WRITE SET AND THE EXEMPTION SET ARE NOT THE SAME SET, and the difference
+// is the whole of this function.
+//
+// `ensureRunnerShims()` writes into every runnerShimDirs() entry, which is
+// right: a machine that relocated its state keeps a live copy where it put it.
+// But that set is steered by THREE environment variables — HOME and, through
+// toolchain-paths.ts, XDG_STATE_HOME and TRAFFIC_ONE_TOOLCHAIN_ROOT — and env
+// is an INPUT to the hook process. Measured: setting any of the three moves the
+// anchor set, and a file planted at the moved anchor was admitted, because this
+// function returns PATHS and nothing downstream asked whether the file sitting
+// at one is the shipped runner. Writing a stub somewhere and then naming it is
+// not a forgery an exemption should have to survive.
+//
+// So the exemption set is the write set MINUS the anchors env can relocate:
 //   1. doctorScriptPath() — `__dirname`-relative, so it names the doctor that
 //      ships with the runtime executing this check. build-runtime.ts emits
 //      scripts/hook-runtime.cjs and scripts/doctor.cjs together as siblings,
-//      so if this code loaded, that file is there.
-//   2. every runnerShimDirs() entry — `~/.traffic-one/bin/doctor.cjs` (the
-//      literal all shipped prose prints) plus, on a machine that relocated its
-//      state, <state-home>/bin/doctor.cjs. Both come from HOME/XDG only
-//      (toolchain-paths.ts), and ensureRunnerShims() writes BOTH, so the set
-//      the grammar admits is exactly the set that exists on disk.
+//      so if this code loaded, that file is there. No env reads this at all.
+//   2. documentedBinDir() — `$HOME/.traffic-one/bin`, the ONE spelling every
+//      shipped line of prose hardcodes and the only one doctorShimPath() and
+//      resetShimPath() ever print. HOME is the last remaining input, and it is
+//      not a narrowing we can make: it is the anchor the entire per-user state
+//      tree is keyed on, so an attacker holding HOME already holds the consent
+//      record, the override ledger and the shims themselves.
+//
+// stableBinDir() is therefore written and NOT exempt. Measured before removing
+// it: no shipped string prints it — `doctorShimCommand()`, `resetCommand()` and
+// every prose spelling go through documentedBinDir() — so on a machine that has
+// relocated its state the documented command is still admitted, and the
+// self-relative runner in (1) is admitted regardless of whether HOME is even
+// writable. The cost is that an operator who types the relocated path by hand
+// is gated; the recovery they were handed is not.
+//
+// The remaining half — "is the file at this anchor actually ours?" — cannot
+// live here, because this module only knows paths. It is tool-classify.ts's
+// isGateExemptScript, which verifies the shim's generated identity before
+// admitting it.
+export function gateExemptShimDirs(): readonly string[] {
+  return [documentedBinDir()];
+}
+
+// The ONLY spellings a gate may treat as "this is doctor, let it through".
 export function gateExemptDoctorScriptPaths(): readonly string[] {
-  return [doctorScriptPath(), ...runnerShimDirs().map((dir) => path.join(dir, 'doctor.cjs'))];
+  return [doctorScriptPath(), ...gateExemptShimDirs().map((dir) => path.join(dir, 'doctor.cjs'))];
 }
 
 // The plugin-root runner remains available even when ~/.traffic-one itself is
