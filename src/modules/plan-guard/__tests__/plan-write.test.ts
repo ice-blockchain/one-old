@@ -1043,6 +1043,89 @@ test('subagents project: cp asset-import cannot borrow an agent-authored legacy 
       command: 'cp /outside/a.png public/a.png && rm -rf src',
     }, raw));
     assert.equal(compound.kind, 'deny');
+
+    // QUOTING THE PROJECT ROOT DOES NOT MAKE AN IN-REPO MOVE AN IMPORT. The
+    // asset-import tokenizer ends a token at the closing quote, so
+    // `mv "<root>"/src/app/a.ts …` presents `<root>` itself as a source — and
+    // the root used to answer "outside the project", buying the carve-out. A
+    // granted carve-out judges only the DEST, so the feature source this `mv`
+    // DESTROYS was answered for by nothing: measured GRANTED (noop) in a
+    // fully-authorized run (published assignments, claimed role) where the
+    // unquoted spelling denied. Both spellings must draw the same refusal.
+    const quotedRoot = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: `mv "${cwd}"/src/app/a.ts dist/b.ts`,
+    }, raw));
+    const unquotedRoot = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: `mv ${cwd}/src/app/a.ts dist/b.ts`,
+    }, raw));
+    assert.equal(quotedRoot.kind, 'deny');
+    assert.equal(unquotedRoot.kind, 'deny');
+    if (quotedRoot.kind === 'deny' && unquotedRoot.kind === 'deny') {
+      assert.ok(quotedRoot.reason.includes('cannot verify role ownership'));
+      assert.equal(quotedRoot.reason, unquotedRoot.reason);
+    }
+  });
+});
+
+// The asset-import carve-out priced at a GATE OUTCOME, in the only fixture
+// where it can produce a GRANT: a compiled run with published runtime
+// assignments and a claimed role, so the DEST is genuinely authorized. Every
+// other asset-import test measures a deny for a surrounding reason (no bounded
+// contract, an allowlist gap), which cannot tell a working carve-out from a
+// broken one — and cannot see a bypass that works by WINNING the carve-out.
+test('compiled run: asset import is granted, a quoted project root is not', () => {
+  withMaterialized({
+    currentRunId: 'run-carve',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const inputPath = architectureInputPath(cwd, 'run-carve');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    }), 'utf8');
+    const architecture = compileArchitectureForRun(cwd, 'run-carve', state);
+    const verification = compileVerificationContract(cwd, 'run-carve', state, architecture, { changedPaths: [] });
+    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const frontend = assignments.assignments.find((assignment) => assignment.role === 'senior-frontend');
+    const home = architecture.modules.find((module) => module.id === 'home');
+    assert.ok(frontend);
+    assert.ok(home);
+    // The dest is compiled-owned by the role, so nothing outside the carve-out
+    // can be what decides these rows.
+    const dest = 'apps/web/public/og-image.png';
+    assert.ok(frontend.scope.include.includes(dest));
+
+    const childId = 'frontend-carve-child';
+    assert.ok(claimThreadRole(cwd, state, childId, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    const raw = { session_id: childId };
+    const run = (command: string) => planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }, raw));
+
+    // The observed 10c-codex shape, GRANTED: a generated raster has no
+    // text-tool path, so breaking this ships the deliverable without its asset.
+    const imported = run(`cp /Users/u/.codex/generated_images/session-1/exec-abc.png ${dest}`);
+    assert.equal(imported.kind, 'noop', imported.kind === 'deny' ? imported.reason : undefined);
+    const absolute = run(`cp /Users/u/.codex/generated_images/session-1/exec-abc.png ${cwd}/${dest}`);
+    assert.equal(absolute.kind, 'noop', absolute.kind === 'deny' ? absolute.reason : undefined);
+
+    // The same authorized dest, reached by a `mv` that DESTROYS a compiled
+    // feature source, with the project root quoted so the source tokenizes as
+    // `<root>` + `/apps/web/…`. Measured `noop` before the root counted as a
+    // member of its own project: the carve-out judged only the dest and both
+    // command-level feature-source checks were switched off.
+    const destructive = run(`mv "${cwd}"/${home.output} ${dest}`);
+    const control = run(`mv ${cwd}/${home.output} ${dest}`);
+    assert.equal(destructive.kind, 'deny');
+    assert.equal(control.kind, 'deny');
+    if (destructive.kind === 'deny' && control.kind === 'deny') {
+      assert.ok(destructive.reason.includes('cannot verify role ownership'));
+      assert.equal(destructive.reason, control.reason);
+    }
   });
 });
 

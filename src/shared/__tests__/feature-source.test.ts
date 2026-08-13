@@ -643,10 +643,23 @@ test('shellAssetImportDest accepts only single outside→inside cp/mv imports', 
   assert.equal(shellAssetImportDest('cp /outside/a.png /proj/apps/web/public/a.png', wd, root), 'apps/web/public/a.png');
   // subdir workdir resolves the relative dest correctly
   assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png', '/proj/apps/web', root), 'apps/web/public/a.png');
+  // A QUOTED PROJECT ROOT IS STILL AN IN-REPO SOURCE. The tokenizer ends a
+  // token at the closing quote, so `"/proj"/src/a.ts` arrives as the two
+  // sources `/proj` and `/src/a.ts` — and `/proj`, the root itself, used to
+  // answer "outside the project" and buy this destructive in-repo `mv` a
+  // read-only-import carve-out that judges only the DEST. Measured at the gate:
+  // `mv "<root>"/apps/web/src/pages/Home.tsx dist/b.ts` was granted (noop)
+  // where the unquoted spelling denied.
+  assert.equal(shellAssetImportDest('mv "/proj"/src/a.ts dist/b.ts', wd, root), null);
+  assert.equal(shellAssetImportDest('cp "/proj"/src/a.ts public/b.ts', wd, root), null);
+  // and the same hole without any quoting: the whole project root as the source
+  assert.equal(shellAssetImportDest('mv /proj public/x', wd, root), null);
   // rejections: in-repo source, relative source, dest outside, dot-dirs, compounds, globs, redirects
   assert.equal(shellAssetImportDest('cp /proj/public/a.png public/b.png', wd, root), null);
   assert.equal(shellAssetImportDest('cp local.png public/a.png', wd, root), null);
   assert.equal(shellAssetImportDest('cp /outside/a.png /elsewhere/a.png', wd, root), null);
+  // the root is a member of its own project but is not a file dest either
+  assert.equal(shellAssetImportDest('cp /outside/a.png /proj', wd, root), null);
   assert.equal(shellAssetImportDest('cp /outside/a.png .traffic-one/a.png', wd, root), null);
   assert.equal(shellAssetImportDest('cp /outside/a.png public/a.png && rm -rf src', wd, root), null);
   assert.equal(shellAssetImportDest('cp /outside/*.png public/', wd, root), null);

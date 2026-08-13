@@ -659,8 +659,17 @@ export function shellAssetImportDest(command: unknown, workdir: unknown, project
     if (segments[0] !== '' || segments.slice(1).some((s) => s === '' || s === '.' || s === '..')) return null;
     return abs;
   };
+  // The root ITSELF is a member of its own project. `abs !== root` made it a
+  // non-member, so anything presenting the root as a SOURCE read as an outside
+  // read-only import and won the carve-out for a destructive in-repo move:
+  // `mv "$ROOT"/src/a.ts dist/b.ts` (this tokenizer ends a token at the closing
+  // quote, so the quoted root and `/src/a.ts` arrive as two sources) and the
+  // unquoted `mv $ROOT public/x` were both granted, and a granted carve-out
+  // judges only the DEST — the destroyed source was answered for by nothing.
+  // '' is the root's own relative path and is falsy, so the dest check below
+  // keeps rejecting a dest equal to the root exactly as before.
   const relativeToRoot = (abs: string): string | null => (
-    abs !== root && abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null
+    abs === root ? '' : abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : null
   );
   const dest = args[args.length - 1]!;
   for (const source of args.slice(0, -1)) {
