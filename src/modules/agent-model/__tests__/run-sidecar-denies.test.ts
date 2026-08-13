@@ -27,6 +27,13 @@
 // Fixtures are mkdtemp roots (withMaterialized) — MANDATORY here: this checkout
 // is the plugin authoring root, where the product stands down, so a fixture
 // under it would measure the stand-down and not the gate.
+//
+// ── A THIRD BOOTSTRAP ARM, ADDED WHEN THE CALL SITE WAS GUARDED ────────────────
+// The last section of this file covers three states that used to reach NO deny of
+// this gate: `ensureRunBootstrap` threw (fsjson's writers rethrow every errno but
+// ELOOP) and core/pipeline.ts answered `pipeline-handler-crashed` instead. Folding
+// them into either arm above would have been this file's own defect class, so the
+// errno is carried into a third arm and the negative assertions pin that.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -387,7 +394,122 @@ test('a compiled run publishes its envelope and does not reach the publish deny'
     freezeRunPolicy(cwd, 'claude');
     const result = agentModelGate(spawnCtx(cwd));
     if (result.kind === 'deny') {
-      assert.notEqual(result.denyId, BOOTSTRAP, 'the control for both bootstrap arms');
+      assert.notEqual(result.denyId, BOOTSTRAP, 'the control for all three bootstrap arms');
+    }
+  });
+});
+
+// ── THE DESTINATION THE FILESYSTEM REFUSED ─────────────────────────────────────
+// Three states where `ensureRunBootstrap` THROWS rather than answering null, so
+// before the guard at the call site this gate returned no deny of its own at all:
+// core/pipeline.ts's PreToolUse arm answered `pipeline-handler-crashed`, a deny no
+// gate chose and one nothing may lift. The rows drive each state and assert the
+// errno reaches the prose, because the errno is the only thing that distinguishes
+// them once the throw is contained.
+//
+// THEY MUST NOT LAND IN EITHER EXISTING ARM, and that is what the negative
+// assertions are for: `stateWritePermitted` answers TRUE in all three, so the
+// fence arm cannot fire and the uncompiled arm would tell the agent the
+// destination "is writable" — the one thing that is false about them.
+
+/** Every throwing state asserts these: the errno arm's shared claims. */
+function assertDestinationArm(reason: string, errno: string): void {
+  assert.match(reason, new RegExp(`the filesystem refused its destination: \`${errno}\``));
+  assert.match(reason, /the state write fence PERMITS this path, so this is the disk answering/);
+  assert.match(reason, /Retrying changes none of that — the same errno returns on every spawn/);
+  assert.match(reason, /repairing it is refused for you/);
+  assert.match(reason, /their move in their own terminal/);
+  // The two arms this must never be folded into.
+  assert.doesNotMatch(reason, /is writable/,
+    'the destination is exactly what is wrong; the uncompiled arm would claim it is writable');
+  assert.doesNotMatch(reason, /write fence REFUSES/, 'the fence permits this path — measured');
+  assert.doesNotMatch(reason, /no compiled architecture/, 'the plan is intact in all three of these states');
+  assert.doesNotMatch(reason, /git show|git restore|backups/, 'run sidecars are gitignored');
+}
+
+test('a role bootstrap directory the process may not write is named by its errno, not as a crash', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'claude');
+    const roleDir = path.join(cwd, T1, 'runs', RUN, 'bootstrap', 'senior-frontend');
+    fs.mkdirSync(roleDir, { recursive: true });
+    fs.chmodSync(roleDir, 0o555);
+    try {
+      // Unguarded this line threw EACCES straight out of the gate; the row is
+      // therefore as much about the guard as about the prose.
+      const reason = denyReason(agentModelGate(spawnCtx(cwd)), BOOTSTRAP);
+      assertDestinationArm(reason, 'EACCES');
+      assert.match(reason, /`\.traffic-one\/runs\/run-test\/bootstrap\/senior-frontend\/`/);
+      assert.match(reason, /a `chmod u\+w`, or removing the file that is standing where a directory belongs/);
+    } finally {
+      // Not tidiness: a 0o555 directory survives the fixture teardown and fails a
+      // LATER unrelated test in a shape that looks like the defect under test.
+      fs.chmodSync(roleDir, 0o755);
+    }
+    const after = agentModelGate(spawnCtx(cwd));
+    if (after.kind === 'deny') {
+      assert.notEqual(after.denyId, BOOTSTRAP, 'the chmod the deny asks the USER for is what clears it');
+    }
+  });
+});
+
+test('a FILE where the `bootstrap` directory belongs is reported as ENOTDIR', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'claude');
+    const bootstrap = path.join(cwd, T1, 'runs', RUN, 'bootstrap');
+    fs.rmSync(bootstrap, { recursive: true, force: true });
+    fs.writeFileSync(bootstrap, 'not a directory', 'utf8');
+
+    const reason = denyReason(agentModelGate(spawnCtx(cwd)), BOOTSTRAP);
+    assertDestinationArm(reason, 'ENOTDIR');
+    // Named as a class, because the throw reports the errno and not WHICH
+    // component of the path is the file — this one is a level above the
+    // destination directory the sentence names.
+    assert.match(reason, /Something at or above that directory is not what it has to be/);
+
+    fs.rmSync(bootstrap, { force: true });
+    const after = agentModelGate(spawnCtx(cwd));
+    if (after.kind === 'deny') {
+      assert.notEqual(after.denyId, BOOTSTRAP, 'removing the file is what clears it');
+    }
+  });
+});
+
+test('a FILE where the ROLE directory belongs is reported as EEXIST', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    freezeRunPolicy(cwd, 'claude');
+    // The third throw, and one this lane found by measurement rather than
+    // inheriting: `mkdirSync` on an existing FILE raises EEXIST, not ENOTDIR.
+    const roleDir = path.join(cwd, T1, 'runs', RUN, 'bootstrap', 'senior-frontend');
+    fs.rmSync(roleDir, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(roleDir), { recursive: true });
+    fs.writeFileSync(roleDir, 'not a directory', 'utf8');
+
+    assertDestinationArm(denyReason(agentModelGate(spawnCtx(cwd)), BOOTSTRAP), 'EEXIST');
+
+    fs.rmSync(roleDir, { force: true });
+    const after = agentModelGate(spawnCtx(cwd));
+    if (after.kind === 'deny') assert.notEqual(after.denyId, BOOTSTRAP);
+  });
+});
+
+test('the run directory at 0555 is NOT this deny — an earlier gate claims it', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // The control for the arm's SCOPE. `runs/<id>` unwritable looks like the same
+    // family and never reaches here: `spawn-claim-unavailable` fires first. So the
+    // arm speaks about the bootstrap subtree and must not blame the run directory.
+    freezeRunPolicy(cwd, 'claude');
+    const runDir = path.join(cwd, T1, 'runs', RUN);
+    fs.rmSync(path.join(runDir, 'bootstrap'), { recursive: true, force: true });
+    fs.chmodSync(runDir, 0o555);
+    try {
+      const result = agentModelGate(spawnCtx(cwd));
+      assert.equal(result.kind, 'deny');
+      if (result.kind === 'deny') {
+        assert.notEqual(result.denyId, BOOTSTRAP,
+          'an earlier gate owns this state; claiming it here would be a deny for a state we never reach');
+      }
+    } finally {
+      fs.chmodSync(runDir, 0o755);
     }
   });
 });

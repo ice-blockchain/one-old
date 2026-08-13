@@ -25,7 +25,7 @@ import {
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { hasRunIdPlaceholder, strayRunIdInText, substituteRunIdPlaceholder } from '../../shared/run-id-paths';
-import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { pluginUseDeclined, projectStateWriteAllowed } from '../../shared/state/plugin-use';
 import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
@@ -56,6 +56,108 @@ import type { GateContext } from './gate-context';
 import { openCodeFirstGates } from './gate-opencode-first';
 import { reuseReplaceGates } from './gate-reuse';
 import { modelEnforcementGates } from './gate-enforcement';
+
+/**
+ * WHY THE PERSIST WAS REFUSED — asked of the disk here, because the enumeration
+ * that used to stand in this spot went stale the moment its neighbour was fixed.
+ *
+ * The `parses` arm below used to name three causes in one parenthesis: "an
+ * unanswered 'use Traffic One here?' question, a symlink planted at the
+ * destination, or a path that leaves the state dir". That was the whole of
+ * `classifyStateWrite`'s refusal set, and it was complete while a refused WRITE
+ * was the only way to reach the arm. It is not any more, and it was never quite
+ * right either:
+ *
+ *   TWO NEW CAUSES ARRIVED WITH THE SIBLING FIX. `ensureCurrentRunId`'s
+ *     lock-failure `catch` used to re-enter the same lock and re-raise past
+ *     itself; containing that (state/run-agent/run-paths.ts, and it is the right
+ *     fix) turns the throw into the designed `return ''`, which lands HERE.
+ *     RE-DRIVEN through this gate rather than inherited from that lane, each
+ *     beside a healthy control that mints and never reaches this deny:
+ *     `.traffic-one/` at 0o555 reaches this arm in 3 ms, and a lock held by a
+ *     LIVE owner reaches it in 2017 ms — two full 1000 ms deadlines, the
+ *     acquisition and then the recovery's. Neither is a refused write, and the
+ *     old sentence's "nothing you can write fixes a refused write: report this
+ *     to the user" was the WRONG remedy for the second: contention needs no
+ *     human at all, and it needs no unusual permissions to happen — it is an
+ *     ordinary state on a busy project.
+ *   ONE OF THE THREE WAS ALREADY UNREACHABLE HERE. "a symlink planted at the
+ *     destination" cannot reach this arm: a link AT the pointer is answered by
+ *     the SYMLINK arm above (`lstat` finds it first), which is why that arm
+ *     exists. DRIVEN — a link at `.one.json` that reads through goes to the
+ *     symlink arm, and the fence's `symlink` reason reaches THIS arm only for a
+ *     link ABOVE the pointer, e.g. `.traffic-one` itself.
+ *
+ * SO THE CAUSE IS PROBED RATHER THAN LISTED, with the two side-effect-free
+ * questions the fence and the filesystem answer for themselves — the same
+ * discriminator shape `bootstrapPublishDeny` uses, and for the same reason: a
+ * deny that cannot tell its causes apart must not print all of them as if it
+ * could. Three of the four are decided by a check; the fourth is what is LEFT
+ * when all three say the write should have worked, and it is worded as that
+ * rather than as a diagnosis.
+ *
+ *   `projectStateWriteAllowed`  the consent conjunct of `classifyStateWrite`,
+ *     asked ALONE so consent separates from the path shapes. It is the one cause
+ *     here the AGENT can clear, so conflating it with a symlink was expensive in
+ *     the one direction that matters. MEASURED in this state: every tool call
+ *     is refused, `cat` and `ls` included, so this arm must not offer a read.
+ *   `stateWritePermitted`       the rest of the fence. Consent is recorded and
+ *     the fence still says no, so it is the path's SHAPE. The three remaining
+ *     reasons are enumerated rather than asserted, because `classifyStateWrite`
+ *     does not export which one fired. MEASURED with `.traffic-one` a symlink out
+ *     of the project: `cat` and `ls -la` permitted, `Write`, `rm` and `chmod`
+ *     refused, and removing the link clears the deny.
+ *   `accessSync(W_OK)` on the state DIR   the fence permits and the filesystem
+ *     refuses. MEASURED at 0o555: this arm, and `chmod u+w` is REFUSED for the
+ *     agent, so it is the user's terminal. The FILE's own mode is deliberately
+ *     not asked: at 0o444 with a writable dir the atomic write still lands and
+ *     the id mints, so a file-mode clause would name a cause that is not one
+ *     (driven — that fixture reaches the architect gate, not this deny).
+ *
+ * WHAT IS LEFT IS TRANSIENT, and saying so is the point of the probe. All three
+ * checks passing means nothing durable is in the way, so what failed is the
+ * SERIALIZATION — a concurrent holder of the project state lock, which clears by
+ * itself. DRIVEN: the same spawn re-sent while the holder still held it returned
+ * this same deny; re-sent after the holder released, it minted an id, persisted
+ * it, and walked on to the ordinary phase gates. So this arm asks for ONE retry
+ * and names the escape, because a bounded retry that reports on its second
+ * failure is the only honest shape for a cause that cannot be confirmed from
+ * here.
+ */
+function persistRefusedCause(cwd: string, pointer: string): string {
+  const file = path.join(cwd, STATE_FILE);
+  const stateDir = path.dirname(file);
+  if (!projectStateWriteAllowed(file)) {
+    return 'The state write fence refused it, because this project has not answered "use Traffic One here?"'
+      + ' yet. That is the ONE cause of this deny you can clear yourself: answer that question, then re-send'
+      + ' this spawn unchanged. Until it is answered every tool call in this project is refused — reads of'
+      + ` \`${STATE_DIR}/\` included — so do not try to inspect your way past this first.`;
+  }
+  if (!stateWritePermitted(file)) {
+    return `The state write fence refused it, and NOT over the consent question — this project has answered`
+      + ' that. What it refuses is the SHAPE of the path: a symlink at or above'
+      + ` \`${pointer}\`, a path that resolves outside \`${STATE_DIR}/\`, or a path nothing can resolve. This`
+      + ' gate cannot tell which of the three from here, and it will not guess. Reading is permitted, so'
+      + ` \`ls -la ${STATE_DIR}\` is worth running to see which it is — but clearing it is a removal, and`
+      + ' removals there are refused for you. Report that exact path to the user; nothing you can write fixes'
+      + ' a refused write.';
+  }
+  try {
+    fs.accessSync(stateDir, fs.constants.W_OK);
+  } catch {
+    return `The fence PERMITS that write and the filesystem refused it: \`${STATE_DIR}/\` cannot be written by`
+      + ' the process running this hook. Nothing about the pointer, the plan or the model is wrong, and no'
+      + ' retry changes a directory mode. What clears it is `chmod u+w` on that directory, which is refused'
+      + " for you — so it is the user's, in their own terminal. Report the directory to them and stop"
+      + ' retrying; do not write the pointer somewhere else instead.';
+  }
+  return `The fence permits that write and \`${STATE_DIR}/\` is writable, so nothing that refuses DURABLY is in`
+    + ' the way — what did not complete is the serialized write itself. A concurrent Traffic One process'
+    + ' holding the project state lock is the ordinary cause on a busy project, and it clears on its own with'
+    + ' no repair by anyone. So re-send this SAME spawn ONCE, unchanged. If this identical deny comes back on'
+    + ' that retry, stop retrying and report it to the user: a refusal that survives a retry is not'
+    + ' contention, and this gate cannot see what else it would be.';
+}
 
 /**
  * THE RUN-ID DENY: it made four claims, three of them false, and the fourth is the
@@ -159,10 +261,8 @@ function runIdUnresolvedDeny(cwd: string): string {
         ? `nothing can be read at \`${pointer}\` (${read.errno}), so there are no JSON bytes there to repair.`
           + ` Whatever is at that path${clearFirst}`
         : parses
-          ? `\`${pointer}\` parses, so the pointer is not what is wrong — the id could not be PERSISTED. A state`
-            + ' write to that path was refused (an unanswered "use Traffic One here?" question, a symlink planted'
-            + ' at the destination, or a path that leaves the state dir), and this gate will not hand back an id'
-            + ' no later read would find. Nothing you can write fixes a refused write: report this to the user.'
+          ? `\`${pointer}\` parses, so the pointer is not what is wrong — the id could not be PERSISTED.`
+            + ` ${persistRefusedCause(cwd, pointer)}`
           : `\`${pointer}\` is there and its bytes do not parse.${quarantine}`;
   // The restore is worth printing wherever a committed copy could land: not for a
   // pointer that already parses, where the fault is the write and not the bytes.
@@ -201,10 +301,10 @@ function projectRelative(cwd: string, file: string): string {
  *
  * `runs/` is one of `TRAFFIC_ONE_RUN_STATE_ENTRIES` in
  * architecture-contract/scaffold-content.ts, so the `.gitignore` the product
- * writes hides the whole subtree. MEASURED (.tmp/denyprose/routes-2.txt) on a
- * real `git init` fixture through `ensureProjectGitignore`: `git check-ignore`
- * reports `model-policy.json`, `host-capability-v1.json` and
- * `bootstrap/<role>/active.json` all IGNORED, `git add -A` stages ZERO paths
+ * writes hides the whole subtree. MEASURED on a real `git init` fixture through
+ * `ensureProjectGitignore`: `git check-ignore` reports `model-policy.json`,
+ * `host-capability-v1.json` and `bootstrap/<role>/active.json` all IGNORED,
+ * `git add -A` stages ZERO paths
  * under `runs/`, and `.traffic-one/.one.json` is NOT ignored and IS staged.
  *
  * That last row is why this fact has to be said rather than assumed: the run-id
@@ -247,8 +347,8 @@ const NO_COMMITTED_COPY = ` There is nothing to restore it from either: \`${STAT
  * whenever `readRunModelPolicy` returns null while `existsSync` says the file is
  * there, and that reader folds a bounded-read failure, a JSON failure and a
  * whole schema+digest validation into one `null`. DRIVEN through this gate on
- * mkdtemp fixtures (.tmp/denyprose/census-1.txt), all reaching this deny: torn
- * bytes; an EMPTY file; valid JSON that is an ARRAY and valid JSON that is a
+ * mkdtemp fixtures, all reaching this deny: torn bytes; an EMPTY file; valid
+ * JSON that is an ARRAY and valid JSON that is a
  * STRING (neither is a record at all); a DIRECTORY at the path (EISDIR — nothing
  * was read, so nothing "is corrupt"); mode 0000 (EACCES, same); an INTACT policy
  * whose `runId` names a different run; an intact policy declaring
@@ -286,8 +386,8 @@ const NO_COMMITTED_COPY = ` There is nothing to restore it from either: \`${STAT
  *   RETIRING THE RUN IS THE SECOND, and it is CONDITIONAL, for the reason
  *     codex-child-model.ts:467 already prints `resetRecoveryLine` conditionally:
  *     `traffic-one-reset` accepts only a terminally `failed` ledger. MEASURED
- *     (.tmp/denyprose/routes2-1.txt) with the ledger set by the real transition
- *     writer: `failed` → `ok=true code=reset`; `planned` → `run-not-failed`; no
+ *     with the ledger set by the real transition writer: `failed` → `ok=true
+ *     code=reset`; `planned` → `run-not-failed`; no
  *     ledger → `ledger-absent`. So the command is printed on `failed` and the
  *     refusal is named otherwise — advising a command that gets refused is how
  *     prose stops being trusted.
@@ -368,8 +468,8 @@ function modelPolicyCorruptDeny(cwd: string, runId: string): string {
  * `core/dispatch.ts:36-43` calls `observeCurrentRunHostCapabilityFromHook`
  * BEFORE the pipeline runs, and `ensureRunHostCapability` writes a fresh record
  * whenever nothing is at the path. DRIVEN through the real Claude entry
- * (`runClaudeHook('check-agent-model', …)`, .tmp/denyprose/routes-2.txt): with
- * the sidecar deleted, `readRunHostCapability` is valid AFTER that invocation
+ * (`runClaudeHook('check-agent-model', …)`): with the sidecar deleted,
+ * `readRunHostCapability` is valid AFTER that invocation
  * and a `agentModelGate` call on the same fixture is then ALLOWED. So the
  * invocation that denies is the invocation that repairs it, and "re-send the
  * same spawn" is a remedy that actually completes — the shape
@@ -430,8 +530,8 @@ function hostCapabilityDeny(cwd: string, runId: string, host: string): string {
  * A NARROW DOOR, which is what made the measurement worth doing. This deny sits
  * inside `allowSpawn`, which the phase and model gates invoke only on their way
  * to an ALLOW, and two self-healing siblings claim most of the surface first. So
- * the census varied the ROLE and the run shape as well as the disk
- * (.tmp/denyprose/census-d3-1.txt), and exactly TWO states reach it:
+ * the census varied the ROLE and the run shape as well as the disk, and exactly
+ * TWO states reach it:
  *
  *   NO WORK UNIT COMPILES FOR THE ROLE. `senior-reviewer` in a run with no
  *     compiled architecture and no published assignments: DRIVEN, this deny,
@@ -452,17 +552,60 @@ function hostCapabilityDeny(cwd: string, runId: string, host: string): string {
  *     answers TRUE in the first state above, so it separates the two rather
  *     than merely describing one.
  *
- * WHAT IS NOT REACHABLE HERE, and worth recording because it is a worse outcome
- * than this deny: a role bootstrap directory at mode 0555, and a FILE planted
- * where the `bootstrap` directory belongs, both make `ensureRunBootstrap` THROW
- * (EACCES, ENOTDIR) — fsjson's writers rethrow every errno but ELOOP, and this
- * call site does not guard. Those land as a crashed-pipeline deny with none of
- * this text. Same shape as the escaping EACCES in `ensureCurrentRunId` the
- * sibling round reported; not fixed here, reported.
+ * A THIRD ARM NOW, for the three states that used to reach no deny of this gate
+ * at all: `ensureRunBootstrap` THREW and the crash arm of core/pipeline.ts
+ * answered instead. The call site is guarded now (see it), and the errno is
+ * carried here because it IS the diagnosis — RE-DRIVEN through this gate, three
+ * repeats each, all three stable, all beside a healthy control that publishes and
+ * reaches no deny:
+ *
+ *   role bootstrap dir at 0o555                EACCES
+ *   a FILE where `bootstrap/` belongs          ENOTDIR
+ *   a FILE where the ROLE dir belongs          EEXIST  (mkdir on an existing file)
+ *
+ * FOLDING THEM INTO EITHER EXISTING ARM WOULD HAVE BEEN THE DEFECT THIS LANE IS
+ * ABOUT, which is why the arm is new rather than a widened sentence.
+ * `stateWritePermitted` answers TRUE in all three (MEASURED), so the fence arm
+ * never fires for them and they would land in the arm below that says the
+ * destination "is writable" — the one thing that is false about them. And the
+ * fence arm's four enumerated causes contain no permission fault, so widening
+ * that list would have asserted a cause nobody checked.
+ *
+ * ONE STATE THAT LOOKS LIKE THESE AND IS NOT: `runs/<id>` itself at 0o555 never
+ * reaches this deny — `spawn-claim-unavailable` fires first (DRIVEN). So the arm
+ * is about the bootstrap subtree, and it says so rather than blaming the run
+ * directory.
+ *
+ * The two arms ABOVE this one in the caller keep their priority deliberately:
+ * a role with no compiled assignment, and a bounded role with no scope, are facts
+ * about whether this role belongs in the run at all, which outranks a broken
+ * destination — the spawn must not happen either way, and those two name the
+ * cheaper fix.
  */
-function bootstrapPublishDeny(cwd: string, runId: string, role: string, assignments: boolean): string {
+function bootstrapPublishDeny(
+  cwd: string,
+  runId: string,
+  role: string,
+  assignments: boolean,
+  publishErrno: string | null,
+): string {
   const active = activeRunBootstrapPath(cwd, runId, role);
   const rel = projectRelative(cwd, active);
+  if (publishErrno) {
+    const dir = projectRelative(cwd, path.dirname(active));
+    return `traffic-one — spawn blocked: \`${role}\`'s bootstrap envelope for run ${runId} could not be written,`
+      + ` because the filesystem refused its destination: \`${publishErrno}\` under \`${dir}/\`.`
+      + ' No child was started, and nothing about the plan, the policy or the model is'
+      + ' wrong — the state write fence PERMITS this path, so this is the disk answering and not a Traffic One'
+      + ' refusal. Something at or above that directory is not what it has to be: it cannot be written'
+      + ' (`EACCES`), or a FILE is sitting where one of those directories belongs (`ENOTDIR`, `EEXIST`).'
+      + ' Retrying changes none of that — the same errno returns on every spawn — and repairing it is refused for'
+      + ' you: writes and removals under that run directory are denied for you, though reading is permitted.'
+      + ` Report this to the USER with that errno and that exact path: a \`chmod u+w\`, or removing the file that`
+      + ' is standing where a directory belongs, is their move in their own terminal, and it clears this'
+      + ' completely. Do NOT author an envelope yourself, do not spawn another role into this run in the'
+      + ' meantime, and do not build the project inline instead.';
+  }
   if (!stateWritePermitted(active)) {
     return `traffic-one — spawn blocked: \`${role}\`'s bootstrap envelope for run ${runId} cannot be published`
       + ` because the state write fence REFUSES its destination, \`${rel}\`, before any envelope bytes are`
@@ -724,7 +867,23 @@ export function agentModelGate(ctx: Ctx): HookResult {
         });
       }
       const boundedMaintenanceOutputs = plan.boundedScope;
-      const envelope = ensureRunBootstrap(cwd, spawnRunId, role, state, plan.options);
+      // GUARDED, and narrowly: fsjson's writers rethrow every errno but ELOOP,
+      // and this was the third of three `ensureRunBootstrap` call sites and the
+      // only unguarded one — spawn-bootstrap.ts `quickFixScopeRegrant` and
+      // run-bootstrap-policy's own `repairRunBootstrapForBoundChild` both already
+      // wrap it for exactly this reason. Unguarded, three states left this gate as
+      // `pipeline-handler-crashed`, a deny no gate chose and (core/pipeline.ts)
+      // one nothing may lift. The errno is CARRIED rather than swallowed the way
+      // those two swallow it: for them a throw and a null are the same answer
+      // because the publish is optional, and here it is the diagnosis — see
+      // `bootstrapPublishDeny`'s destination arm.
+      let publishErrno: string | null = null;
+      let envelope: ReturnType<typeof ensureRunBootstrap> = null;
+      try {
+        envelope = ensureRunBootstrap(cwd, spawnRunId, role, state, plan.options);
+      } catch (error) {
+        publishErrno = (error as NodeJS.ErrnoException).code ?? 'unknown';
+      }
       if (!envelope) {
         // Since PLAN_READY may now be accepted with a capability role the
         // compiled contract assigns nothing (roleSkippableWithoutAssignment),
@@ -759,7 +918,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
         // subsystem for both reachable states — materialization is intact in
         // one and the destination's fence is the whole story in the other — and
         // named no path and no actor for either. See bootstrapPublishDeny.
-        return deny(bootstrapPublishDeny(cwd, spawnRunId, role, Boolean(publishedAssignments)), {
+        return deny(bootstrapPublishDeny(cwd, spawnRunId, role, Boolean(publishedAssignments), publishErrno), {
           denyId: 'spawn-bootstrap-publish-failed',
           denyTarget: role,
         });
