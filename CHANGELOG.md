@@ -28,7 +28,7 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-08-13
+## 1.0.52 — 2026-08-14
 
 ### Agent-visible content — what your agents are told
 
@@ -55,6 +55,10 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 comments: drop references no reader outside this machine can follow (`2ce61ed4`)
+- P8 spawn denies: probe the refused persist, and stop crashing on three (`9aec1abb`)
+- P8 spawn sidecar denies: read the state, name a route and an actor (`27e9cd8d`)
+- P8 run id: a lock failure no longer throws out of the hook (`d0258722`)
 - P8 unresolved run id: stop citing a backup that is never there (`fcbb1405`)
 - P8 state loss: a wiped project no longer looks like a fresh one (`337a73b1`)
 - P8 sidecar fence: a run id nobody minted no longer disarms it (`a0bd1261`)
