@@ -121,7 +121,7 @@
 //     `state/project-state-lock.ts:750` returns
 //     `${path.join(path.resolve(cwd), STATE_FILE)}.report-id.lock`, so the token
 //     `report-id` occurs NOWHERE in this file while the directory it names is a
-//     genuine top-level entry of a project state root; `state/normalize.ts:329`
+//     genuine top-level entry of a project state root; `state/normalize.ts:332`
 //     writes `${filePath}${CORRUPT_STATE_SUFFIX}` beside the state file, which is
 //     the user's ONLY copy of state bytes nothing could parse. Both carry
 //     sibling families whose spellings cannot be enumerated AT ALL —
@@ -1019,6 +1019,81 @@ function notAFileRemedy(removal: string): string {
 }
 
 /**
+ * WHERE A SECOND COPY OF THE POINTER'S BYTES ACTUALLY IS — the clause the durable
+ * remedy below got wrong for every round it has shipped.
+ *
+ * It read: "(a backup may exist under `<…>/.traffic-one/backups/`)". Nothing puts a
+ * state pointer there, by any path. The ONLY writer of that directory is the
+ * gitnexus bootstrap (runners/gitnexus/bootstrap-env.ts `backupConflicts`), it
+ * copies exactly CONFLICT_PATHS — `AGENTS.md`, `CLAUDE.md`, `.claude/skills`
+ * (config/gitnexus.ts) — and all three live OUTSIDE `.traffic-one`. MEASURED
+ * (.tmp/backupclaim/probe-out.txt, CLAIM1) on a project carrying all three beside
+ * a state root: the snapshot tree is those three paths and nothing else, twice.
+ * So the one sentence in this notice offering help sent the reader to a directory
+ * that cannot hold what they were sent for, and — this being a retention notice —
+ * said it to an LLM through retentionAdvisory and SessionStart.
+ *
+ * The copies that DO exist are named instead, each conditioned on what makes it
+ * true:
+ *
+ *   THE QUARANTINE SIBLING, AND ONLY WHEN IT IS THERE. state/normalize.ts's
+ *     `statePreservedBeforeReplace` writes `<state file>.corrupt` with the bytes
+ *     that failed to parse — but only from writeState's REPLACEMENT path, which
+ *     heals the pointer immediately afterwards. So it is not a promise this notice
+ *     may make about the state it is describing: MEASURED (CLAIM2, NOTICE) on a
+ *     corrupt pointer nothing has replaced yet, the sibling is absent, and the
+ *     `unreadable` arms never produce one at all — bytes nobody could read are
+ *     bytes nobody could copy. The filesystem is asked, per notice, for that
+ *     reason. What it holds is therefore the LAST unparseable pointer a state write
+ *     moved aside, which may be older than what is at the path now.
+ *     THE SPELLING IS NAMED HERE AND NOT IMPORTED, for the reason NOT_A_FILE_ERRNO
+ *     is: it is module-private there, and reaching for an export would couple this
+ *     notice to that module's internals. What keeps the two in step is a
+ *     BEHAVIOURAL pin — __tests__/retention.test.ts drives the real writeState over
+ *     a torn pointer and requires this notice to name the file it left behind — so
+ *     a spelling drift reds instead of silently dropping the clause.
+ *   GIT, because the pointer is committed BY DESIGN: `.one.json` is not in the
+ *     generated `.gitignore`, whose `.traffic-one` lines are `runs/`, `reports/`,
+ *     `backups/`, `debug/` and `one-mcp-report.json`
+ *     (architecture-contract/scaffold-content.ts, config/paths.ts). MEASURED
+ *     (CLAIM3) on a fixture through `ensureProjectGitignore`: `git check-ignore`
+ *     says the pointer is NOT ignored and `git add -A` stages it, while
+ *     `backups/x` IS ignored — so the directory the old clause named is not even in
+ *     the tree it was pointing the reader at. Conditioned on "has committed it",
+ *     because this sweep runs no git and cannot answer for a project's history.
+ *
+ * AND EACH ROUTE NAMES ITS ACTOR, to stay consistent with state/state-loss.ts's
+ * `recoveryClause`, the other notice on this channel about this same file:
+ * rewriting the pointer is the AGENT's route (the write fence exempts this exact
+ * path, which is what makes "Repair its JSON" executable at all) and reading
+ * HEAD's copy is permitted, while restoring the state directory from git is
+ * refused for an agent even on a healthy project. That notice fires for an ABSENT
+ * or BLANK pointer and deliberately NOT for unparseable bytes (state-loss.ts,
+ * `pointerLoss`), so the two never print together — which is exactly why the
+ * division of powers must not be stated two ways.
+ *
+ * NO COMMAND IS PRINTED. A `git show` or `git restore` would be a verb with no
+ * probe behind it, and this file's rule is that a printed command has been asked
+ * whether it would run (REMEDY_PROBE). A path the reader can open is worth more
+ * here than a command this sweep cannot answer for.
+ */
+const CORRUPT_POINTER_SUFFIX = '.corrupt';
+
+function pointerCopies(file: string): string {
+  const quarantine = `${file}${CORRUPT_POINTER_SUFFIX}`;
+  const preserved = pathReachableBy(quarantine, false)
+    ? ' The bytes a state write last moved aside for not parsing are on disk beside it, at'
+      + ` ${agentVisiblePath(quarantine)} — nothing in the runtime reads that file, and being repaired FROM is`
+      + ' what it is kept for.'
+    : '';
+  return `${preserved} Git has this file too: \`${STATE_FILE}\` is committed by design, so a project that has`
+    + ' committed it has a copy at HEAD that parses. Reading that copy and rewriting this one are the AGENT\'s'
+    + ' routes — the write fence exempts this exact path. Restoring the state directory from git is NOT one of'
+    + ' them: that is refused for an agent even on a healthy project, and it belongs to the user, in their own'
+    + ' terminal.';
+}
+
+/**
  * THE SAME DEFECT AT THE SECOND SITE, and it was found by the same instrument in
  * the same arm: a remedy naming a path the user cannot act on.
  *
@@ -1073,8 +1148,8 @@ function announceSuspension(
       + ` built-in policy (keep ${DEFAULT_POLICY.keepRuns} runs, ${DEFAULT_POLICY.backupKeep} backup,`
       + ` ${DEFAULT_POLICY.orphanTtlDays}-day TTL). If it is tracked in git, commit the removal too, or the`
       + ' next checkout restores it.'
-    : `Repair its JSON — do NOT remove it, it carries this project's mode, currentRunId and onboarding stamps`
-      + ` (a backup may exist under ${agentVisiblePath(path.join(path.dirname(file), 'backups'))}/).`;
+    : `Repair its JSON — do NOT remove it, it carries this project's mode, currentRunId and onboarding stamps.`
+      + pointerCopies(file);
   // A read refused by a mode bit may have been refused by a mode bit on a
   // DIRECTORY, and then no action on the file is available to the reader: the
   // remedy is the one directory whose own access fails, walked to rather than
@@ -3163,11 +3238,12 @@ function listNestedTrafficOneDirs(cwd: string, notices?: string[]): string[] {
  * `.one.json.corrupt` is the strongest decline in this docblock, and it is argued
  * because the shape invites the opposite: it is unmistakably ours, it is not
  * hand-authored, and it looks like a stale artefact of a heal that already
- * happened. What it actually is: `state/normalize.ts:329` writes
- * `${filePath}${CORRUPT_STATE_SUFFIX}` beside `.one.json` at the moment those bytes
- * STOPPED PARSING, so the file exists only in the case where nothing could read
- * the original — it is the only surviving copy of that project's `mode`, `stack`,
- * `onboardingComplete`, `currentRunId` and durable one-mcp report id.
+ * happened. What it actually is: `state/normalize.ts:332` writes
+ * `${filePath}${CORRUPT_STATE_SUFFIX}` beside `.one.json` when a state write
+ * REPLACES bytes nothing could parse, so the file exists only where such a write
+ * has already moved the original aside — it is the only surviving copy of that
+ * project's `mode`, `stack`, `onboardingComplete`, `currentRunId` and durable
+ * one-mcp report id.
  *
  * Three facts from the code decide it, none of them a preference:
  *
@@ -3182,7 +3258,10 @@ function listNestedTrafficOneDirs(cwd: string, notices?: string[]): string[] {
  *     NOT remove it, it carries this project's mode, currentRunId and onboarding
  *     stamps". Recognising the quarantine copy would authorise deleting the nearest
  *     thing to what that sentence tells the user to repair, in the one state where
- *     it exists.
+ *     it exists. AND IT NOW NAMES THE PATH OUTRIGHT when the file is there
+ *     (pointerCopies), where it used to point at `backups/` instead — a directory
+ *     that cannot hold a pointer — so this decline is what keeps the notice's own
+ *     remedy reachable rather than merely consistent with it.
  *   ANOTHER MODULE ALREADY CLASSIFIED THE FAMILY, and not as junk:
  *     runners/traffic-one-reset/obligations.ts files `run.json.corrupt` and
  *     `agents.json.corrupt` as EVIDENCE — "unparseable bytes nothing can read a

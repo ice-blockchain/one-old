@@ -16,8 +16,12 @@ import { agentVisibleName, unsafeInAgentProse } from '../agent-visible-name';
 import { GENERATED_MARKER, removeGeneratedSkillDir } from '../materialize/generated';
 import { readJsonResult, type JsonRead } from '../fsjson';
 import { resetPluginUseCache } from '../state/plugin-use';
+import { statePath, writeState } from '../state/normalize';
 import { runLiveClaimEvidence } from '../run-settlement';
 import { reportBaseName } from '../../runners/lighthouse/lib';
+// The `backups/` writer itself, so what that directory holds is DRIVEN rather than
+// read off CONFLICT_PATHS — see 'an illegible .one.json names the copies that exist'.
+import { backupConflicts } from '../../runners/gitnexus/bootstrap-env';
 
 function withProject(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-retention-'));
@@ -2366,8 +2370,10 @@ test('a NON-REGULAR file at .one.json is told to be REMOVED, not repaired', (t) 
     assert.equal(stderr.includes('do NOT remove it'), false,
       'and it must NOT forbid removal. That sentence is about a project\'s identity bytes, and a FIFO carries '
       + 'none: mode, currentRunId and the onboarding stamps are all absent by construction');
-    assert.equal(stderr.includes('a backup may exist under'), false,
-      'nor send the reader to look for a backup of bytes that never existed');
+    assert.equal(stderr.includes('is committed by design'), false,
+      'nor send the reader to look for a copy of bytes that never existed. This used to read "a backup may exist '
+      + 'under" — the false parenthetical the row below replaced — and the arm has to keep refusing whatever the '
+      + 'durable sentence names, or the correction just moves the wrong advice onto a FIFO');
     assert.equal(stderr.includes('retryable'), false,
       'nor the transient arm: a FIFO at this path is a durable fact about the path, and the next sweep is not a '
       + 'retry that fixes it');
@@ -2749,7 +2755,101 @@ test('an illegible .one.json is told to REPAIR, never to delete', () => {
     assert.ok(stderr.includes(`${stateFile} cannot be read (EISDIR)`), 'the errno is carried, not folded into "corrupt"');
     assert.ok(stderr.includes('do NOT remove it'), 'the identity file gets the opposite advice from the policy file');
     assert.ok(!stderr.includes('rm -f'), 'and no removal command is offered for it at all');
-    assert.ok(stderr.includes(path.join(dir, t1, 'backups')), 'it points at where a readable copy usually is');
+    assert.ok(stderr.includes('is committed by design'), 'it points at where a readable copy can actually be');
+  });
+});
+
+// ── WHERE THAT NOTICE SENDS A READER LOOKING FOR THE POINTER'S BYTES ─────────
+// It sent them to `.traffic-one/backups/` — "(a backup may exist under …)" — and a
+// state pointer is never there, by any path. The only writer of that directory is
+// the gitnexus bootstrap, which copies exactly CONFLICT_PATHS (`AGENTS.md`,
+// `CLAUDE.md`, `.claude/skills`), all three OUTSIDE `.traffic-one`; the directory
+// is also in the generated `.gitignore`, so it is not even in the tree the reader
+// was being pointed at. This notice reaches an LLM through retentionAdvisory and
+// SessionStart, so the false clause was a product defect and not a typo.
+//
+// THE THREE ARMS ARE THE THREE THINGS THAT HAVE TO STAY TRUE TOGETHER, and each is
+// DRIVEN through the real writer rather than read off a constant — a widening edits
+// the constant, and a row that asserts the constant goes green with it.
+test('an illegible .one.json names the copies that exist, and never `backups/`', () => {
+  const t1 = '.traffic' + '-one';
+  // A — THE ORDINARY SHAPE: a pointer that stopped parsing and nothing has
+  // replaced yet. There is no quarantine sibling in this state (writeState writes
+  // one only on the replacement that heals the file), so the notice may not
+  // promise one — and the copy it CAN name is git's.
+  withProject((dir) => {
+    const stateFile = path.join(dir, t1, '.one.json');
+    fs.writeFileSync(stateFile, '{"mode":"existing-code', 'utf8');
+    const { value: plan, stderr } = capturedStderr(
+      () => sweepTrafficOneRetention(dir, { dryRun: true, nowMs: NOW }),
+    );
+    const suspended = plan.notices.find((notice) => notice.startsWith('SUSPENDED'));
+    assert.ok(suspended, `FIXTURE a corrupt pointer suspends the run caps (${plan.notices.length} notices)`);
+    assert.equal(fs.existsSync(`${stateFile}.corrupt`), false,
+      'FIXTURE and nothing has quarantined those bytes, which is what makes this the ordinary shape');
+    assert.equal(suspended!.includes(path.join(dir, t1, 'backups')), false,
+      'the notice sent the reader to `backups/` for a pointer that is never written there. Arm C drives what that '
+      + 'directory actually receives');
+    assert.equal(suspended!.includes(`${stateFile}.corrupt`), false,
+      'and it must not name a quarantine sibling that is not on disk: the file exists only after a state write has '
+      + 'replaced unparseable bytes, which is a different state from this one');
+    assert.match(suspended!, /`\.traffic-one\/\.one\.json` is committed by design/,
+      'what it can name is git\'s copy — the pointer is not in the generated `.gitignore` (arm C measures that '
+      + 'the directory the old clause named is)');
+    assert.match(suspended!, /Restoring the state directory from git is NOT one of them/,
+      'with the actor named, which is the half state/state-loss.ts measured: an agent is refused every git '
+      + 'restore route, so a notice on the same channel must not hand it one');
+    assert.ok(retentionAdvisory(plan.notices)?.includes('is committed by design'),
+      'and the corrected clause reaches the LLM surface, which is where the false one landed');
+    assert.ok(stderr.includes('is committed by design'), 'on both copies of the notice');
+  });
+
+  // B — THE SIBLING, WRITTEN BY THE REAL WRITER AND NAMED BY THE NOTICE. This is
+  // the behavioural pin the `.corrupt` spelling has instead of an import: the
+  // suffix is module-private in state/normalize.ts, so a drift there has to red
+  // HERE rather than silently drop the clause.
+  withProject((dir) => {
+    const stateFile = statePath(dir);
+    fs.writeFileSync(stateFile, '{"stack":"defa', 'utf8');
+    assert.equal(writeState(dir, { stack: 'minimal', mode: 'existing-codebase' }), true,
+      'FIXTURE the runtime heals over the torn bytes, which is the only thing that writes the quarantine');
+    assert.equal(fs.existsSync(`${stateFile}.corrupt`), true, 'FIXTURE and it really left one behind');
+    // Torn again, so the notice fires with the sibling already on disk — the state
+    // a heal whose durable write did not land also leaves.
+    fs.writeFileSync(stateFile, '{"stack":"min', 'utf8');
+    const plan = sweepTrafficOneRetention(dir, { dryRun: true, nowMs: NOW });
+    const suspended = plan.notices.find((notice) => notice.startsWith('SUSPENDED'));
+    assert.ok(suspended, `FIXTURE the re-torn pointer still suspends (${plan.notices.length} notices)`);
+    assert.ok(suspended!.includes(`${stateFile}.corrupt`),
+      'the quarantine copy holds the bytes that failed to parse and nothing in the runtime reads it, so it is the '
+      + 'one thing a hand repair can start from — and the notice never mentioned it');
+    assert.equal(suspended!.includes(path.join(dir, t1, 'backups')), false, 'and still not `backups/`');
+  });
+
+  // C — WHAT `backups/` ACTUALLY RECEIVES, from its only writer, on a project that
+  // has a state root to lose. Driven, because CONFLICT_PATHS is exactly what a
+  // future widening would edit.
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, t1, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+    for (const rel of ['AGENTS.md', 'CLAUDE.md']) fs.writeFileSync(path.join(dir, rel), `# ${rel}\n`, 'utf8');
+    fs.mkdirSync(path.join(dir, '.claude', 'skills', 'local'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'skills', 'local', 'SKILL.md'), '# local\n', 'utf8');
+    const { backupRoot } = backupConflicts(dir, '2026-01-01T00-00-00Z');
+    const inside: string[] = [];
+    const walk = (at: string, prefix: string): void => {
+      for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+        const rel = prefix ? path.join(prefix, entry.name) : entry.name;
+        if (entry.isDirectory()) walk(path.join(at, entry.name), rel);
+        else inside.push(rel);
+      }
+    };
+    walk(backupRoot, '');
+    assert.deepEqual(inside.sort(), ['AGENTS.md', 'CLAUDE.md', path.join('.claude', 'skills', 'local', 'SKILL.md')].sort(),
+      'FIXTURE the snapshot holds CONFLICT_PATHS and nothing else. If this row reds because a pointer copy joined '
+      + 'the set, the notice above may name that directory again — and until then it may not');
+    assert.equal(inside.some((rel) => rel.includes('.one.json')), false,
+      'no copy of the state pointer is under `backups/`, which is what the old parenthetical promised a user '
+      + 'whose pointer had stopped parsing');
   });
 });
 

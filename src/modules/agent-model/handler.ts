@@ -7,6 +7,8 @@ import { asString } from '../../adapters/coerce';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../shared/authoring-root';
+import { readRegularFileResult } from '../../shared/bounded-read';
+import { STATE_DIR, STATE_FILE } from '../../config/paths';
 import { obj } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
@@ -48,6 +50,131 @@ import type { GateContext } from './gate-context';
 import { openCodeFirstGates } from './gate-opencode-first';
 import { reuseReplaceGates } from './gate-reuse';
 import { modelEnforcementGates } from './gate-enforcement';
+
+/**
+ * THE RUN-ID DENY: it made four claims, three of them false, and the fourth is the
+ * reason this refusal exists at all.
+ *
+ * It read, unconditionally: "`.traffic-one/.one.json` exists but could not be
+ * parsed, so no run id could be resolved. Do NOT mint one or hand-write the file:
+ * repair or restore .one.json (a backup may exist under `.traffic-one/backups/`)
+ * and retry the spawn." This is a DENY an agent must act on, not an advisory it can
+ * weigh, so every clause below is measured through this gate on mkdtemp fixtures
+ * with controls, and pinned in __tests__/run-id-unresolved.test.ts.
+ *
+ * THE DIAGNOSIS WAS FALSE IN THREE REACHABLE STATES. `ensureCurrentRunId` returns
+ * `''` for more than a torn pointer, and its caller announced the torn one every
+ * time. DRIVEN: with `.one.json` a DIRECTORY the read never happens at all (EISDIR
+ * — no bytes, so nothing "could not be parsed", and "repair its JSON" names JSON
+ * that does not exist); with a DANGLING SYMLINK at that path — the shape
+ * `__tests__/write-refusal.test.ts` calls what a hostile repo ships on clone — the
+ * path resolves to nothing and the real cause is fsjson's fence refusing the
+ * destination; and with the consent question unanswered the pointer PARSES and it is
+ * the id's persist that was refused, which is a `materializationStampRefusedCause`
+ * situation and not a repair. All three produced the byte-identical "could not be
+ * parsed" sentence, and one of them told the agent to repair a file that is fine. So
+ * the state is READ here, with the same bounded reader state/state-loss.ts uses,
+ * and named as it is: absent, unparseable, unreadable-with-an-errno, or a pointer
+ * that parses fine while the WRITE was refused.
+ *
+ * "DO NOT MINT ONE" IS TRUE AND STAYS, with its reason strengthened rather than
+ * softened. A fabricated id splits the run — assignments under one id, claims,
+ * digests and markers under another — which is the 11c/13c/14c incident this
+ * function's fail-closed exit exists for (state/run-agent/run-paths.ts). And
+ * "there is nothing to adopt either" is now a MEASURED clause, not a guess: with a
+ * live spawn-gate ledger in `runs/` this deny is never reached (the gate adopts it
+ * and the spawn proceeds to the architect-phase gate instead), so reaching this
+ * sentence means `recentAdoptableRunId` already looked and found nothing.
+ *
+ * "OR HAND-WRITE THE FILE" IS THE ONE CLAUSE THAT HAD TO GO, and it is NARROWED
+ * rather than deleted, because the act it was reaching for genuinely must stay
+ * forbidden. Writing state you INVENTED is the defect; writing back the bytes git
+ * already carries is the only route an agent has. state/state-loss.ts's
+ * `recoveryClause` measured exactly that division for the absent and blank pointer,
+ * and it was RE-MEASURED here for the torn one, through the real PreToolUse entry
+ * points with controls: `git show HEAD:<pointer>` and `Write` to the pointer are
+ * permitted, while `git restore .traffic-one`, `git checkout -- .traffic-one` and a
+ * `Write` to `src/x.ts` in the same fixture are refused — so the exemption really is
+ * path-shaped rather than this state being unfenced. Also DRIVEN: restoring the
+ * committed bytes verbatim clears this deny, and the committed `currentRunId` is
+ * ADOPTED rather than re-minted, so the restore cannot split the run it was accused
+ * of splitting. An unqualified ban left a refused agent forbidden from the one act
+ * that fixes its situation, which is how a deny becomes a retry loop.
+ *
+ * `backups/` IS GONE. Nothing writes a state pointer there: the only writer of that
+ * directory is the gitnexus bootstrap, copying exactly `AGENTS.md`, `CLAUDE.md` and
+ * `.claude/skills` (config/gitnexus.ts), and the directory is itself in the
+ * generated `.gitignore` — measured in the same lane that corrected the identical
+ * clause in shared/retention.ts's suspension notice. What replaces it is what is
+ * really on disk: the quarantine sibling, named only when it is THERE (state/
+ * normalize.ts writes `<pointer>.corrupt` from writeState's replacement path, so it
+ * is absent in the ordinary torn-pointer state and never written for an unreadable
+ * one), and git.
+ *
+ * THE THREE NOTICES ON THIS STATE NOW TELL ONE STORY. retention.ts's SUSPENDED
+ * notice, state-loss.ts's STATE WAS RESET advisory and this deny differ only in the
+ * state they fire in: the agent restores committed bytes verbatim and may not
+ * invent them, and a directory-wide `git restore` is the user's move in their own
+ * terminal.
+ */
+function runIdUnresolvedDeny(cwd: string): string {
+  const pointer = `${STATE_DIR}/.one.json`;
+  const file = path.join(cwd, STATE_FILE);
+  const read = readRegularFileResult(file);
+  const parses = read.kind === 'text' && (() => {
+    try { return obj(JSON.parse(read.text)) !== null; } catch { return false; }
+  })();
+  // Named only when it is on disk. The quarantine is written by the state write
+  // that REPLACES unparseable bytes, so the ordinary torn pointer has none.
+  const quarantine = ((): string => {
+    try {
+      fs.lstatSync(`${file}.corrupt`);
+      return ` The bytes that did not parse are preserved beside it at \`${pointer}.corrupt\` — nothing in the`
+        + ' runtime reads that file, and a hand repair works from it.';
+    } catch {
+      return '';
+    }
+  })();
+  // A SYMLINK at the pointer path reads as `absent` (the bounded open does not
+  // follow it) while `lstat` still finds an entry — and a Write there is refused by
+  // the fence for the link-ness alone, so "absent, go restore it" would send the
+  // agent into a refusal. Asked separately for that reason.
+  const link = ((): boolean => {
+    try { return fs.lstatSync(file).isSymbolicLink(); } catch { return false; }
+  })();
+  const clearFirst = ' has to be cleared before a pointer can be written there, and that is a removal rather'
+    + ' than a write. If that is refused for you, say so to the user instead of retrying.';
+  const state = link
+    ? `\`${pointer}\` is a SYMLINK: the state write fence refuses to write THROUGH one, and there is no pointer`
+      + ` behind it to repair. The link${clearFirst}`
+    : read.kind === 'absent'
+      ? `\`${pointer}\` is not there at all.`
+      : read.kind === 'unreadable'
+        ? `nothing can be read at \`${pointer}\` (${read.errno}), so there are no JSON bytes there to repair.`
+          + ` Whatever is at that path${clearFirst}`
+        : parses
+          ? `\`${pointer}\` parses, so the pointer is not what is wrong — the id could not be PERSISTED. A state`
+            + ' write to that path was refused (an unanswered "use Traffic One here?" question, a symlink planted'
+            + ' at the destination, or a path that leaves the state dir), and this gate will not hand back an id'
+            + ' no later read would find. Nothing you can write fixes a refused write: report this to the user.'
+          : `\`${pointer}\` is there and its bytes do not parse.${quarantine}`;
+  // The restore is worth printing wherever a committed copy could land: not for a
+  // pointer that already parses, where the fault is the write and not the bytes.
+  const restore = parses
+    ? ''
+    : ` What you MAY do is put the COMMITTED pointer back VERBATIM: \`${pointer}\` is committed by design, so`
+      + ` read HEAD's copy with \`git show HEAD:${pointer}\` (a read — permitted in this state) and write those`
+      + ' exact bytes with Write or apply_patch, the one path the state write fence exempts. Change NOTHING in'
+      + ' them: a `currentRunId` you typed is a fabricated id whatever file it lands in, and the committed one is'
+      + ' adopted rather than re-minted. Restoring the state directory with git is refused for you even on a'
+      + " healthy project — that is the user's route, in their own terminal. Then retry this spawn.";
+  return `traffic-one — spawn blocked: no run id could be resolved, so a child would start under an id nothing`
+    + ` on disk carries. ${state}`
+    + ' Do NOT mint one and do NOT author state to get past this: a fabricated id splits the run — assignments'
+    + ' under one id, claims, digests and markers under another — and strands every live child. There is nothing'
+    + ` to adopt either; this gate already looked for a live run in \`${STATE_DIR}/runs/\` and found none.`
+    + restore;
+}
 
 export function agentModelGate(ctx: Ctx): HookResult {
   if (pluginUseDeclined(ctx.cwd)) return noop();
@@ -135,12 +262,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // ensureCurrentRunId now fails closed rather than minting a sibling run over
   // an unreadable `.one.json` — a fabricated id strands every live child.
   if (!spawnRunId) {
-    return deny(
-      'traffic-one — spawn blocked: .traffic-one/.one.json exists but could not be parsed, so no run id '
-      + 'could be resolved. Do NOT mint one or hand-write the file: repair or restore .one.json '
-      + '(a backup may exist under .traffic-one/backups/) and retry the spawn.',
-      { denyId: 'spawn-run-id-unparseable' },
-    );
+    // The reason is derived from the pointer's actual state — see
+    // runIdUnresolvedDeny: "could not be parsed" was announced for a directory and
+    // a fenced write too, and named a `backups/` copy that never exists.
+    return deny(runIdUnresolvedDeny(cwd), { denyId: 'spawn-run-id-unparseable' });
   }
   const configuredSubagentTeam = obj(state.team)?.mode === 'subagents';
   const existingRunPolicy = readRunModelPolicy(cwd, spawnRunId);
