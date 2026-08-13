@@ -51,6 +51,7 @@ import {
   writeState,
 } from '../../shared/state';
 import { initializeToolchainState } from '../../shared/state/toolchain';
+import { stateLossNotice } from '../../shared/state/state-loss';
 import { hasLocalPreferenceFields } from '../../shared/state/local-prefs';
 import { readJson } from '../../shared/fsjson';
 import { applyExistingCodebaseDetection } from '../../shared/onboarding/detection-stamp';
@@ -154,7 +155,16 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // they are produced (see commitShownUpdates), so `withAdvisories` grew a
   // second statement — it is the one place that holds the composed result.
   const updates = unseenUpdatesBlock(cwd, ctx.input.raw);
-  const advisories = [oneMcpWarning, authWarning, uncertifiedBanner, updates?.text]
+  // FIRST in the list, and read before anything below can re-stamp `.one.json`:
+  // a project whose state directory was removed takes one of the setup-pending
+  // exits (or, when the wipe also took its detectable stack, the pristine
+  // new-project noop above it), and every one of those reads as "hello, new
+  // project". This is the one line that says otherwise. Advisory by
+  // construction — it rides the same merge as its three neighbours, so it can
+  // neither become a refusal nor replace one, and a project that legitimately
+  // has no state gets `null` (shared/state/state-loss.ts).
+  const stateLoss = stateLossNotice(cwd);
+  const advisories = [stateLoss, oneMcpWarning, authWarning, uncertifiedBanner, updates?.text]
     .filter((text): text is string => Boolean(text));
   const withAdvisories = (result: HookResult): HookResult => {
     const merged = advisories.length
