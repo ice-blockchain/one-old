@@ -19,7 +19,7 @@ import {
   applyContractThresholds,
   type PackageManager,
   buildFingerprintTag,
-  classifyBlockedStatus,
+  classifyRunnerFailure,
   createAuditUrl,
   runScopedOutDir,
   detectPackageManager,
@@ -33,6 +33,7 @@ import {
   localLighthouseBin,
   parseArgs,
   parseSummary,
+  previewCommandMissingMessage,
   readJson,
   reportBaseName,
   runScriptArgs,
@@ -177,8 +178,23 @@ async function startStaticPreview(staticDir: string, port: number): Promise<Serv
   });
 }
 
-async function startPreview(packageManager: PackageManager, appDir: string, port: number, kind: 'vite' | 'next' | 'static', staticDir?: string): Promise<PreviewHandle> {
-  if (kind === 'static') return startStaticPreview(staticDir || join(appDir, 'out'), port);
+interface StartedPreview {
+  handle: PreviewHandle;
+  /**
+   * The refusal, once the operating system has delivered one — null on every
+   * healthy run, and on the static branch, which needs no child at all.
+   *
+   * Read by the readiness wait rather than thrown from here, because a spawn that
+   * cannot be executed reports it AFTER this function has already returned its
+   * handle. See the listener below.
+   */
+  refused: () => Error | null;
+}
+
+async function startPreview(packageManager: PackageManager, appDir: string, port: number, kind: 'vite' | 'next' | 'static', staticDir?: string): Promise<StartedPreview> {
+  if (kind === 'static') {
+    return { handle: await startStaticPreview(staticDir || join(appDir, 'out'), port), refused: () => null };
+  }
   const args = kind === 'next'
     ? execArgs(packageManager, 'next', ['start', '-H', DEFAULTS.host, '-p', String(port)])
     : execArgs(packageManager, 'vite', [
@@ -195,14 +211,54 @@ async function startPreview(packageManager: PackageManager, appDir: string, port
     shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // The package manager is named BARE — `pnpm`, `npm`, `yarn`, `bun` — so a host
+  // that has not installed the one this project declares refuses this spawn, and
+  // node delivers that refusal as an `'error'` EVENT rather than throwing it. With
+  // no listener that was an uncaught exception, and this runner's whole contract
+  // is that it never exits without a final JSON status line: measured before this
+  // listener existed, with `pnpm` off PATH, exit 1 with an unhandled
+  // `spawn pnpm ENOENT` on stderr and stdout EMPTY — so the page-speed hook, which
+  // parses that line out of stdout, had nothing at all to report.
+  //
+  // Attached HERE, in the same synchronous block as the spawn, because the
+  // alternative rests on queue semantics that are not what they are assumed to
+  // be. `spawn` already knows the outcome — `pid` is undefined the moment it
+  // returns — but publishes it a turn later, and measured on darwin the event
+  // lands after the first microtask checkpoint and before the first
+  // `process.nextTick` callback queued beside the spawn, with `exitCode` set to
+  // the raw negative errno (-2). A caller attaching the listener after
+  // `await startPreview(...)` therefore happens to be in time here and would not
+  // be if either half of that ordering moved. Owning the failure channel in the
+  // function that owns the spawn needs no such argument.
+  let refusal: Error | null = null;
+  child.on('error', (error: NodeJS.ErrnoException) => {
+    refusal = refusal || new Error(previewCommandMissingMessage(packageManager, error.message), { cause: error });
+  });
   child.stdout?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
   child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
-  return child;
+  return { handle: child, refused: () => refusal };
 }
 
-async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
+async function waitForHttp(
+  url: string,
+  timeoutMs: number,
+  /**
+   * Consulted between polls: a reason this wait can never succeed, which ends it
+   * at once rather than spending the whole budget proving what is already known.
+   *
+   * Threaded in rather than raced against the wait, and the difference is
+   * measurable rather than aesthetic: `delay` here is a REF'D timer, so a race
+   * that rejected early would leave this loop polling a port nothing will ever
+   * bind — up to 90 s for a Next preview — and the runner would print its status
+   * line and then refuse to exit. Asking here costs one poll interval on a
+   * failure that has already given up.
+   */
+  giveUp: () => Error | null = () => null,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    const fatal = giveUp();
+    if (fatal) throw fatal;
     try {
       const response = await fetch(url, { redirect: 'manual' });
       if (response.status < 500) {
@@ -320,11 +376,16 @@ async function main(): Promise<void> {
     if (!auditUrl && args.preview) {
       ensurePreviewBuildArtifacts(appDir, frontendApp.previewKind, frontendApp.staticDir);
       const port = await freePort();
-      previewProcess = await startPreview(packageManager, appDir, port, frontendApp.previewKind, frontendApp.staticDir);
+      const started = await startPreview(packageManager, appDir, port, frontendApp.previewKind, frontendApp.staticDir);
+      // Assigned even when the spawn was refused, so the `finally` below owns
+      // whatever `spawn` handed back. `closePreview` is written for that case: a
+      // refused child has no pid and `killed` false, and `kill` on a closed
+      // handle answers false rather than throwing.
+      previewProcess = started.handle;
       const baseUrl = `http://${DEFAULTS.host}:${port}/`;
       auditUrl = createAuditUrl(baseUrl, args.route);
       const timeoutMs = frontendApp.previewKind === 'next' && args.timeoutMs === DEFAULTS.timeoutMs ? 90_000 : args.timeoutMs;
-      await waitForHttp(auditUrl, timeoutMs);
+      await waitForHttp(auditUrl, timeoutMs, started.refused);
     }
 
     if (!auditUrl) {
@@ -360,6 +421,9 @@ async function main(): Promise<void> {
       ...summary,
     };
     process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    // The measured verdict. Claiming the latch keeps a late listener error from
+    // printing a failure status after it and overwriting a real audit.
+    verdictLineWritten = true;
     if (summary.failures.length > 0) {
       process.exitCode = 1;
     }
@@ -369,12 +433,62 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  const status = classifyBlockedStatus(message);
-  if (status) {
-    process.stdout.write(`${JSON.stringify({ status, error: message }, null, 2)}\n`);
+// The failure path is TOTAL: no error leaves this file without one JSON status
+// line on stdout. That is the same promise the watchdog above keeps for a hang,
+// and this path used to break it — the line was printed only when the classifier
+// recognised the message, so an unrecognised error exited with EMPTY stdout. The
+// page-speed hook parses that line and has no other channel, so a silent exit
+// reads to it as "no Lighthouse result was mentioned" rather than as a failed
+// audit, and page speed goes unreported instead of UNVERIFIED. Recognising the
+// message is now the classifier's problem, not a condition on printing.
+//
+// Exactly ONE such line per process, and the FIRST one written wins. The hook
+// reads the LAST JSON object on stdout, so a second line silently replaces the
+// verdict — which is how a completed audit could be reported as a crash by an
+// error that arrived after its summary had already been printed.
+let verdictLineWritten = false;
+
+function failureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function statusLine(message: string): string {
+  return `${JSON.stringify({ status: classifyRunnerFailure(message), error: message }, null, 2)}\n`;
+}
+
+// An error thrown from an event listener rather than from an awaited call never
+// reaches `main`'s rejection, so without this it takes node's default route: die
+// with a stack on stderr and nothing on stdout. That is the hole a missing spawn
+// `error` listener fell through, and closing it here means the contract no longer
+// depends on every future listener remembering to be careful.
+//
+// It exits rather than setting `exitCode` because an unhandled error usually
+// leaves a ref'd handle behind (the preview child, an open socket). Returning
+// would keep the loop alive until the unref'd watchdog fired a SECOND status line
+// — and the hook reads the LAST JSON object on stdout, so a crash would be
+// reported as `blocked:timeout`. Exiting immediately can orphan a preview child,
+// exactly as node's own crash did before this handler existed.
+function reportUncaught(error: unknown): void {
+  const message = failureMessage(error);
+  process.stderr.write(`[traffic-one lighthouse] ${message}\n`);
+  if (verdictLineWritten) {
+    process.exit(1);
+    return;
   }
+  verdictLineWritten = true;
+  // Exit from the write callback so the line is flushed first, with the same
+  // unref'd fallback the watchdog uses for stdout pipe backpressure.
+  process.stdout.write(statusLine(message), () => process.exit(1));
+  setTimeout(() => process.exit(1), 500).unref();
+}
+
+process.on('uncaughtException', reportUncaught);
+process.on('unhandledRejection', reportUncaught);
+
+main().catch((error: unknown) => {
+  const message = failureMessage(error);
+  verdictLineWritten = true;
+  process.stdout.write(statusLine(message));
   process.stderr.write(`[traffic-one lighthouse] ${message}\n`);
   process.exitCode = 1;
 });

@@ -109,6 +109,21 @@ export interface OwnedServer {
   startedAt: string;
   servedAssetHashes: Set<string>;
   child?: ChildProcess;
+  /**
+   * The process GROUP `child` leads, snapshotted at spawn — null on Windows,
+   * which has no signalling group. Carried on the pair rather than re-derived
+   * from `child.pid` at teardown for the reason `killProcessGroup` gives: the
+   * leader of a `npm run dev` is routinely gone while the listener it started
+   * is not, and a pid is only a stable name while its process is alive.
+   */
+  pgid?: number | null;
+  /**
+   * The UPSTREAM port `child` was told to listen on, which is the port the next
+   * run has to be able to bind. Not `port` — that is this runner's own proxy.
+   */
+  targetPort?: number;
+  /** Deregisters `child`'s interrupt reaper. Called by `stopOwnedServer`. */
+  stopReaping?: () => void;
 }
 
 export const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

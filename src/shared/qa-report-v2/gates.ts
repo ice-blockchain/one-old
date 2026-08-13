@@ -20,7 +20,6 @@
 // optimistic to failed, and it is idempotent — a second identical rejection
 // writes nothing.
 
-import * as fs from 'fs';
 
 import { writeJson } from '../fsjson';
 import {
@@ -31,6 +30,7 @@ import {
   type QaV2FailureCode,
   type QaV2ValidationRejected,
 } from './schema';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 /** The page-speed budget: the gate with no browser check id at all. */
 export const PERFORMANCE_GATE_ID = 'performance-budget';
@@ -38,7 +38,35 @@ export const PERFORMANCE_GATE_ID = 'performance-budget';
 // Only rejections that survive the identity checks (same run, same contract,
 // same source) may be written back — a `contract-mismatch` report belongs to
 // another build and must never be edited here.
+//
+// WHICH CODES BELONG HERE IS A RULE, not a list of the ones anybody happened to
+// think of: a refusal must persist exactly when the artifact would otherwise be
+// left CLAIMING SOMETHING THE VALIDATOR JUST REFUSED. Everything absent below
+// is absent for one of two reasons, and both were checked rather than assumed:
+//
+//   nothing durable to correct — `contract-missing`, `report-missing`,
+//     `invalid-json`, and the parse-failure arm of `invalid-schema` all reach
+//     `reject()` with no parsed report, so `persistGateRejection` has no
+//     identity to match and correctly no-ops.
+//   the artifact does not contradict the verdict — `contract-mismatch`,
+//     `source-mismatch` and `scan-incomplete` are refusals to VOUCH for a
+//     report whose identity is unverified, and editing one is precisely what
+//     the identity guard below forbids; `blocked-environment` is a report
+//     already saying `blocked-environment` on disk, which no reader mistakes
+//     for a pass.
+//
+// `invalid-schema` is here because ONE of its two arms breaks that rule.
+// `report.status === 'blocked-environment'` on a none/nonvisual contract is
+// refused with this code while the report has already parsed and matched
+// identity, so before this entry existed nothing was written and the sidecar
+// kept its own word. Latent — no producer emits that shape today, and
+// stackReportStatus explains at length why the stack path must not — but a
+// refusal whose only trace is a return value is a class of defect this lane has
+// already paid for once (`reject()` being pure is how a `passed` sidecar
+// survived a failed performance gate, 10co-e2e), and the cost of closing it is
+// one row.
 export const GATE_ID_FOR_FAILURE: Partial<Record<QaV2FailureCode, string>> = {
+  'invalid-schema': 'report-schema',
   'lighthouse-threshold-failed': PERFORMANCE_GATE_ID,
   'build-identity-invalid': 'build-identity',
   'machine-evidence-invalid': 'machine-evidence',
@@ -90,7 +118,7 @@ export function persistGateRejection(
   const reportPath = qaReportV2Path(projectRoot, runId);
   let onDisk: QaReportV2 | null = null;
   try {
-    onDisk = parseReport(JSON.parse(fs.readFileSync(reportPath, 'utf8')));
+    onDisk = parseReport(JSON.parse(readRegularFileOrThrow(reportPath)));
   } catch {
     return; // nothing durable to correct
   }

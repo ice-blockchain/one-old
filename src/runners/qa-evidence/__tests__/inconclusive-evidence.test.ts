@@ -2,16 +2,18 @@
 // A step that was CUT SHORT produced no evidence, and no evidence is neither a
 // pass nor a failure.
 //
-// The defect these tests were written against: `runStackChecks` collapsed three
-// causes into one arm — "could not spawn", "killed at its timeout" and "killed
-// for overflowing its output buffer" all became
-// `not-applicable / "could not be executed"`. That prose is exactly what
+// The defect these tests were written against: `runStackChecks` collapsed four
+// causes into one arm — "could not spawn", "killed at its timeout", "killed for
+// overflowing its output buffer" and "killed by a signal from outside" all
+// became `not-applicable / "could not be executed"`. That prose is exactly what
 // `validateQaReportV2` accepts as a JUSTIFIED exemption for stack-test,
 // stack-lint, stack-format and stack-performance, so a test suite that hung
-// until the runner killed it settled the run GREEN with zero test evidence.
-// Measured on node v26.5.0/darwin: spawnSync reports a timeout as
-// `status: null, error.code ETIMEDOUT` and a maxBuffer overflow as
-// `status: null, error.code ENOBUFS` — both land in that arm.
+// until the runner killed it settled the run GREEN with zero test evidence, and
+// so did one an OOM killer took out mid-flight. Measured on node
+// v26.5.0/darwin: spawnSync reported a timeout as `status: null, error.code
+// ETIMEDOUT`, a maxBuffer overflow as `status: null, error.code ENOBUFS`, and
+// an external kill as `status: null, signal: SIGKILL` with NO error at all —
+// invisible to a classifier reading the errno.
 //
 // The discipline here is the one src/test-support/__tests__/latency-budget.ts
 // established for wall-clock budgets: a third value that is neither green nor
@@ -32,14 +34,21 @@ import {
 import {
   qaReportV2Path,
   readQaReportV2,
+  validateQaReportV2,
 } from '../../../shared/qa-report-v2';
-import { compileVerificationContract } from '../../../shared/verification-contract';
+import { compileVerificationContract, readVerificationContract } from '../../../shared/verification-contract';
 import { MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, STEP_TIMEOUT_MS, parseArgs } from '../cli';
 import { main } from '../index';
 import { LIGHTHOUSE_MIN_TIMEOUT_MS } from '../lighthouse';
-import { XCRESULTTOOL_MAX_TIMEOUT_MS } from '../native';
-import { runBoundedProcess, type BoundedProcessResult } from '../native-process';
-import { resolveStackCommand, runStackChecks, stackBoundMs } from '../stack';
+import { XCRESULTTOOL_MAX_TIMEOUT_MS, nativeBoundMs, nativeRunCutShort } from '../native';
+import {
+  BOUNDED_PROCESS_KINDS,
+  FORCED_KILL_GRACE_MS,
+  runBoundedProcess,
+  type BoundedProcessKind,
+  type BoundedProcessResult,
+} from '../native-process';
+import { cutShortCause, resolveStackCommand, runStackChecks, stackBoundMs } from '../stack';
 import { type RunnerArgs } from '../types';
 
 const STATE = {
@@ -50,17 +59,8 @@ const STATE = {
   mobile: { framework: 'none' },
 };
 
-/**
- * A nonvisual web contract — `browserRequired: false`, so the `stack` command
- * owns the whole verdict — with the caller's choice of `test` script.
- */
-function nonvisualProject(cwd: string, testScript: string): void {
-  fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
-  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
-    name: 'web',
-    dependencies: { react: '19.0.0', vite: '7.0.0' },
-    scripts: { build: 'node -e ""', test: testScript, 'format:check': 'node -e ""' },
-  }));
+/** The contract half of the fixtures below, with the guards that keep them honest. */
+function compileNonvisualContract(cwd: string): void {
   const architecture = compileArchitecture(cwd, 'R', STATE, {
     schemaVersion: 1,
     routes: [],
@@ -78,6 +78,130 @@ function nonvisualProject(cwd: string, testScript: string): void {
   assert.ok(
     contract.requiredChecks.includes('stack-test'),
     'fixture guard: the contract must actually require the check under test',
+  );
+}
+
+/**
+ * A nonvisual web contract — `browserRequired: false`, so the `stack` command
+ * owns the whole verdict — with the caller's choice of `test` script.
+ */
+function nonvisualProject(cwd: string, testScript: string): void {
+  fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+    name: 'web',
+    dependencies: { react: '19.0.0', vite: '7.0.0' },
+    scripts: { build: 'node -e ""', test: testScript, 'format:check': 'node -e ""' },
+  }));
+  compileNonvisualContract(cwd);
+}
+
+/**
+ * The same contract, but `stack-test` resolves to `go test ./...` — answered by
+ * a fake `go` the caller puts on PATH.
+ *
+ * The indirection is load-bearing for the signal tests. A `package.json` script
+ * runs under `npm run`, so a script that kills ITSELF kills a grandchild and
+ * npm reports an ordinary non-zero exit — a `failed`, which is not the arm
+ * under test. Dropping the `test` script falls through to the pinned Go default
+ * (`resolveStackCommand`'s go.mod branch), whose bare `go` is the process the
+ * runner spawns directly, so the signal that kills it is the signal the runner
+ * observes. `build` and `format:check` stay declared, so the only check that
+ * can move the verdict below is `stack-test`.
+ */
+function nonvisualGoTestProject(cwd: string): void {
+  fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+    name: 'web',
+    dependencies: { react: '19.0.0', vite: '7.0.0' },
+    scripts: { build: 'node -e ""', 'format:check': 'node -e ""' },
+  }));
+  fs.writeFileSync(path.join(cwd, 'go.mod'), 'module web\n\ngo 1.22\n');
+  compileNonvisualContract(cwd);
+  const resolved = resolveStackCommand(cwd, 'stack-test');
+  assert.deepEqual(
+    'unavailable' in resolved ? null : [resolved.command, ...resolved.args],
+    ['go', 'test', './...'],
+    'fixture guard: stack-test must resolve to a command the runner spawns DIRECTLY',
+  );
+}
+
+/**
+ * A fake executable on PATH, running the given body under this node.
+ *
+ * PREPENDED rather than substituted for the whole PATH: `stack-build` and
+ * `stack-format` must keep resolving the real `npm` and passing, so a rejected
+ * report below is attributable to `stack-test` and not to a runner that could
+ * suddenly find nothing at all.
+ */
+async function withFakeBinary(name: string, body: string, fn: () => Promise<void>): Promise<void> {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fake-bin-'));
+  const file = path.join(bin, name);
+  fs.writeFileSync(file, `#!${process.execPath}\n${body}\n`);
+  fs.chmodSync(file, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath || ''}`;
+  try {
+    await fn();
+  } finally {
+    process.env.PATH = previousPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A bound is a promise about when the runner STOPS, and only an upper bound
+ * tests that half.
+ *
+ * Every timing assertion in this file was `elapsedMs >= bound`, which proves
+ * the runner waited and can never prove it stopped — so when the timeout kill
+ * was suppressed by a guard, these tests did not fail, they RAN FOREVER, and a
+ * five-minute production ceiling silently became no ceiling at all. Measured
+ * against that regression on the product shape: 20 s and counting on a 2 s
+ * bound, with the heartbeat printing "10s of a 2s bound".
+ *
+ * The ceiling has three parts, and only one of them scales with the bound.
+ *
+ * `FORCED_KILL_GRACE_MS` is fixed by the runner, for the case where the kill
+ * reaches nothing that can answer it. The RUNNER OVERHEAD is fixed by the
+ * command: these invocations go through `main`, so the ceiling has to cover the
+ * other required checks and the report write, measured at ~400 ms for a stack
+ * run (two more `npm run` legs) and ~30 ms for a native one — an order of
+ * magnitude apart, which is why it is an argument rather than one constant
+ * sized for the larger. And the OVERRUN allowance is proportional, because
+ * "badly overrunning" is a statement about a multiple of the bound rather than
+ * about milliseconds: a flat 3 s admitted a 3.9x overrun at the smallest bound
+ * here and caught a 4x one by a hundred milliseconds, while at the production
+ * 300 s bound the same 3 s was 1%. Half the bound, capped so the large end
+ * stays exactly as strict as the flat form already was there.
+ */
+const MAX_OVERRUN_FRACTION = 0.5;
+const MAX_OVERRUN_MS = 2_000;
+const STACK_RUN_OVERHEAD_MS = 1_200;
+const NATIVE_RUN_OVERHEAD_MS = 300;
+
+/** Signal 0 delivers nothing and answers "does this process still exist". */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertHeldToBound(elapsedMs: number, boundMs: number, what: string, overheadMs: number): void {
+  assert.ok(
+    elapsedMs >= boundMs,
+    `fixture guard: ${what} must have waited out its ${boundMs} ms bound, waited ${elapsedMs} ms`,
+  );
+  const overrunMs = Math.min(MAX_OVERRUN_MS, Math.round(boundMs * MAX_OVERRUN_FRACTION));
+  const ceiling = boundMs + FORCED_KILL_GRACE_MS + overheadMs + overrunMs;
+  assert.ok(
+    elapsedMs < ceiling,
+    `${what} must also STOP at its bound — the runner announces one to its caller and `
+    + `cli.ts promises "a command killed at this bound reports INCONCLUSIVE". Expected settlement within `
+    + `${ceiling} ms (${boundMs} bound + ${FORCED_KILL_GRACE_MS} forced-kill grace + `
+    + `${overheadMs} for the rest of the run + ${overrunMs} allowed overrun), took ${elapsedMs} ms`,
   );
 }
 
@@ -144,12 +268,10 @@ test('a test command killed at its timeout is rejectable, not a pass', async () 
     const startedAt = Date.now();
     const code = await runStack(cwd, ['--timeout-ms', '1500']);
     const elapsedMs = Date.now() - startedAt;
-    // Second precondition: the command actually RAN and was held to the bound.
-    // Without this the test would still pass if the runner had skipped it.
-    assert.ok(
-      elapsedMs >= 1_500,
-      `fixture guard: the runner must have waited out the 1500 ms bound, waited ${elapsedMs} ms`,
-    );
+    // Second precondition, and the bound's own contract. The lower half is what
+    // stops this passing for a runner that skipped the command; the upper half
+    // is what stops it passing for a runner that never stopped running it.
+    assertHeldToBound(elapsedMs, 1_500, 'a hung test command', STACK_RUN_OVERHEAD_MS);
 
     const validated = readQaReportV2(cwd, 'R');
     assert.equal(validated.ok, false, 'a run with no test evidence must never validate');
@@ -185,13 +307,21 @@ test('a test command killed at its timeout is rejectable, not a pass', async () 
   });
 });
 
-// The other cut-short cause. `maxBuffer` overflow kills the child too, and the
+// The other cut-short cause. The capture bound kills the child too, and the
 // process it kills may have been about to exit 0 — measured: a child that wrote
-// 9 MB and would have exited 0 comes back `status: null, ENOBUFS`.
+// 9 MB and would have exited 0 comes back `kind: 'output-limit'`, with the exit
+// code it was heading for never delivered.
+//
+// The MECHANISM here is not the one this file was written against. spawnSync
+// enforced this with `maxBuffer` and reported `status: null, ENOBUFS`; the path
+// is async now and the bound is `MAX_NATIVE_PROCESS_OUTPUT`, counted in
+// `runBoundedProcess`'s own capture and enforced with a group kill. There is no
+// `maxBuffer` and no `ENOBUFS` on this path any more. The DEFECT is identical
+// either way, which is the point of the test: an overflow is not a verdict.
 test('a test command killed for overflowing its output buffer is rejectable, not a pass', async () => {
   await withProject(async (cwd) => {
-    // 9 MB against the runner's 8 MB maxBuffer, then a clean exit 0. Under the
-    // old arm this exact command certified the run green.
+    // 9 MB against the runner's 8 MB capture bound, then a clean exit 0. Under
+    // the old arm this exact command certified the run green.
     nonvisualProject(cwd, 'node -e "process.stdout.write(\'x\'.repeat(9*1024*1024))"');
     const resolved = resolveStackCommand(cwd, 'stack-test');
     assert.ok(!('unavailable' in resolved), 'fixture guard: the test command must resolve');
@@ -213,6 +343,192 @@ test('a test command killed for overflowing its output buffer is rejectable, not
     );
     assert.equal(onDiskReport(cwd).status, 'failed');
   });
+});
+
+// The cut-short cause with an EXIT CODE, which is what makes it the most
+// dangerous one on this path: every other cut-short arrives with `exitCode:
+// null`, so a classifier that missed it would at worst reach the "could not be
+// executed" exemption. This one exits 0, so a missing arm does not launder the
+// run — it certifies it, straight through `if (run.exitCode === 0) passed`.
+//
+// The shape is the forgotten `&`: `node server.js & exit 0`, the ordinary
+// mistake in an integration `test` script. The suite "passes" and leaves a
+// server up, and that server holds the stdout it inherited from npm, so the
+// `close` the runner resolves on never arrives. Both halves matter and are
+// asserted below. The verdict must be INCONCLUSIVE — which is PARITY with the
+// spawnSync path this replaced, where the same project reported `ETIMEDOUT` at
+// its bound, not a new red invented here — and the leftover must be gone,
+// because a survivor on a port is the mechanism behind the incident at
+// plan-guard/plan-readiness/completion.ts:636, where one run's server answered
+// every check of the next.
+test('a test command that exits leaving a server behind is rejectable, not a pass', async () => {
+  await withProject(async (cwd) => {
+    // Outside the project tree on purpose: a stray `.js` at the project root is
+    // a source file the verification contract does not cover, and the run would
+    // be rejected `scan-incomplete` before it ever reached the arm under test.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 't1-leftover-'));
+    const pidFile = path.join(outside, 'server.pid');
+    const server = path.join(outside, 'leftover-server.js');
+    fs.writeFileSync(server, [
+      "const fs = require('fs');",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      'setTimeout(() => {}, 600000);',
+      '',
+    ].join('\n'));
+    nonvisualProject(cwd, `node ${JSON.stringify(server)} & exit 0`);
+    try {
+      const startedAt = Date.now();
+      const code = await runStack(cwd, ['--timeout-ms', '1500']);
+      assertHeldToBound(Date.now() - startedAt, 1_500, 'a test command that leaked a server', STACK_RUN_OVERHEAD_MS);
+
+      const validated = readQaReportV2(cwd, 'R');
+      assert.equal(validated.ok, false, 'a suite whose output was truncated by its own leftovers proved nothing');
+      assert.equal(validated.ok === false ? validated.code : '', 'required-check-failed');
+      assert.equal(code, 1, 'the runner must not exit 0 on a report no gate will accept');
+
+      const check = (validated.ok ? [] : validated.report?.checks || [])
+        .find((entry) => entry.id === 'stack-test');
+      assert.equal(check?.status, 'not-applicable');
+      assert.match(String(check?.summary), /inconclusive:/i);
+      assert.match(
+        String(check?.summary),
+        /exited 0/,
+        'the summary must not claim the command was still running — it exited, and said so',
+      );
+
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      assert.ok(pid > 0, 'fixture guard: the leftover server must actually have started');
+      assert.equal(
+        processAlive(pid),
+        false,
+        `the leftover server (pid ${pid}) survived the run and will answer the NEXT run's checks`,
+      );
+    } finally {
+      try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already gone */ }
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+// The third cut-short cause, and the one that survived the first two fixes: the
+// child is killed by something that is NOT this runner's own bound.
+//
+// A killed child reports `status: null` with NO error object — measured, on
+// this file's own spawnSync options: `{ status: null, signal: 'SIGKILL', error:
+// undefined }`. A classifier reading only the errno therefore saw nothing at
+// all and fell into the "never started" arm, whose prose is the justified
+// exemption. A suite that ran 412 tests and was then killed reported
+// `status: passed`, runner exit 0, validator `ok: true`.
+//
+// Every signal below is something a real CI produces: SIGKILL from an OOM
+// killer or a cgroup, SIGTERM from a job cancellation, SIGSEGV or SIGBUS from a
+// native extension, SIGABRT from an assertion or a failed allocation. They are
+// enumerated rather than sampled because the fix keys on the PRESENCE of a
+// signal, and a fix that keyed on a list of names would pass a one-signal test
+// while leaving the rest laundered.
+for (const signal of ['SIGKILL', 'SIGTERM', 'SIGSEGV', 'SIGBUS', 'SIGABRT'] as const) {
+  test(`a test command killed by ${signal} is rejectable, not a pass`, async () => {
+    await withProject(async (cwd) => {
+      nonvisualGoTestProject(cwd);
+      await withFakeBinary('go', `process.kill(process.pid, '${signal}');`, async () => {
+        const code = await runStack(cwd);
+
+        const validated = readQaReportV2(cwd, 'R');
+        assert.equal(validated.ok, false, 'a killed suite produced no test evidence, so nothing may validate');
+        assert.equal(
+          validated.ok === false ? validated.code : '',
+          'required-check-failed',
+          'the killed check must be REJECTABLE',
+        );
+        assert.equal(code, 1, 'the runner must not exit 0 on a report no gate will accept');
+
+        const checks = validated.ok ? [] : validated.report?.checks || [];
+        const check = checks.find((entry) => entry.id === 'stack-test');
+        assert.equal(check?.status, 'not-applicable', 'a killed command never RAN, so it never failed either');
+        assert.match(String(check?.summary), /inconclusive:/i);
+        assert.match(
+          String(check?.summary),
+          new RegExp(`killed by ${signal}\\b`),
+          'the summary must name the signal — "we could not tell" with no cause is not actionable',
+        );
+
+        // Attribution: the rejection is about the killed check specifically.
+        // Without this the assertions above would hold just as well if the fake
+        // PATH had broken every other command too.
+        assert.deepEqual(
+          checks.filter((entry) => entry.status !== 'not-applicable').map((entry) => `${entry.id}=${entry.status}`),
+          ['stack-build=passed', 'stack-format=passed'],
+          'only stack-test may be unresolved; the rest of the report must be ordinary and green',
+        );
+        assert.equal(onDiskReport(cwd).status, 'failed', 'the durable artifact must not read `passed`');
+      });
+    });
+  });
+}
+
+// THE UNION ITSELF, rather than the four shapes the tests above happen to build.
+//
+// `BoundedProcessResult['kind']` has five members and exactly two consumers that
+// matter, and the arm a member falls through to when nobody wrote one for it is
+// the one that reads a zero exit code as a PASS. Both consumers were `if`-chains
+// ending in `return null`, and nothing anywhere checked them for
+// exhaustiveness: measured, a sixth member added to the union produced ZERO
+// errors from `tsc --noEmit` — verified non-vacuous by planting a deliberate
+// type error in the same file, which `tsc` did report. So a seventh kind added
+// next year got no compile error and no test failure.
+//
+// Both are switches over the same exported list now, which makes a missing arm
+// a compile error. This is the other half, and it is not redundant with it: a
+// compile-time guard is defeated by a cast or an `any` at the boundary, and a
+// runtime guard is defeated by nobody running the test. They fail in different
+// circumstances.
+test('every way a bounded run can end is classified by both consumers', () => {
+  // The four that are cut short by KIND alone. `completed` and `unavailable`
+  // are the two that must stay classifiable-as-fine, and they are opposite
+  // facts: one ran to a verdict, the other never started.
+  //
+  // `start-failed` is the fourth and it is the one that had to be ADDED to the
+  // union to be askable at all: an EMFILE refusal used to arrive as `completed`
+  // with a null exit code, which both consumers read as "not cut short" because
+  // their `completed` arm keys on the SIGNAL. The hole was one layer below this
+  // loop — inside a branch keyed on `exitCode` — so this test could not have
+  // seen it, and the repair is that the state now has a name here.
+  const cutShortKinds = new Set(['timeout', 'output-limit', 'abandoned', 'start-failed']);
+  const shape = (kind: BoundedProcessKind): BoundedProcessResult => ({
+    kind,
+    // Exit 0 deliberately: this is the value that becomes a false green if a
+    // kind reaches the pass arm, so every member is probed carrying it.
+    exitCode: 0,
+    signal: null,
+    stdout: '',
+    stderr: '',
+  });
+  for (const kind of BOUNDED_PROCESS_KINDS) {
+    assert.equal(
+      cutShortCause(shape(kind), 1_000) !== null,
+      cutShortKinds.has(kind),
+      `stack: '${kind}' is classified on the wrong side of the cut-short line`,
+    );
+    assert.equal(
+      nativeRunCutShort(shape(kind)) !== null,
+      cutShortKinds.has(kind),
+      `native: '${kind}' is classified on the wrong side of the cut-short line`,
+    );
+  }
+
+  // The fifth cut-short shape, and the only one that turns on a FIELD rather
+  // than the kind: an external kill arrives as `completed` with a signal.
+  const killed: BoundedProcessResult = { ...shape('completed'), exitCode: null, signal: 'SIGKILL' };
+  assert.match(String(cutShortCause(killed, 1_000)), /SIGKILL/);
+  assert.match(String(nativeRunCutShort(killed)), /SIGKILL/);
+
+  // And the runtime half of the compile-time guard: a kind that reached these
+  // functions despite the switch — through a cast, a JSON round-trip, an older
+  // sidecar — must land on CUT SHORT, which is rejectable. The fail-closed
+  // direction is the whole point; `null` here is the false green.
+  const future = { ...shape('completed'), kind: 'reaped-by-cgroup' as BoundedProcessKind };
+  assert.notEqual(cutShortCause(future, 1_000), null, 'an unrecognized ending must never read as a verdict');
+  assert.notEqual(nativeRunCutShort(future), null, 'an unrecognized ending must never read as a verdict');
 });
 
 // latency-budget's rule 1, transplanted: the new classifier must not manufacture
@@ -251,23 +567,52 @@ test('a project that declares no test command still settles green', async () => 
   });
 });
 
-// The second honest exemption: the project DECLARED the script but its binary is
-// absent. The command never started, so nothing was cut short — that is an
-// environment gap, and it stays excused. The line this fix draws is exactly
-// "started and was killed" versus "never started".
-test('a declared command whose binary is absent still settles green', async () => {
+// THIS ROW USED TO ASSERT THE OPPOSITE, and it was wrong — it read "a declared
+// command whose binary is absent still settles green", and called that the
+// second honest exemption on the grounds that the command never started, so
+// nothing was cut short.
+//
+// The premise is true and the conclusion does not follow. Nothing was cut
+// short, and nothing was measured either: the project declared a test command
+// and zero tests ran. "Never started" is the right line for the INCONCLUSIVE
+// marker, whose job is to name a signal death, and it is the wrong line for
+// the EXEMPTION, whose job is to excuse a check the project never asked for.
+// Sorting an environment gap by the first line put it on the excused side of
+// the second, and the everyday fresh clone — a devDependency that never
+// installed — settled verified with no test evidence.
+//
+// The check-level report is unchanged (still `not-applicable`, still not
+// inconclusive, still the same prose); what changed is that it now carries the
+// reason that separates it from a project with no test command at all, and the
+// validator reads that reason instead of the prose. See
+// __tests__/exemption-provenance.test.ts for all three views of this run and
+// for the arm that is still exempt.
+test('a declared command whose binary is absent cannot settle', async () => {
   await withProject(async (cwd) => {
     nonvisualProject(cwd, 't1-no-such-binary-9d3f1a');
-    assert.equal(await runStack(cwd), 0, 'a missing binary was always a justified exemption');
+    assert.equal(await runStack(cwd), 1, 'a declared suite that never ran is not a justified exemption');
     const validated = readQaReportV2(cwd, 'R');
-    assert.equal(validated.ok, true, validated.ok ? '' : `${validated.code}: ${validated.message}`);
-    const check = validated.ok
-      ? validated.report.checks.find((entry) => entry.id === 'stack-test')
-      : undefined;
-    assert.equal(check?.status, 'not-applicable');
+    assert.equal(validated.ok, false, 'zero tests ran, and the validator must say so');
+    assert.equal(validated.ok ? '' : validated.code, 'required-check-failed');
+    const check = validated.report?.checks.find((entry) => entry.id === 'stack-test');
+    assert.equal(check?.status, 'not-applicable', 'nobody observed a failure, so this is still not a red check');
+    assert.equal(check?.notApplicable, 'declared-not-runnable', 'and the reason is what refuses it the exemption');
     assert.match(String(check?.summary), /could not be executed/i);
     assert.doesNotMatch(String(check?.summary), /inconclusive:/i, 'a command that never started was not cut short');
   });
+});
+
+// The discrimination the exemption now rests on, pinned at the primitive rather
+// than inferred from the verdict above. `signal` is the ONLY thing separating a
+// command that never started from one that was killed — both report
+// `exitCode: null` and neither carries an error the classifier can read — so if
+// a failed spawn ever started reporting one, every honest environment gap would
+// become an inconclusive and the fix would have inverted itself.
+test('a command that never started carries no signal, which is what keeps its exemption honest', async () => {
+  const result = await runBoundedProcess(['t1-no-such-binary-9d3f1a'], process.cwd(), 30_000);
+  assert.equal(result.kind, 'unavailable');
+  assert.equal(result.exitCode, null);
+  assert.equal(result.signal, null, 'a spawn that never happened cannot have been signalled');
 });
 
 // A green run must stay green, end to end, with the real gate reading the real
@@ -293,7 +638,7 @@ test('a failing test command is still a failure, not an inconclusive', async () 
   await withProject(async (cwd) => {
     nonvisualProject(cwd, 'node -e "process.exit(1)"');
     assert.equal(await runStack(cwd), 1);
-    const [check] = runStackChecks({ projectRoot: cwd } as unknown as RunnerArgs, ['stack-test']);
+    const [check] = await runStackChecks({ projectRoot: cwd } as unknown as RunnerArgs, ['stack-test']);
     assert.equal(check?.status, 'failed', 'an observed non-zero exit is evidence of failure');
     assert.doesNotMatch(String(check?.summary), /inconclusive:/i);
   });
@@ -346,6 +691,63 @@ test('the validator refuses an inconclusive check even when it wears the exempti
     const validated = readQaReportV2(cwd, 'R');
     assert.equal(validated.ok, false, 'the marker alone must defeat the exemption');
     assert.equal(validated.ok === false ? validated.code : '', 'required-check-failed');
+  });
+});
+
+// The same guard from the other end, with the REAL summary a killed runner
+// writes rather than a hand-built one.
+//
+// The exemption is prose-matched on two independent clauses, and the marker is
+// a third condition on top. This asserts a killed check fails ALL THREE, so
+// re-opening the false pass takes three regressions rather than one careless
+// rewording of the producer — which matters because the producer is the only
+// thing that has ever written this prose, and nothing stops a future arm from
+// phrasing a kill as "could not be executed" again.
+test('a killed runner\'s own summary matches no clause of the justified exemption', async () => {
+  await withProject(async (killed) => {
+    nonvisualGoTestProject(killed);
+    let summary = '';
+    await withFakeBinary('go', "process.kill(process.pid, 'SIGKILL');", async () => {
+      const [check] = await runStackChecks({ projectRoot: killed } as unknown as RunnerArgs, ['stack-test']);
+      assert.equal(check?.status, 'not-applicable', 'fixture guard: this is the arm the exemption reads');
+      summary = String(check?.summary);
+    });
+
+    // The two halves of `justifiedNoStackCommand` in shared/qa-report-v2, quoted
+    // verbatim. Restated here on purpose: importing the predicate would make
+    // this test agree with whatever the validator does, which is the one thing
+    // an independent pin must not do.
+    assert.doesNotMatch(summary, /\bnot run:/i, 'the killed summary must not open with the exemption phrase');
+    assert.doesNotMatch(
+      summary,
+      /\b(?:declares no|could not be executed)\b/i,
+      'nor claim the command was absent or unrunnable — it ran',
+    );
+
+    // And end to end: transplanted onto a report the validator accepts TODAY,
+    // it is refused. Without this the assertions above would only prove the
+    // prose differs, not that the difference decides anything.
+    await withProject(async (accepted) => {
+      fs.mkdirSync(path.join(accepted, 'apps/web/src/lib'), { recursive: true });
+      fs.writeFileSync(path.join(accepted, 'package.json'), JSON.stringify({
+        name: 'web',
+        dependencies: { react: '19.0.0', vite: '7.0.0' },
+        scripts: { build: 'node -e ""' },
+      }));
+      compileNonvisualContract(accepted);
+      assert.equal(await runStack(accepted), 0, 'fixture guard: this report must start out ACCEPTED');
+
+      const report = onDiskReport(accepted);
+      const target = (report.checks as Array<Record<string, unknown>>)
+        .find((check) => check.id === 'stack-test');
+      assert.equal(target?.status, 'not-applicable', 'fixture guard: same status, so only the summary changes');
+      target!.summary = summary;
+      fs.writeFileSync(qaReportV2Path(accepted, 'R'), JSON.stringify(report));
+
+      const validated = readQaReportV2(accepted, 'R');
+      assert.equal(validated.ok, false, 'the exemption must not cover a summary a killed runner wrote');
+      assert.equal(validated.ok === false ? validated.code : '', 'required-check-failed');
+    });
   });
 });
 
@@ -438,6 +840,71 @@ test('a native adapter killed for overflowing its output bound is inconclusive, 
   });
 });
 
+// The same shape one layer over: an adapter that finishes while a simulator, a
+// Metro server or a Gradle daemon it started keeps the inherited stdout open.
+// `xcodebuild` owning a simulator is the everyday form of it, and it is the
+// only cut-short cause on this path that arrives WITH an exit code.
+//
+// It cannot be a false green — `passed` requires `kind === 'completed'` — so
+// what a missing arm produces here is the OTHER defect this file exists to
+// close, and the one the overflow case above was carved out of: "Native adapter
+// xcode-simulator failed or produced no valid machine result", an invented red
+// for a run whose only observed fact was an exit code the runner could not
+// trust. Verified by mutation: with the `abandoned` arm removed from
+// `nativeRunCutShort`, this test is the only thing in the suite that notices.
+test('a native adapter that exits leaving a process on its output pipe is inconclusive, not failed', async () => {
+  await withProject(async (cwd) => {
+    setupNativeProject(cwd);
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 't1-native-leftover-'));
+    const pidFile = path.join(outside, 'leftover.pid');
+    const leftover = path.join(outside, 'leftover.js');
+    fs.writeFileSync(leftover, [
+      "const fs = require('fs');",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      'setTimeout(() => {}, 600000);',
+      '',
+    ].join('\n'));
+    try {
+      await withFakeXcodebuild(
+        // Forks something that inherits stdout, then exits 0 — `unref` because
+        // an un-unref'd handle would keep the adapter itself alive and make
+        // this an ordinary timeout instead.
+        "const { spawn } = require('child_process');\n"
+        + `spawn(process.execPath, [${JSON.stringify(leftover)}], { stdio: 'inherit' }).unref();`,
+        async () => {
+          const startedAt = Date.now();
+          const code = await runNative(cwd, ['--timeout-ms', '1200']);
+          assertHeldToBound(Date.now() - startedAt, 1_200, 'a native adapter that leaked a process', NATIVE_RUN_OVERHEAD_MS);
+
+          assert.equal(code, 2, 'blocked-environment exits 2, the same as every other unanswerable run');
+          const result = readQaReportV2(cwd, 'R');
+          assert.equal(result.ok, false);
+          assert.equal(
+            result.ok === false ? result.code : '',
+            'blocked-environment',
+            'no machine result was produced, and an exit code the runner cannot trust is not a verdict',
+          );
+          const message = result.ok === false ? result.message : '';
+          assert.match(message, /inconclusive:/i);
+          assert.match(message, /exited 0/, 'the message must not claim the adapter was still running');
+          assert.doesNotMatch(
+            message,
+            /failed or produced no valid machine result/i,
+            'the invented red is the defect; an adapter nobody watched fail must not be reported as failing',
+          );
+
+          const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+          assert.ok(pid > 0, 'fixture guard: the leftover must actually have started');
+          assert.equal(processAlive(pid), false, `the leftover (pid ${pid}) survived the adapter's bound`);
+        },
+      );
+    } finally {
+      try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already gone */ }
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
 // A timeout already produced `blocked-environment`, so the VERDICT was right —
 // but it arrived through `nativeEnvironmentMissing`, so it said "Native
 // environment unavailable for xcode-simulator". A present simulator running a
@@ -450,8 +917,9 @@ test('a native adapter killed at its bound says so, instead of blaming a missing
       const startedAt = Date.now();
       const code = await runNative(cwd, ['--timeout-ms', '1200']);
       const elapsedMs = Date.now() - startedAt;
-      // Precondition: the adapter really ran and was really held to the bound.
-      assert.ok(elapsedMs >= 1_200, `fixture guard: expected a >=1200 ms wait, waited ${elapsedMs} ms`);
+      // The adapter really ran, really was held to the bound, and really was
+      // released by it.
+      assertHeldToBound(elapsedMs, 1_200, 'a hung native adapter', NATIVE_RUN_OVERHEAD_MS);
 
       assert.equal(code, 2);
       const result = readQaReportV2(cwd, 'R');
@@ -464,8 +932,139 @@ test('a native adapter killed at its bound says so, instead of blaming a missing
       const message = result.ok === false ? result.message : '';
       assert.match(message, /inconclusive:/i);
       assert.match(message, /1200 ms bound/, 'the message must name the bound that cut it short');
+      assert.match(message, /adapter was still running/, 'and this one really was the adapter');
       assert.doesNotMatch(message, /environment unavailable/i);
     });
+  });
+});
+
+// WHICH of the two bounded commands was still running.
+//
+// The xcode path runs two: the adapter, then `xcresulttool` over the result
+// bundle. It returned the PARSER's result as the run's `process` whenever the
+// parser was what failed, and everything downstream reads that object as the
+// adapter — so a hung `xcresulttool` was reported as "the xcode-simulator
+// adapter was still running at its bound and was killed" about an adapter that
+// had exited cleanly seconds earlier. A hung parser and a hung simulator are
+// different problems with different fixes, and the reader was sent to the wrong
+// one with no way to tell from the report.
+test('a hung result-bundle parser is named as the parser, not as the adapter', async () => {
+  await withProject(async (cwd) => {
+    setupNativeProject(cwd);
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 't1-native-parser-'));
+    // The adapter SUCCEEDS here — it produces the bundle and exits 0 — which is
+    // what makes the attribution observable: everything cut short after this
+    // point belongs to the parser.
+    fs.writeFileSync(path.join(bin, 'xcodebuild'), [
+      `#!${process.execPath}`,
+      "const fs = require('fs');",
+      "const at = process.argv.indexOf('-resultBundlePath');",
+      'fs.mkdirSync(process.argv[at + 1], { recursive: true });',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(bin, 'xcrun'), `#!${process.execPath}\nsetTimeout(() => {}, 600000);\n`);
+    fs.chmodSync(path.join(bin, 'xcodebuild'), 0o755);
+    fs.chmodSync(path.join(bin, 'xcrun'), 0o755);
+    const previousPath = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const code = await runNative(cwd, ['--timeout-ms', '1200']);
+      assert.equal(code, 2, 'a run nobody could read is blocked, not failed');
+      const result = readQaReportV2(cwd, 'R');
+      assert.equal(result.ok === false ? result.code : '', 'blocked-environment');
+      const message = result.ok === false ? result.message : '';
+      assert.match(message, /inconclusive:/i);
+      assert.match(
+        message,
+        /result-bundle parser was still running/,
+        'the parser is what was killed, and the message must say so',
+      );
+      assert.doesNotMatch(
+        message,
+        /adapter was still running/,
+        'the adapter exited cleanly before the parser ever started; claiming otherwise sends the reader to the wrong process',
+      );
+    } finally {
+      process.env.PATH = previousPath;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});
+
+// The third cut-short cause on this path, and the one the stack fix named
+// before this one adopted it. An `xcodebuild test` an OOM killer takes out
+// reports `exitCode: null` with no error and no forced kind, so it fell through
+// to `failed`: "Native adapter xcode-simulator failed or produced no valid
+// machine result: exit null" — a red for a run in which nobody observed a
+// failure. Rejectable either way, which is exactly why it survived; the defect
+// was never the verdict class, it was the report saying something untrue.
+//
+// SIGSEGV as well as SIGKILL because they arrive from opposite directions — one
+// is the machine killing the adapter, one is the adapter's own test host
+// crashing — and a fix keying on a list of names rather than on the presence of
+// a signal would cover only the first.
+for (const signal of ['SIGKILL', 'SIGSEGV'] as const) {
+  test(`a native adapter killed by ${signal} is inconclusive, not failed`, async () => {
+    await withProject(async (cwd) => {
+      setupNativeProject(cwd);
+      await withFakeXcodebuild(`process.kill(process.pid, '${signal}');`, async () => {
+        const code = await runNative(cwd);
+        const result = readQaReportV2(cwd, 'R');
+        assert.equal(result.ok, false, 'a killed adapter produced no evidence, so nothing may validate');
+        assert.equal(
+          result.ok === false ? result.code : '',
+          'blocked-environment',
+          'a killed adapter is "we could not tell", not "your app is broken"',
+        );
+        assert.equal(code, 2, 'blocked-environment exits 2, the same as every other unanswerable run');
+        const message = result.ok === false ? result.message : '';
+        assert.match(message, /inconclusive:/i);
+        assert.match(
+          message,
+          new RegExp(`killed by ${signal}\\b`),
+          'the message must name the signal — "we could not tell" with no cause is not actionable',
+        );
+        assert.doesNotMatch(
+          message,
+          /failed or produced no valid machine result/i,
+          'the invented red is the whole defect and must not survive anywhere in the message',
+        );
+        // `kind` is 'completed' for a signal death, so the tail of this message
+        // used to append the word "completed" to a sentence explaining that the
+        // adapter had been killed before it could report.
+        assert.doesNotMatch(message, /observed: completed/, 'the tail must not contradict the clause above it');
+      });
+    });
+  });
+}
+
+// The arm the classification above must NOT swallow, and the reason it tests a
+// forced kind and a signal rather than "no exit code": an adapter that ran and
+// exited non-zero produced a real, observed verdict. Calling that inconclusive
+// would launder every genuine native test failure into "we could not tell",
+// which is the mirror defect and a far more expensive one.
+test('an adapter that fails with an exit code is still a failure, not an inconclusive', async () => {
+  await withProject(async (cwd) => {
+    setupNativeProject(cwd);
+    await withFakeXcodebuild(
+      "process.stderr.write('** TEST FAILED **');\nprocess.exit(65);",
+      async () => {
+        const code = await runNative(cwd);
+        assert.equal(code, 1, 'a failed run exits 1; a blocked one would exit 2');
+        assert.equal(readQaReportV2(cwd, 'R').ok, false, 'a failing adapter is still not a settleable run');
+
+        // Asserted on the durable artifact rather than the validator code,
+        // because the validator rejects a `failed` native report on the first
+        // unsatisfied required check and never reaches a verdict that would
+        // tell these two arms apart. The status and the blocker do.
+        const disk = onDiskReport(cwd);
+        assert.equal(disk.status, 'failed', 'an observed non-zero exit is evidence of failure and must stay one');
+        const blocker = String(disk.blockerSummary || '');
+        assert.match(blocker, /failed or produced no valid machine result/i);
+        assert.doesNotMatch(blocker, /inconclusive:/i, 'a verdict WAS observed, so nothing here is unknown');
+        assert.doesNotMatch(blocker, /environment unavailable/i);
+      },
+    );
   });
 });
 
@@ -496,10 +1095,11 @@ test('a genuinely missing simulator still reports the environment, not an inconc
 // ---------------------------------------------------------------------------
 // Heartbeat. A long step that emits nothing is indistinguishable from a hung
 // one — observed 8co, where a silent runner was relaunched four times over one
-// run directory. The native path is the only one that can pulse WHILE it works:
-// `runBoundedProcess` is promise-based, so the event loop is free. The stack
-// path runs spawnSync and cannot, which is why it announces its deadline up
-// front instead — asserted by the deadline test below.
+// run directory. Anything bounded by `runBoundedProcess` can pulse WHILE it
+// works, because it is promise-based and leaves the event loop free; the stack
+// path acquired that when it moved off spawnSync, and both paths still announce
+// their deadline up front, which is the only signal that arrives BEFORE the
+// silence — asserted by the deadline test below.
 // ---------------------------------------------------------------------------
 
 test('a running native adapter reports that it is still alive', async () => {
@@ -545,6 +1145,66 @@ test('a native adapter that finishes stops pulsing', async () => {
   assert.equal(result!.kind, 'completed', 'fixture guard: the probe must have run and exited');
   assert.ok(atCompletion >= 2, `fixture guard: it must have pulsed while alive, saw ${atCompletion}`);
   assert.equal(beats(captured), atCompletion, 'a heartbeat must never outlive the work it reports on');
+});
+
+// The stack path's half of the same wire, which it acquired when it moved off
+// spawnSync. Asserted with the cadence parameterised, because the default is
+// ten seconds and a test that waited for it would cost more than every other
+// test in this file combined — the same reason `runBoundedProcess` takes an
+// `intervalMs` at all. What is being pinned is the WIRING: that a stack check
+// hands `runBoundedProcess` a heartbeat, and that its label names the check, so
+// an observer watching a three-command run can tell WHICH command is silent.
+test('a running stack check reports that it is still alive', async () => {
+  await withProject(async (cwd) => {
+    nonvisualProject(cwd, 'node -e "setTimeout(()=>{}, 600)"');
+    let checks: Awaited<ReturnType<typeof runStackChecks>> = [];
+    const captured = await captureStderr(async () => {
+      checks = await runStackChecks(
+        { projectRoot: cwd } as unknown as RunnerArgs,
+        ['stack-test'],
+        100,
+      );
+    });
+    // Precondition: the command ran to completion on its own. Heartbeats
+    // counted over a check that was killed, or never started, would pass for
+    // the wrong reason.
+    assert.equal(checks[0]?.status, 'passed', 'fixture guard: the probe command must have run and exited 0');
+    const beats = captured.split('\n').filter((line) => line.includes('stack stack-test: still running'));
+    assert.ok(beats.length >= 2, `a ~600 ms command at a 100 ms cadence must pulse repeatedly, saw ${beats.length}`);
+    assert.match(beats[0]!, /\d+s of a \d+s bound/, 'a heartbeat that carries no numbers cannot be audited');
+  });
+});
+
+// A heartbeat that outlives its work reports liveness for a process that has
+// exited — worse than none, and the failure the sequential loop makes easy to
+// hit: three checks in a row, each leaving its timer behind, and the third
+// command is reported as three concurrent ones.
+test('a finished stack check stops pulsing before the next one starts', async () => {
+  await withProject(async (cwd) => {
+    nonvisualProject(cwd, 'node -e "setTimeout(()=>{}, 400)"');
+    const captured = await captureStderr(async () => {
+      const checks = await runStackChecks(
+        { projectRoot: cwd } as unknown as RunnerArgs,
+        ['stack-test', 'stack-build'],
+        50,
+      );
+      assert.deepEqual(
+        checks.map((check) => check.status),
+        ['passed', 'passed'],
+        'fixture guard: both checks must have run',
+      );
+      // Long enough for ~8 further intervals if a timer outlived its check.
+      await new Promise((resolve) => { setTimeout(resolve, 400); });
+    });
+    const lines = captured.split('\n');
+    const lastTestBeat = lines.findLastIndex((line) => line.includes('stack stack-test: still running'));
+    const testFinished = lines.findIndex((line) => line.includes('stack stack-test: passed'));
+    assert.ok(lastTestBeat >= 0 && testFinished >= 0, 'fixture guard: the check must have pulsed and then finished');
+    assert.ok(
+      lastTestBeat < testFinished,
+      'a check that has reported its verdict must never pulse again — it is not running',
+    );
+  });
 });
 
 test('a stack command announces its bound and deadline before it goes silent', async () => {
@@ -653,12 +1313,33 @@ test('a stack check does not inherit the per-step default from a browser run', (
   // deliberately short one, which is how a caller bounds a known-hanging suite.
   assert.equal(stackBoundMs(parsed(['browser', '--timeout-ms', '5000'])), 5_000);
   assert.equal(stackBoundMs(parsed(['stack', '--timeout-ms', '5000'])), 5_000);
-  // A directly-constructed RunnerArgs carries no bound, and spawnSync reads a
-  // missing timeout as UNBOUNDED. That is the one outcome this must never
-  // produce: an unbounded stack check is the hang the whole item is about.
+  // A directly-constructed RunnerArgs carries no bound. Both things that could
+  // then happen are outcomes this must never produce: spawnSync read a missing
+  // timeout as UNBOUNDED — the hang the whole item is about — and the
+  // `setTimeout` that enforces the bound today fires IMMEDIATELY on a NaN,
+  // which manufactures an inconclusive on a healthy command.
   assert.equal(stackBoundMs({} as RunnerArgs), MAX_TIMEOUT_MS);
   assert.equal(stackBoundMs({ timeoutMs: 0 } as RunnerArgs), MAX_TIMEOUT_MS);
   assert.equal(stackBoundMs({ timeoutMs: 5_000 } as RunnerArgs), MAX_TIMEOUT_MS, 'a bound with no explicit flag is not trusted');
+});
+
+// The native path took its bound RAW, from the same directly-constructed
+// RunnerArgs the clamp above exists for — and this is the caller shape
+// `stackBoundMs`'s own docstring was written about. `setTimeout(fn, NaN)` fires
+// immediately, so an `xcodebuild` given no bound would have been killed before
+// it started and reported the manufactured INCONCLUSIVE that docstring names.
+test('a native run clamps a bound it was never given, instead of firing its timer at once', () => {
+  assert.equal(nativeBoundMs(parsed(['native'])), MAX_TIMEOUT_MS);
+  assert.equal(nativeBoundMs(parsed(['native', '--timeout-ms', '5000'])), 5_000, 'a real invocation is honoured verbatim');
+  assert.equal(nativeBoundMs({} as RunnerArgs), MAX_TIMEOUT_MS);
+  assert.equal(nativeBoundMs({ timeoutMs: 0 } as RunnerArgs), MAX_TIMEOUT_MS);
+  assert.equal(nativeBoundMs({ timeoutMs: Number.NaN } as RunnerArgs), MAX_TIMEOUT_MS);
+  assert.equal(nativeBoundMs({ timeoutMs: -1 } as RunnerArgs), MAX_TIMEOUT_MS);
+  assert.equal(nativeBoundMs({ timeoutMs: Number.POSITIVE_INFINITY } as RunnerArgs), MAX_TIMEOUT_MS);
+  // Deliberately NOT stackBoundMs's rule: a native run is never a leg of
+  // another command, so there is no inherited per-step default to distrust and
+  // a number the caller supplied is the only bound that exists.
+  assert.equal(nativeBoundMs({ timeoutMs: 5_000 } as RunnerArgs), 5_000);
 });
 
 // An audit of every duration this runner honours (20 sites) found each one
@@ -679,4 +1360,65 @@ test('no step can outlive the --timeout-ms ceiling it narrows', () => {
   // Both narrow a request that arrives at the ceiling, so neither can widen one.
   assert.equal(Math.max(MAX_TIMEOUT_MS, LIGHTHOUSE_MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
   assert.equal(Math.min(MAX_TIMEOUT_MS, XCRESULTTOOL_MAX_TIMEOUT_MS), XCRESULTTOOL_MAX_TIMEOUT_MS);
+});
+
+// The other door into the same laundering, and the one every test above walked
+// past: the validator's cut-short rejection lived INSIDE its requiredChecks
+// loop, so the guarantee held only for ids that happened to be on that list.
+// `requiredChecks('nonvisual')` omits `stack-lint` exactly as
+// `requiredChecks('behavioral')` omits `stack-test`, the blanket rule fires only
+// on `failed`, and a cut-short check is `not-applicable` with `inconclusive:`
+// prose — so an id off the list carried a killed command into a settling report.
+//
+// Constructed rather than produced, because no producer can currently reach it:
+// measured across all five impact classes, `runStackChecks`,
+// `computeBrowserCheckStatuses` and `nativeCheckStatuses` each emit exactly the
+// ids they are handed, which are `contract.requiredChecks`. That is precisely
+// why it needs a test — the property was resting on an invariant held in three
+// other files and asserted in none of them, and the first producer to report a
+// check it was not asked for would have laundered a signal death with nothing
+// failing anywhere. Both halves are asserted: the clean report still settles
+// (rule 1 — never manufacture a red where there was a green), and the same
+// report plus one cut-short check does not.
+test('a cut-short check the contract never required is rejectable too, not a settling not-applicable', async () => {
+  await withProject(async (cwd) => {
+    nonvisualProject(cwd, 'node -e ""');
+    assert.equal(await runStack(cwd), 0, 'fixture guard: every required check passes, so the run must settle');
+
+    const contract = readVerificationContract(cwd, 'R');
+    assert.ok(contract, 'fixture guard: the contract must be readable back');
+    assert.equal(
+      contract.requiredChecks.includes('stack-lint'),
+      false,
+      'fixture guard: the id under test must be one the contract does NOT require',
+    );
+
+    const report = onDiskReport(cwd);
+    assert.equal(
+      validateQaReportV2(report, cwd, 'R', contract).ok,
+      true,
+      'fixture guard: the unmutated report is the green this must not manufacture a red out of',
+    );
+
+    const laundered = {
+      ...report,
+      checks: [
+        ...(report.checks as unknown[]),
+        {
+          id: 'stack-lint',
+          status: 'not-applicable',
+          summary: 'inconclusive: `npm run lint` produced no verdict because it overflowed the 8388608 byte '
+            + 'capture bound and was killed after 4211 ms (package.json scripts.lint). No evidence exists in '
+            + 'either direction; re-run it, or raise --timeout-ms if the command legitimately needs longer.',
+        },
+      ],
+    };
+    const verdict = validateQaReportV2(laundered, cwd, 'R', contract);
+    assert.equal(verdict.ok, false, 'a killed command proves nothing whether or not its id is on a list');
+    assert.equal(
+      verdict.ok === false ? verdict.code : '',
+      'required-check-failed',
+      'one condition — a check with no verdict — must not report two codes depending on the id',
+    );
+  });
 });

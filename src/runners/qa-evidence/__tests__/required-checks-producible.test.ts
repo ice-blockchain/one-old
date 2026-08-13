@@ -90,9 +90,9 @@ function passableIds(checks: ReadonlyArray<{ id: string; status: string }>): Set
   return new Set(checks.filter((check) => check.status === 'passed').map((check) => check.id));
 }
 
-function stackPassable(ids: readonly string[] = STACK_COMMAND_CHECK_IDS): Set<string> {
+async function stackPassable(ids: readonly string[] = STACK_COMMAND_CHECK_IDS): Promise<Set<string>> {
   const args = { projectRoot: stackProbeProject() } as unknown as RunnerArgs;
-  return passableIds(runStackChecks(args, ids));
+  return passableIds(await runStackChecks(args, ids));
 }
 
 function browserPassable(ids: readonly string[] = BROWSER_CHECK_IDS): Set<string> {
@@ -127,19 +127,19 @@ function nativePassable(ids: readonly string[] = NATIVE_ATTESTED_CHECK_IDS): Set
 // rather than restated: `browserRequired` is the same predicate the contract
 // publishes and `loadStackRun` refuses on, and a native contract additionally
 // carries the stack-command ids run-context substitutes with real results.
-function passableFor(impact: UiImpact): Set<string> {
+async function passableFor(impact: UiImpact): Promise<Set<string>> {
   const substituted = new Set(
-    [...stackPassable(SUBSTITUTED_STACK_CHECK_IDS)],
+    [...await stackPassable(SUBSTITUTED_STACK_CHECK_IDS)],
   );
   if (impact === 'native-ui') return new Set([...nativePassable(), ...substituted]);
   if (browserRequired(impact)) return new Set([...browserPassable(), ...substituted]);
   return stackPassable();
 }
 
-test('every required check is one some producer can emit as passed', () => {
+test('every required check is one some producer can emit as passed', async () => {
   const offenders: string[] = [];
   for (const impact of ALL_IMPACTS) {
-    const passable = passableFor(impact);
+    const passable = await passableFor(impact);
     for (const stackPerformanceRisk of [false, true]) {
       for (const id of requiredChecks(impact, stackPerformanceRisk)) {
         if (passable.has(id)) continue;
@@ -156,8 +156,8 @@ test('every required check is one some producer can emit as passed', () => {
 // Without this the test above proves nothing: a passable set derived from a
 // producer that passes everything, or from a registry naming ids the producer
 // has no arm for, would satisfy any contract.
-test('the passable sets come from arms that exist, and no producer passes an unknown id', () => {
-  const stack = stackPassable();
+test('the passable sets come from arms that exist, and no producer passes an unknown id', async () => {
+  const stack = await stackPassable();
   assert.deepEqual(
     STACK_COMMAND_CHECK_IDS.filter((id) => !stack.has(id)),
     [],
@@ -177,16 +177,16 @@ test('the passable sets come from arms that exist, and no producer passes an unk
   const unknown = 'made-up-check';
   assert.equal(browserPassable([unknown]).has(unknown), false, 'the browser default arm must fail closed');
   assert.equal(nativePassable([unknown]).has(unknown), false, 'the native mapping must not be wholesale');
-  assert.equal(stackPassable([unknown]).has(unknown), false, 'the stack runner must never invent a command');
+  assert.equal((await stackPassable([unknown])).has(unknown), false, 'the stack runner must never invent a command');
 });
 
 // The other direction. An allowlisted id with no path to `passed` is not an
 // exemption, it is an unfailable check: `stack-performance` sat here for its
 // whole life with no arm in `resolveStackCommand`, so every run that declared a
 // performance risk got a required check that could only ever be excused.
-test('every justification allowlist entry names a check that can also pass and can also be required', () => {
+test('every justification allowlist entry names a check that can also pass and can also be required', async () => {
   const anyPassable = new Set([
-    ...stackPassable(),
+    ...await stackPassable(),
     ...browserPassable(),
     ...nativePassable(),
   ]);

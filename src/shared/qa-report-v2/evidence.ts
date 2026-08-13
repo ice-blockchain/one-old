@@ -37,6 +37,7 @@ import {
 import {
   normalizedUrl,
 } from './build';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export function viewportPassed(viewport: QaViewportV2): boolean {
   return viewport.status === 'passed'
@@ -297,7 +298,7 @@ export function validateNativeEvidence(
       const absoluteArtifact = qaArtifactAbsolute(projectRoot, report.runId, artifact.path);
       if (!absoluteArtifact) return null;
       try {
-        return parseAndroidJUnitXml(fs.readFileSync(absoluteArtifact, 'utf8'));
+        return parseAndroidJUnitXml(readRegularFileOrThrow(absoluteArtifact));
       } catch {
         return null;
       }

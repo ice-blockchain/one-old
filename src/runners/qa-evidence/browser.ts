@@ -373,9 +373,9 @@ export async function browserCommand(
       blockerSummary,
     });
     const evidenceOnDisk = writeJson(out.absolute, evidence);
-    let published: ReturnType<typeof publishAndValidateReport>;
+    let published: Awaited<ReturnType<typeof publishAndValidateReport>>;
     try {
-      published = publishAndValidateReport(
+      published = await publishAndValidateReport(
         args,
         loaded,
         owned,
@@ -531,9 +531,9 @@ export async function browserCommand(
     })),
   }));
   emitProgress('publishing report-v2.json');
-  let published: ReturnType<typeof publishAndValidateReport>;
+  let published: Awaited<ReturnType<typeof publishAndValidateReport>>;
   try {
-    published = publishAndValidateReport(
+    published = await publishAndValidateReport(
       args,
       loaded,
       owned,

@@ -1210,15 +1210,15 @@ test('resolveStackCommand discards the Go build object instead of naming it afte
 // formatter was declared and never ran it, so two runs shipped with
 // `pnpm format:check` red end to end. `stack-format` runs the project's OWN
 // declared script; the three outcomes below are the whole contract.
-test('stack-format runs the declared script and separates red from absent', () => {
+test('stack-format runs the declared script and separates red from absent', async () => {
   const write = (dir: string, script: string): void => {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
       name: 'x',
       scripts: { 'format:check': script },
     }));
   };
-  const run = (dir: string): { status?: string; summary?: string } => {
-    const [check] = runStackChecks({ projectRoot: dir } as never, ['stack-format']);
+  const run = async (dir: string): Promise<{ status?: string; summary?: string }> => {
+    const [check] = await runStackChecks({ projectRoot: dir } as never, ['stack-format']);
     return { status: check?.status, summary: String(check?.summary || '') };
   };
 
@@ -1235,18 +1235,18 @@ test('stack-format runs the declared script and separates red from absent', () =
   const none = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fmt-none-'));
   try {
     write(red, "node -e \"process.stdout.write('[warn] src/a.ts'); process.exit(1)\"");
-    assert.equal(run(red).status, 'failed');
+    assert.equal((await run(red)).status, 'failed');
 
     write(green, "node -e \"process.stdout.write('All matched files use Prettier code style!')\"");
-    assert.equal(run(green).status, 'passed');
+    assert.equal((await run(green)).status, 'passed');
 
     write(absent, 'definitely-not-installed-formatter --check .');
-    const missing = run(absent);
+    const missing = await run(absent);
     assert.equal(missing.status, 'not-applicable', missing.summary);
     assert.match(missing.summary || '', /could not be executed/);
 
     fs.writeFileSync(path.join(none, 'package.json'), JSON.stringify({ name: 'x', scripts: {} }));
-    const undeclared = run(none);
+    const undeclared = await run(none);
     assert.equal(undeclared.status, 'not-applicable');
     assert.match(undeclared.summary || '', /declares no/);
   } finally {
@@ -1258,7 +1258,7 @@ test('stack-format runs the declared script and separates red from absent', () =
 // whitespace but leaves ESC/NUL intact, and the resulting `invalid-schema` has no
 // GATE_ID_FOR_FAILURE entry — persistGateRejection no-ops and the report left on
 // disk cannot be parsed on the next read.
-test('a stack summary carries no control characters even when the tool colourizes', () => {
+test('a stack summary carries no control characters even when the tool colourizes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-stack-ctl-'));
   try {
     fs.writeFileSync(path.join(dir, 'go.mod'), 'module x\n\ngo 1.22\n');
@@ -1267,7 +1267,7 @@ test('a stack summary carries no control characters even when the tool colourize
       // Emits an ANSI escape and a NUL, then fails.
       scripts: { build: `node -e "process.stdout.write('a\\u001b[31mred\\u0000b'); process.exit(1)"` },
     }));
-    const report = runStackChecks({ projectRoot: dir } as never, ['stack-build']);
+    const report = await runStackChecks({ projectRoot: dir } as never, ['stack-build']);
     const summary = String(report[0]?.summary || '');
     assert.match(summary, /red/, 'the real output must still be reported');
     for (const ch of summary) {

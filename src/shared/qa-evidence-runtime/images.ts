@@ -8,6 +8,7 @@ import { inflateSync } from 'zlib';
 
 import { sha256Bytes } from './core';
 import type { DecodedImageInfo } from './types';
+import { readRegularBytesOrThrow } from '../bounded-read';
 
 function crc32(value: Buffer): number {
   let crc = 0xffffffff;
@@ -155,7 +156,7 @@ export function decodeImageFile(filePath: string): DecodedImageInfo | null {
   try {
     const stat = fs.statSync(filePath);
     if (!stat.isFile() || stat.size < 12 || stat.size > 256 * 1024 * 1024) return null;
-    buffer = fs.readFileSync(filePath);
+    buffer = readRegularBytesOrThrow(filePath);
   } catch {
     return null;
   }

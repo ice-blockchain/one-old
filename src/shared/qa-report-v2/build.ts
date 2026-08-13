@@ -22,6 +22,18 @@ import {
 } from './schema';
 
 const HTTP_PROBE_TIMEOUT_MS = 1_000;
+/**
+ * The whole synchronous stretch this module can produce, named because the QA
+ * run lock's staleness window is sized against it.
+ *
+ * `spawnSync` blocks the caller's event loop outright, and the caller here may
+ * be holding the run lock, whose renewal is a timer on that same loop
+ * (qa-evidence/lock.ts). The inner probe gives up at `HTTP_PROBE_TIMEOUT_MS`;
+ * the extra 500 ms is the grace for a child that has answered but not yet
+ * exited, so this — not the inner bound — is what the lock's margin is computed
+ * from. `qa-evidence/__tests__/renewal-premise.test.ts` reads it.
+ */
+export const HTTP_PROBE_SPAWN_TIMEOUT_MS = HTTP_PROBE_TIMEOUT_MS + 500;
 const HTTP_PROBE_MAX_BYTES = 16 * 1024;
 const HTTP_PROBE_SOURCE = String.raw`
 const target = new URL(process.argv[1]);
@@ -87,7 +99,7 @@ function probeServedBuild(buildUrl: URL): QaServedBuildIdentityV1 | null {
   const probeUrl = new URL(QA_BUILD_IDENTITY_PROBE_PATH, buildUrl);
   const result = spawnSync(process.execPath, ['-e', HTTP_PROBE_SOURCE, probeUrl.href], {
     encoding: 'utf8',
-    timeout: HTTP_PROBE_TIMEOUT_MS + 500,
+    timeout: HTTP_PROBE_SPAWN_TIMEOUT_MS,
     maxBuffer: HTTP_PROBE_MAX_BYTES + 1_024,
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,

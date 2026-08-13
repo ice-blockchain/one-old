@@ -16,6 +16,7 @@ import {
   type BuildOutputManifestV1,
   type Rec,
 } from './types';
+import { openRegularFd, readRegularFileOrThrow } from '../bounded-read';
 
 export const SHA256_RE = /^[a-f0-9]{64}$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
@@ -82,7 +83,7 @@ function inside(candidate: string, boundary: string): boolean {
 
 function hashFile(filePath: string): string {
   const hash = createHash('sha256');
-  const fd = fs.openSync(filePath, 'r');
+  const fd = openRegularFd(filePath);
   const chunk = Buffer.allocUnsafe(1024 * 1024);
   try {
     for (;;) {
@@ -167,7 +168,7 @@ export function computeBuildOutputManifest(
 
 export function readJsonFile(filePath: string): unknown {
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return JSON.parse(readRegularFileOrThrow(filePath));
   } catch {
     return null;
   }

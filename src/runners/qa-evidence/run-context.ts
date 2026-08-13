@@ -11,6 +11,7 @@ import {
 import {
   expectedBuildFingerprint,
   qaReportV2Path,
+  reportSettledWithoutTestEvidence,
   validateQaReportV2,
   type QaReportV2,
 } from '../../shared/qa-report-v2';
@@ -168,11 +169,49 @@ export interface LoadedRun {
   sourceHash: string;
   manifest: BuildOutputManifestV1;
   fingerprint: string;
+  scanQualification?: string;
 }
 
 export interface LoadedNativeRun {
   contract: VerificationContractV2;
   sourceHash: string;
+  scanQualification?: string;
+}
+
+/**
+ * The source identity, with the ONE incompleteness this runner survives split
+ * out from the ones it cannot.
+ *
+ * All three loaders below asked `currentVerificationSourceHash` the same
+ * question, read `complete` as the whole answer, and turned a `false` into
+ * `{ok: false}` — which `index.ts` prints as `cannot load run` and exits 2, with
+ * no report on disk and nothing to fix from. For a skip-authority name
+ * disclosure that verdict was wrong in a specific and expensive way: the gap is
+ * usually the run's own build output (measured on two `test:env --strict`
+ * scenarios, whose contracts said `scanComplete: true` and were refused over a
+ * `dist/assets/app-<hash>.js` that the run's `npm run build` had written
+ * minutes earlier), the same gap is survivable in plan-guard, and the hash the
+ * run needs is computable regardless.
+ *
+ * So it proceeds and DISCLOSES. The qualification travels on the loaded run to
+ * whatever the command publishes; `validateQaReportV2` refuses a report that
+ * took the qualified path and does not carry it, so this cannot degrade into
+ * "proceed" alone. Clipped to the schema's 500-char field bound here, at the one
+ * place all three loaders pass through, rather than at three publishers.
+ */
+function loadedSourceIdentity(
+  projectRoot: string,
+  contract: VerificationContractV2,
+): { ok: true; sourceHash: string; scanQualification?: string } | { ok: false; reason: string } {
+  const source = currentVerificationSourceHash(projectRoot, contract);
+  if (!source.hash || (!source.complete && !source.qualification)) {
+    return { ok: false, reason: source.reason || 'source identity scan is incomplete' };
+  }
+  return {
+    ok: true,
+    sourceHash: source.hash,
+    ...(source.qualification ? { scanQualification: source.qualification.slice(0, 500) } : {}),
+  };
 }
 
 // Every load failure names WHICH precondition failed. The previous shape
@@ -198,13 +237,13 @@ export type LoadResult<T> = { ok: true; run: T } | { ok: false; reason: string }
 // which is stronger evidence than re-running the build.
 export const SUBSTITUTED_STACK_CHECK_IDS = ['stack-format', 'stack-performance'] as const;
 
-export function withExecutedStackChecks(
+export async function withExecutedStackChecks(
   args: RunnerArgs,
   checks: QaReportV2['checks'],
-): QaReportV2['checks'] {
+): Promise<QaReportV2['checks']> {
   const wanted = SUBSTITUTED_STACK_CHECK_IDS.filter((id) => checks.some((check) => check.id === id));
   if (wanted.length === 0) return checks;
-  const executed = new Map(runStackChecks(args, wanted).map((check) => [check.id, check]));
+  const executed = new Map((await runStackChecks(args, wanted)).map((check) => [check.id, check]));
   return checks.map((check) => executed.get(check.id) || check);
 }
 
@@ -221,10 +260,8 @@ export function loadRun(args: RunnerArgs): LoadResult<LoadedRun> {
         + 'or fails its own hash self-check',
     };
   }
-  const source = currentVerificationSourceHash(args.projectRoot, contract);
-  if (!source.complete || !source.hash) {
-    return { ok: false, reason: source.reason || 'source identity scan is incomplete' };
-  }
+  const source = loadedSourceIdentity(args.projectRoot, contract);
+  if (!source.ok) return source;
   const manifest = computeBuildOutputManifest(args.projectRoot, args.buildDir);
   if (!manifest) {
     return {
@@ -237,9 +274,10 @@ export function loadRun(args: RunnerArgs): LoadResult<LoadedRun> {
     ok: true,
     run: {
       contract,
-      sourceHash: source.hash,
+      sourceHash: source.sourceHash,
       manifest,
-      fingerprint: expectedBuildFingerprint(args.runId, source.hash, manifest.manifestHash),
+      fingerprint: expectedBuildFingerprint(args.runId, source.sourceHash, manifest.manifestHash),
+      ...(source.scanQualification ? { scanQualification: source.scanQualification } : {}),
     },
   };
 }
@@ -247,6 +285,7 @@ export function loadRun(args: RunnerArgs): LoadResult<LoadedRun> {
 export interface LoadedStackRun {
   contract: VerificationContractV2;
   sourceHash: string;
+  scanQualification?: string;
 }
 
 /**
@@ -274,20 +313,36 @@ export function loadStackRun(args: RunnerArgs): LoadResult<LoadedStackRun> {
         + 'evidence, so stack checks alone cannot satisfy it',
     };
   }
-  const source = currentVerificationSourceHash(args.projectRoot, contract);
-  if (!source.complete || !source.hash) {
-    return { ok: false, reason: source.reason || 'source identity scan is incomplete' };
-  }
-  return { ok: true, run: { contract, sourceHash: source.hash } };
+  const source = loadedSourceIdentity(args.projectRoot, contract);
+  if (!source.ok) return source;
+  return {
+    ok: true,
+    run: {
+      contract,
+      sourceHash: source.sourceHash,
+      ...(source.scanQualification ? { scanQualification: source.scanQualification } : {}),
+    },
+  };
 }
 
-/** Publish a stack-only v2 report: no server, no build identity, no routes. */
+/**
+ * Publish a stack-only v2 report: no server, no build identity, no routes.
+ *
+ * `advisories` IS PART OF THE RETURN, and its absence was a hole rather than an
+ * omission. The validator has always computed advisories; this function dropped
+ * them on the floor — the field was not in the return type — so on the stack
+ * path, the exact shape the "settle without test evidence, but disclose it"
+ * decision is about, a disclosure could reach the durable artifact and had no
+ * route to a human at all. The one consumer of `validation.advisories` was the
+ * lighthouse command's stdout JSON, which a nonvisual run never produces.
+ */
 export function publishStackReport(
   args: RunnerArgs,
   loaded: LoadedStackRun,
   status: QaReportV2['status'],
   checks: QaReportV2['checks'],
-): { report: QaReportV2; ok: boolean; code?: string; message?: string } {
+): { report: QaReportV2; ok: boolean; advisories: string[]; code?: string; message?: string } {
+  const settledWithoutTestEvidence = reportSettledWithoutTestEvidence(checks);
   const report: QaReportV2 = {
     schemaVersion: 2,
     runId: args.runId,
@@ -298,14 +353,25 @@ export function publishStackReport(
     sourceHash: loaded.sourceHash,
     checks,
     routes: [],
+    // Written only when there is something to disclose. The validator recomputes
+    // it from the same checks and refuses a report whose claim disagrees, so
+    // this cannot become a second, independently-settable answer.
+    ...(settledWithoutTestEvidence ? { settledWithoutTestEvidence } : {}),
+    // The other disclosure, from the loader rather than the checks: this run
+    // proceeded on a diff that could not see everything. Omitting it is not an
+    // option the validator leaves open — it refuses a qualified run that reports
+    // clean.
+    ...(loaded.scanQualification ? { settledWithIncompleteScan: loaded.scanQualification } : {}),
   };
   if (!publishQaReportV2(args.projectRoot, args.runId, report)) {
-    return { report, ...notPublished(args.projectRoot, args.runId) };
+    return { report, advisories: [], ...notPublished(args.projectRoot, args.runId) };
   }
   const validation = validateQaReportV2(report, args.projectRoot, args.runId, loaded.contract);
   return validation.ok
-    ? { report, ok: true }
-    : { report, ok: false, code: validation.code, message: validation.message };
+    ? { report, ok: true, advisories: validation.advisories }
+    : {
+      report, ok: false, advisories: [], code: validation.code, message: validation.message,
+    };
 }
 
 export function loadNativeRun(args: RunnerArgs): LoadResult<LoadedNativeRun> {
@@ -327,11 +393,16 @@ export function loadNativeRun(args: RunnerArgs): LoadResult<LoadedNativeRun> {
         + `nativeAdapter=${contract.nativeAdapter ?? 'null'})`,
     };
   }
-  const source = currentVerificationSourceHash(args.projectRoot, contract);
-  if (!source.complete || !source.hash) {
-    return { ok: false, reason: source.reason || 'source identity scan is incomplete' };
-  }
-  return { ok: true, run: { contract, sourceHash: source.hash } };
+  const source = loadedSourceIdentity(args.projectRoot, contract);
+  if (!source.ok) return source;
+  return {
+    ok: true,
+    run: {
+      contract,
+      sourceHash: source.sourceHash,
+      ...(source.scanQualification ? { scanQualification: source.scanQualification } : {}),
+    },
+  };
 }
 
 function reportLighthousePath(args: RunnerArgs): string | null {
@@ -339,7 +410,7 @@ function reportLighthousePath(args: RunnerArgs): string | null {
   return strictRelative(args.lighthouseEvidence);
 }
 
-export function publishAndValidateReport(
+export async function publishAndValidateReport(
   args: RunnerArgs,
   loaded: LoadedRun,
   owned: OwnedServer,
@@ -353,7 +424,7 @@ export function publishAndValidateReport(
   // zero-evidence pass the native path carried. Both browser call sites always
   // had the evidence — nothing was using it.
   checkInput: CheckEvidenceInput,
-): { report: QaReportV2; ok: boolean; code?: string; message?: string } {
+): Promise<{ report: QaReportV2; ok: boolean; code?: string; message?: string }> {
   // Back-compat: a bare string is the evidence path (pre-1.0.37 call shape).
   const lighthouseField: QaReportV2['lighthouse'] | undefined = typeof lighthouse === 'string'
     ? { evidencePath: lighthouse }
@@ -362,6 +433,10 @@ export function publishAndValidateReport(
       : reportLighthousePath(args)
         ? { evidencePath: reportLighthousePath(args)! }
         : undefined;
+  const checks = await withExecutedStackChecks(
+    args,
+    computeBrowserCheckStatuses(loaded.contract.requiredChecks, checkInput),
+  );
   const report: QaReportV2 = {
     schemaVersion: 2,
     runId: args.runId,
@@ -370,10 +445,7 @@ export function publishAndValidateReport(
     producer: 'parent-runner',
     status,
     sourceHash: loaded.sourceHash,
-    checks: withExecutedStackChecks(
-      args,
-      computeBrowserCheckStatuses(loaded.contract.requiredChecks, checkInput),
-    ),
+    checks,
     routes,
     machineEvidencePath,
     build: {
@@ -390,6 +462,9 @@ export function publishAndValidateReport(
     },
     ...(lighthouseField ? { lighthouse: lighthouseField } : {}),
     ...(blockerSummary ? { blockerSummary } : {}),
+    // See publishStackReport: the browser/lighthouse artifact owes the same
+    // disclosure, and this is the only publisher on that path.
+    ...(loaded.scanQualification ? { settledWithIncompleteScan: loaded.scanQualification } : {}),
   };
   if (!publishQaReportV2(args.projectRoot, args.runId, report)) {
     return { report, ...notPublished(args.projectRoot, args.runId) };

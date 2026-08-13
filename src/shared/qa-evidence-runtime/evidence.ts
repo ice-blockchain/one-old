@@ -31,6 +31,7 @@ import {
   type QaNativeTestSummaryV1,
   type Rec,
 } from './types';
+import { readRegularBytesOrThrow } from '../bounded-read';
 
 function stringArray(value: unknown): string[] | null {
   if (!Array.isArray(value)
@@ -400,7 +401,7 @@ export function readLighthouseArtifact(filePath: string): LighthouseArtifactSumm
   try {
     const stat = fs.statSync(filePath);
     if (!stat.isFile() || stat.size < 100 || stat.size > 128 * 1024 * 1024) return null;
-    buffer = fs.readFileSync(filePath);
+    buffer = readRegularBytesOrThrow(filePath);
     parsed = JSON.parse(buffer.toString('utf8'));
   } catch {
     return null;

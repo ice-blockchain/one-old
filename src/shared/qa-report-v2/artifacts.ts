@@ -29,6 +29,7 @@ import {
   type QaAcceptanceAttestationV1,
   type QaReportV2,
 } from './schema';
+import { openRegularFd, readRegularFileOrThrow } from '../bounded-read';
 
 function inside(candidate: string, boundary: string): boolean {
   const rel = path.relative(boundary, candidate);
@@ -86,7 +87,7 @@ export function artifactValid(
     }
     if (/\.zip$/i.test(absolute)) {
       const header = Buffer.alloc(4);
-      const fd = fs.openSync(absolute, 'r');
+      const fd = openRegularFd(absolute);
       let read = 0;
       try { read = fs.readSync(fd, header, 0, header.length, 0); } finally { fs.closeSync(fd); }
       if (read < 4 || header[0] !== 0x50 || header[1] !== 0x4b) return false;
@@ -179,7 +180,7 @@ function readAcceptanceAttestation(
 ): QaAcceptanceAttestationV1 | null {
   let value: unknown;
   try {
-    value = JSON.parse(fs.readFileSync(qaAcceptanceAttestationPath(projectRoot, runId), 'utf8'));
+    value = JSON.parse(readRegularFileOrThrow(qaAcceptanceAttestationPath(projectRoot, runId)));
   } catch {
     return null;
   }

@@ -85,9 +85,17 @@ export function computeBrowserCheckStatuses(
     ))
   );
   const notRunSummary = bounded(`not run: ${input.blockerSummary || input.launchBlocker || 'browser evidence was not captured'}`);
-  const evidenceCheck = (ok: boolean, failSummary: string): { status: QaCheck['status']; summary: string } => (
+  // WHY this check has no verdict, as a fact rather than as a sentence. Nothing
+  // this producer emits is ever excusable — the ids it computes are browser
+  // ids, and the one it shares with the exemption allowlist (`stack-build`) is
+  // refused an exemption outright — but the reason is carried anyway, so that
+  // "every not-applicable check a producer in this runner emits says why" is an
+  // invariant with no exceptions to remember. An exception is what the next
+  // widening of the allowlist would silently inherit.
+  const notCaptured = { status: 'not-applicable' as const, notApplicable: 'evidence-not-captured' as const, summary: notRunSummary };
+  const evidenceCheck = (ok: boolean, failSummary: string): Omit<QaCheck, 'id'> => (
     !ranBrowser
-      ? { status: 'not-applicable' as const, summary: notRunSummary }
+      ? notCaptured
       : ok
         ? { status: 'passed' as const, summary: RUNNER_PASS_SUMMARY }
         : { status: 'failed' as const, summary: bounded(failSummary) }
@@ -98,7 +106,7 @@ export function computeBrowserCheckStatuses(
         const result = input.servedOk
           ? { status: 'passed' as const, summary: 'Build output manifest verified; served responses matched it.' }
           : !ranBrowser
-            ? { status: 'not-applicable' as const, summary: notRunSummary }
+            ? notCaptured
             : { status: 'failed' as const, summary: 'Served responses did not match the build output manifest.' };
         return { id, ...result };
       }
@@ -109,7 +117,7 @@ export function computeBrowserCheckStatuses(
             ? { status: 'failed' as const, summary: bounded(input.launchBlocker) }
             : ranBrowser
               ? { status: 'passed' as const, summary: RUNNER_PASS_SUMMARY }
-              : { status: 'not-applicable' as const, summary: notRunSummary };
+              : notCaptured;
         return { id, ...result };
       }
       case 'dom-assertions':
@@ -163,7 +171,14 @@ export function nativeCheckStatuses(
     return status === 'passed'
       ? { id, status: 'passed' as const, summary: RUNNER_PASS_SUMMARY }
       : status === 'blocked-environment'
-        ? { id, status: 'not-applicable' as const, summary: bounded(`not run: ${blockerSummary || 'required runtime environment is unavailable'}`) }
+        ? {
+            id,
+            status: 'not-applicable' as const,
+            // See `notCaptured` above: never excusable, and it says so in the
+            // report rather than relying on the allowlist not to grow.
+            notApplicable: 'evidence-not-captured' as const,
+            summary: bounded(`not run: ${blockerSummary || 'required runtime environment is unavailable'}`),
+          }
         : { id, status: 'failed' as const, summary: bounded(blockerSummary || 'Runtime QA evidence did not pass.') };
   });
 }

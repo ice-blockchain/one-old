@@ -2,7 +2,6 @@
 // Scenario parsing: routePattern identity vs concrete startPath probes,
 // catch-all exclusivity, and required-route coverage.
 
-import * as fs from 'fs';
 import * as path from 'path';
 import {
   type VerificationContractV2,
@@ -20,6 +19,7 @@ import {
 import {
   safeProjectRelative,
 } from './run-context';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 function parseStep(value: unknown): ScenarioStep | null {
   if (!isRecord(value)
@@ -203,7 +203,7 @@ export function loadScenario(args: RunnerArgs, contract: VerificationContractV2)
     const rel = safeProjectRelative(args.projectRoot, args.scenarioFile);
     if (!rel) return null;
     try {
-      raw = fs.readFileSync(path.join(args.projectRoot, rel), 'utf8');
+      raw = readRegularFileOrThrow(path.join(args.projectRoot, rel));
     } catch {
       return null;
     }

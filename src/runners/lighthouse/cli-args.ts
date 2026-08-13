@@ -307,7 +307,54 @@ export function usage(): string {
   ].join('\n');
 }
 
-export type BlockedStatus = 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout' | 'blocked:lighthouse-missing';
+export type BlockedStatus = 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout'
+  | 'blocked:lighthouse-missing' | 'blocked:preview-command-missing';
+
+/**
+ * The failures that are NOT environment gaps, and therefore not `blocked:*`.
+ *
+ * `blocked:` says something outside this repository stopped the measurement — a
+ * sandbox denying a bind, a quota, a host missing a binary — and an agent is told
+ * to report page speed as unverified and move on. Putting a broken build under
+ * that prefix would launder a red into an environment excuse, which is the exact
+ * failure class this runner's own bounds exist to prevent, so these get their own
+ * prefix and their own repair.
+ *
+ * `failed:project` is a precondition of auditing that this project, or the way the
+ * runner was invoked, did not meet: no production build to preview, no URL to
+ * audit, a build script that failed. The runner worked; there was nothing
+ * auditable in front of it.
+ *
+ * `failed:unclassified` is the terminal arm, and it exists so the contract at
+ * index.mts — one final JSON status line, always — can be TOTAL. It claims
+ * nothing about whose repair it is, which is the honest answer for an error no
+ * one anticipated, and also for the two this runner throws when the audit
+ * finished without leaving a readable artifact: the page, the Lighthouse CLI and
+ * the host are all live candidates there and the runner cannot tell them apart.
+ * A status that guessed would send the reader to the wrong file.
+ */
+export type FailedStatus = 'failed:project' | 'failed:unclassified';
+
+export type RunnerStatus = BlockedStatus | FailedStatus;
+
+/**
+ * Every status this runner can print, as one runtime list.
+ *
+ * Exported because the totality property in
+ * __tests__/preview-start-failure.test.ts checks MEMBERSHIP rather than
+ * non-nullness: a classifier that answered `undefined`, or a string outside the
+ * union that only a cast made possible, would satisfy "always returns something"
+ * and still leave the caller with a status it does not know.
+ */
+export const RUNNER_STATUSES: readonly RunnerStatus[] = [
+  'blocked:sandbox',
+  'blocked:usage-limit',
+  'blocked:timeout',
+  'blocked:lighthouse-missing',
+  'blocked:preview-command-missing',
+  'failed:project',
+  'failed:unclassified',
+];
 
 // Canonical missing-binary message: thrown by the runner in --local-only mode and
 // matched by classifyBlockedStatus, so the caller always gets a structured,
@@ -319,17 +366,104 @@ export function lighthouseMissingMessage(packageManager: PackageManager, lightho
     + 'Do not drop --local-only on hosts whose approval layer denies registry-download execution.';
 }
 
+/**
+ * Canonical preview-refusal message: thrown when the operating system will not
+ * execute the package manager the preview needs, and matched by
+ * `classifyBlockedStatus` — the same contract the message above has, for the same
+ * reason. A binary this run needs that is not usable on this host is an
+ * environment gap, and this runner reports those as a structured `blocked:*`
+ * status rather than as a bare failure.
+ *
+ * It gets its OWN status rather than joining an existing one because every
+ * existing arm would misdirect the repair. `blocked:sandbox` says the host denied
+ * us a port or a Chrome, `blocked:usage-limit` says an API refused us, and
+ * `blocked:timeout` — the one this used to be mistaken for — says the preview
+ * server was given time and did not use it. Here the preview server was never
+ * started, so the fix is to install the package manager or point the runner at a
+ * URL that is already serving, not to raise `--timeout`.
+ */
+export function previewCommandMissingMessage(
+  packageManager: PackageManager,
+  spawnFailure: string,
+): string {
+  return `The preview command could not be executed: ${spawnFailure}. `
+    + `\`${packageManager}\` is the package manager this project declares, and this host cannot run it `
+    + '(not installed, not on PATH, or not executable). The preview server never started, so nothing '
+    + 'was served and nothing was audited — this is not a readiness timeout. Install '
+    + `${packageManager}, or audit an already-running URL with \`--url <url> --skip-preview\`.`;
+}
+
 // Maps a runner failure message to the structured status the page-speed hook
 // parses. Sandbox and usage-limit keep priority over the timeout branch so a
 // bind-denial that also mentions a timeout still reads as blocked:sandbox.
+//
+// THE ORDER OF THE FIRST TWO BRANCHES IS LOAD-BEARING, and not for the reason
+// the sentence above gives. A preview refusal quotes node's own spawn error, and
+// the everyday second shape of one is `spawn ./dev.sh EACCES` — which the sandbox
+// pattern below matches on the bare word. Moving the preview branch under it
+// would report a package manager without its execute bit as the host denying a
+// port bind, and send the reader to Codex escalation for a chmod.
 export function classifyBlockedStatus(message: string): BlockedStatus | null {
   if (/No local Lighthouse binary/i.test(message)) return 'blocked:lighthouse-missing';
+  if (/preview command could not be executed/i.test(message)) return 'blocked:preview-command-missing';
   if (/listen EPERM|EACCES|operation not permitted|Chrome.*(failed|sandbox)|No usable sandbox|ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(message)) {
     return 'blocked:sandbox';
   }
   if (/usage limit|rate limit|quota/i.test(message)) return 'blocked:usage-limit';
-  if (/timed out|timeout|exceeded .*budget/i.test(message)) return 'blocked:timeout';
+  // `did not become ready` is the readiness wait's own wording, and it belongs
+  // here rather than being left to fall through: it is the SIBLING of the branch
+  // above it — the preview that started and never bound, against the preview that
+  // never started — and until this arm existed it matched none of these patterns,
+  // so the one failure the runner is most likely to hit produced no status line at
+  // all. Which is the same contract break as an uncaught spawn error, reached
+  // politely: `main` prints the message to stderr, the page-speed hook parses
+  // stdout, and page speed silently goes unreported rather than UNVERIFIED.
+  if (/timed out|timeout|exceeded .*budget|did not become ready/i.test(message)) return 'blocked:timeout';
   return null;
+}
+
+// A precondition of auditing that this project — or the way the runner was
+// invoked — did not meet. Nothing here is an environment gap: the host is fine,
+// there is simply nothing auditable in front of the runner.
+//
+// The exit-code branch reads the command out of the message because that is the
+// only place it survives: `runCommand` is shared by the build script and the
+// audit child and reports both as `<argv> failed with exit N`, so the SAME arm
+// would otherwise have to answer for a broken build (fix the project) and for
+// Lighthouse itself exiting non-zero (could be the page, the CLI, or Chrome).
+// Matching the build wording keeps the first honest and lets the second fall to
+// the terminal arm, which is the accurate answer for it. Threading a typed error
+// out of `runCommand` would carry the distinction properly and is the better
+// shape, but it touches every caller of a function two other paths depend on;
+// this stays inside the classifier.
+function classifyProjectFault(message: string): FailedStatus | null {
+  if (/build metadata is missing|static export output is missing/i.test(message)) return 'failed:project';
+  if (/No URL to audit|--skip-preview requires --url/i.test(message)) return 'failed:project';
+  if (/\bbuild failed with exit \d+/i.test(message)) return 'failed:project';
+  return null;
+}
+
+/**
+ * The TOTAL classifier, and the one `main` must use.
+ *
+ * index.mts promises one final JSON status line on every exit, and its watchdog
+ * exists to honour that promise for a hang. The failure path made the same
+ * promise and did not keep it: it printed the line only when
+ * `classifyBlockedStatus` recognised the message, so every unrecognised error
+ * exited with empty stdout — no line for the page-speed hook to parse, and
+ * therefore page speed silently unreported rather than reported UNVERIFIED. Three
+ * routes reached that hole by known messages and any new `throw` reached it by
+ * default, which is the wrong default for a total contract.
+ *
+ * `classifyBlockedStatus` stays partial on purpose. It answers a narrower
+ * question — "is this an environment gap" — that the sandbox-escalation branch in
+ * the page-speed hook still needs to ask, and widening it would have forced
+ * project faults into `blocked:*`. Totality belongs here, in the function whose
+ * job is "what do we print", and the return type carries it: no `| null` to
+ * forget to handle.
+ */
+export function classifyRunnerFailure(message: string): RunnerStatus {
+  return classifyBlockedStatus(message) ?? classifyProjectFault(message) ?? 'failed:unclassified';
 }
 
 export function readJson(filePath: string): Rec | null {

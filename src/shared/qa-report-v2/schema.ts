@@ -19,6 +19,111 @@ interface QaV2Check {
   id: string;
   status: 'passed' | 'failed' | 'not-applicable';
   summary?: string;
+  notApplicable?: QaNotApplicableReason;
+}
+
+/**
+ * WHY a `not-applicable` check carries no verdict — the FACT the producer knew,
+ * carried to the validator instead of a sentence a reader can reconstruct it
+ * from.
+ *
+ * `not-applicable` is one status over four situations that are not alike, and
+ * only ONE of them may be excused. Until this field existed the validator told
+ * them apart with two regular expressions over the summary (`not run:` plus
+ * `declares no|could not be executed`), and THREE producers wrote prose
+ * satisfying both for two incompatible reasons: the project declaring no such
+ * command (stack.ts's resolution arm — the intended one), a declared command
+ * whose binary is absent or unexecutable (`kind: 'unavailable'`), and a
+ * declared command the shell could not find (exit 127). The last two mean a
+ * test command was declared and ZERO tests ran, and both settled the run green
+ * on the most common project shape in this repository — measured, on real
+ * contract-compiled projects: a Node api-only project whose `npm test` exits
+ * 127, and a Python project with `pytest` absent or without its execute bit.
+ *
+ * `resolveStackCommand` KNOWS the difference at the moment it decides; the
+ * distinction was flattened into a sentence on the way out. This field is the
+ * fact travelling instead, so the exemption keys on the resolution result and
+ * no regular expression over prose can decide it.
+ *
+ *   no-command-declared    nothing to run: no manifest script and no pinned
+ *                          language default. THE ONLY EXCUSABLE ONE.
+ *   declared-not-runnable  declared, and its target is absent, not executable,
+ *                          or not on PATH. An environment gap: something WAS
+ *                          meant to run and did not.
+ *   cut-short              started (or was refused a process slot) and produced
+ *                          no verdict in either direction.
+ *   evidence-not-captured  the browser or native surface this check reads never
+ *                          produced evidence for it.
+ *
+ * The three that are not excusable are enumerated rather than left to the
+ * field's ABSENCE, so "a runner-produced not-applicable check always says why"
+ * is an invariant a test can assert over every producer
+ * (__tests__/exemption-provenance.test.ts) instead of a property that holds
+ * because nobody wrote the other arm. Absence still means "not excusable" — a
+ * report from a runner older than this field, or a hand-authored one, carries
+ * nothing here and is refused the exemption, which is the fail-closed
+ * direction and the one the old prose predicate got backwards.
+ */
+export const QA_NOT_APPLICABLE_REASONS = [
+  'no-command-declared', 'declared-not-runnable', 'cut-short', 'evidence-not-captured',
+] as const;
+
+export type QaNotApplicableReason = typeof QA_NOT_APPLICABLE_REASONS[number];
+
+/**
+ * What a reason MEANS to the two rules that read one, as a closed classification
+ * a fifth reason cannot be added without deciding.
+ *
+ *   excusable    nothing was there to run. The exemption predicate's half of the
+ *                condition; still not sufficient on its own — see
+ *                `stackCommandUndeclared`.
+ *   no-verdict   it should have produced a verdict and produced none. The
+ *                blanket cut-short rule's half.
+ *   not-excusable  everything else: reportable, never a pass, never signal death.
+ *
+ * A SWITCH WITH A `never` DEFAULT, and that is the whole point of the function
+ * existing rather than two literals in two files. The enumeration above is a
+ * runtime tuple with a runtime membership check in `parseCheck` and a `deepEqual`
+ * test over its members, so a fifth member reds a test — but it reds NOTHING at
+ * the two sites that decide, and those two fail in OPPOSITE directions. The
+ * exemption predicate compared against the literal `'no-command-declared'`, so an
+ * unclassified fifth reason was refused the exemption (fail closed, correct); the
+ * blanket cut-short rule compared against the literal `'cut-short'`, so a fifth
+ * reason denoting signal death slipped it (fail OPEN, and that is the direction
+ * that costs). One reason cannot fail both ways at once unless the two rules key
+ * on different things, which is exactly what two independent literals are.
+ *
+ * With this, adding a member to `QA_NOT_APPLICABLE_REASONS` and nothing else is a
+ * COMPILE ERROR: `assertUnreachableReason` cannot be handed a value that is not
+ * `never`. The author of the fifth reason must state which of the three it is,
+ * and both rules follow from that statement instead of from two string
+ * comparisons that happened to be written a hundred lines apart.
+ */
+export type QaNotApplicableDisposition = 'excusable' | 'no-verdict' | 'not-excusable';
+
+function assertUnreachableReason(reason: never): QaNotApplicableDisposition {
+  // Runtime arm for a report from a NEWER runner than this validator, which the
+  // parser above refuses before reaching here — belt and braces, and it is the
+  // fail-closed answer either way.
+  void reason;
+  return 'not-excusable';
+}
+
+export function notApplicableDisposition(
+  reason: QaNotApplicableReason | undefined,
+): QaNotApplicableDisposition {
+  switch (reason) {
+    // Absence is not excusable and not signal death: a report from a runner
+    // older than the field, or a hand-authored one, says nothing and gets
+    // nothing. This is the same fail-closed answer the field's own docblock
+    // records, expressed once instead of at each call site.
+    case undefined: return 'not-excusable';
+    case 'no-command-declared': return 'excusable';
+    case 'cut-short': return 'no-verdict';
+    case 'declared-not-runnable': return 'not-excusable';
+    case 'evidence-not-captured': return 'not-excusable';
+    default: return assertUnreachableReason(reason);
+  }
 }
 
 /**
@@ -31,11 +136,18 @@ interface QaV2Check {
  * that declares no formatter genuinely has nothing to run, and
  * `validateQaReportV2` rightly excuses it. A test suite the runner SIGKILLed
  * mid-flight has everything to run and ran none of it, and excusing that
- * certifies untested source. This marker is what separates them, and it lives
- * beside the schema — not in either the producer or the validator — because
- * both sides must agree on the same string or the distinction silently
- * evaporates in one direction: a producer that stops emitting it turns every
- * cut-short check back into a free pass.
+ * certifies untested source. This marker separates them IN THE PROSE A HUMAN
+ * READS, and it lives beside the schema — not in either the producer or the
+ * validator — because both sides must agree on the same string or the
+ * distinction silently evaporates in one direction: a producer that stops
+ * emitting it turns every cut-short check back into a free pass.
+ *
+ * IT IS NO LONGER WHAT THE EXEMPTION TURNS ON. `QA_NOT_APPLICABLE_REASONS`
+ * below carries the same distinction as a FACT, and the validator keys on
+ * that; a marker in a summary is a description of a decision rather than the
+ * decision. The two are not independent guards and are not counted as such
+ * anywhere — see the exemption predicate in index.ts, which says which one
+ * decides and which one is defence in depth behind it.
  *
  * Deliberately not a new `status` value. The three-value union above is
  * consumed by settlement, the dimension roll-up and every gate; widening it is
@@ -43,6 +155,37 @@ interface QaV2Check {
  * is why that is not excusable" already says exactly what happened.
  */
 export const CHECK_INCONCLUSIVE_PREFIX = 'inconclusive:';
+
+/**
+ * The check whose absence the DISCLOSE decision is about.
+ *
+ * A list of one, named rather than inlined, because the population it stands for
+ * is precise and the next reader will want to widen it: `stack-test` is the only
+ * required id that can be excused for having no command AND whose absence means
+ * no tests ran. Every other stack resolves a test command from a language
+ * default (`go test ./...`, `cargo test`, `pytest -q`, `./gradlew test`,
+ * `./mvnw test`), so the only shape reaching the exemption on this id is a Node
+ * or plain-PHP project with a build script and no test script. `stack-lint` and
+ * `stack-format` are on the same allowlist and are NOT here: a missing formatter
+ * is not missing test evidence, and saying it is would make the disclosure fire
+ * on nearly every run and mean nothing by the second week.
+ */
+export const TEST_EVIDENCE_CHECK_IDS = ['stack-test'] as const;
+
+/**
+ * Did this check set settle with its test evidence EXCUSED rather than measured?
+ *
+ * Derived from the checks by both the producer and the validator — the same
+ * function, so the durable field and the user-facing advisory cannot disagree
+ * about the same report. It is a description of the check array and nothing
+ * else; the fact that makes it TRUE (a command the runtime confirmed does not
+ * exist) is `stackCommandUndeclared`'s, and the exemption still turns on that.
+ */
+export function reportSettledWithoutTestEvidence(checks: readonly QaV2Check[]): boolean {
+  return checks.some((check) => (TEST_EVIDENCE_CHECK_IDS as readonly string[]).includes(check.id)
+    && check.status === 'not-applicable'
+    && notApplicableDisposition(check.notApplicable) === 'excusable');
+}
 
 /**
  * Whether a check summary reports a step that was cut short rather than one
@@ -146,6 +289,44 @@ export interface QaReportV2 {
   routes: QaRouteV2[];
   /** Non-browser gate verdicts. Optional: pre-1.0.40 reports carry none. */
   gates?: QaGateV2[];
+  /**
+   * This run settled with its test evidence EXCUSED rather than measured — the
+   * product's DISCLOSE decision, at the top level of the durable artifact.
+   *
+   * Deliberately not buried in the `checks` array, and deliberately not a fifth
+   * `notApplicable` reason. A later gate and a human both read this file, and
+   * neither should have to know which check id carries the news or which member
+   * of a closed per-check enumeration is the one that also means "tell someone".
+   *
+   * Optional: absent on every report older than this field, and omitted rather
+   * than written `false` so the artifact carries a claim only when there is one.
+   * `parseReport` refuses a value that contradicts the report's own checks —
+   * see `reportSettledWithoutTestEvidence`.
+   */
+  settledWithoutTestEvidence?: boolean;
+  /**
+   * This run settled on a diff the runtime knows was PARTIAL, and this is what
+   * it stepped over — the disclosure half of the decision to proceed instead of
+   * refusing (`currentVerificationSourceHash`'s `qualification`).
+   *
+   * A string, not the boolean its `settledWithoutTestEvidence` neighbour is,
+   * because the two disclosures are reconstructible to different degrees. "Which
+   * test evidence was excused" is derivable from the `checks` array a reader
+   * already has, so a boolean loses nothing. "What the diff could not see" is
+   * derivable from NOTHING in this file — a boolean here would tell a reader that
+   * something went unread and leave them no way to learn what, and naming the
+   * file is the entire actionable content (gitignore it, or move the source out
+   * of a directory called `dist`).
+   *
+   * PRESENCE is pinned by `evaluateQaReportV2`, in one direction only: a report
+   * that proceeded on a qualified scan and omits this is refused
+   * `scan-incomplete`, because that is a run reporting unqualified evidence it
+   * does not have. The converse — a report carrying it when the live scan is now
+   * clean — is NOT refused: the honest cause is a run that gitignored the
+   * offending directory after publishing, and the stale claim errs toward saying
+   * too much, which is the direction that cannot certify anything.
+   */
+  settledWithIncompleteScan?: string;
   machineEvidencePath?: string;
   build?: QaBuildIdentityV2;
   native?: NativeQaEvidenceV2;
@@ -354,10 +535,26 @@ function parseCheck(value: unknown, at: string, record: RecordIssue): QaV2Check 
   if (value.summary !== undefined && !safeString(value.summary)) {
     return record(`${at}.summary: must be a non-empty string without control characters (max 500 chars)`);
   }
+  // An unrecognized reason is REFUSED rather than dropped, and a reason on a
+  // check that reached a verdict is refused too. Dropping either would let a
+  // report through whose exemption claim this parser silently rewrote — and
+  // silently rewriting the field the exemption keys on is the whole defect
+  // class the field exists to close.
+  if (value.notApplicable !== undefined) {
+    if (!(QA_NOT_APPLICABLE_REASONS as readonly string[]).includes(String(value.notApplicable))) {
+      return record(`${at}.notApplicable: must be one of ${QA_NOT_APPLICABLE_REASONS.join(', ')}`);
+    }
+    if (value.status !== 'not-applicable') {
+      return record(`${at}.notApplicable: allowed only on a "not-applicable" check`);
+    }
+  }
   return {
     id: value.id,
     status: value.status as QaV2Check['status'],
     ...(typeof value.summary === 'string' ? { summary: value.summary } : {}),
+    ...(value.notApplicable === undefined
+      ? {}
+      : { notApplicable: value.notApplicable as QaNotApplicableReason }),
   };
 }
 
@@ -522,6 +719,8 @@ const REPORT_KEYS: readonly string[] = [
   'checks',
   'routes',
   'gates',
+  'settledWithoutTestEvidence',
+  'settledWithIncompleteScan',
   'machineEvidencePath',
   'build',
   'native',
@@ -576,6 +775,35 @@ export function parseReport(value: unknown, collector?: QaV2SchemaIssues): QaRep
     : Array.isArray(value.gates)
       ? value.gates.map((gate, index) => parseGate(gate, `gates[${index}]`, record))
       : record(expectedIssue(value.gates, 'gates', 'must be an array of gate objects'));
+  // PINNED TO THE CHECKS, in both directions, for the same reason the reason
+  // field is: a disclosure a report may set independently of what it reports is
+  // a second answer to one question, and the next reader would not know which
+  // one to believe. A report claiming the disclosure it does not owe, or
+  // suppressing the one it does, is refused rather than silently corrected.
+  // Absence is not a claim and stays legal — that is every report older than
+  // this field.
+  if (value.settledWithoutTestEvidence !== undefined) {
+    if (typeof value.settledWithoutTestEvidence !== 'boolean') {
+      record(expectedIssue(value.settledWithoutTestEvidence, 'settledWithoutTestEvidence', 'must be a boolean'));
+    } else if (Array.isArray(checks)
+      && checks.every((check): check is QaV2Check => Boolean(check))
+      && value.settledWithoutTestEvidence !== reportSettledWithoutTestEvidence(checks)) {
+      record('settledWithoutTestEvidence: must agree with the checks it summarises '
+        + `(checks say ${reportSettledWithoutTestEvidence(checks)})`);
+    }
+  }
+  // Not pinned HERE, unlike its neighbour above, and the difference is not an
+  // omission: what the diff could not see is a fact about the live worktree, so
+  // there is nothing in these bytes to check it against. `evaluateQaReportV2`
+  // holds it to `currentVerificationSourceHash`, which is the only party that
+  // knows. This parser's job is the shape.
+  if (value.settledWithIncompleteScan !== undefined && !safeString(value.settledWithIncompleteScan)) {
+    record(expectedIssue(
+      value.settledWithIncompleteScan,
+      'settledWithIncompleteScan',
+      'must be a non-empty string without control characters (max 500 chars)',
+    ));
+  }
   const build = value.build === undefined ? undefined : parseBuild(value.build, 'build', record);
   const native = value.native === undefined ? undefined : parseNative(value.native, 'native', record);
   const lighthouse = value.lighthouse === undefined ? undefined : parseLighthouse(value.lighthouse, 'lighthouse', record);
@@ -591,6 +819,12 @@ export function parseReport(value: unknown, collector?: QaV2SchemaIssues): QaRep
     checks: checks as QaV2Check[],
     routes: routes as QaRouteV2[],
     ...(gates ? { gates: gates as QaGateV2[] } : {}),
+    ...(typeof value.settledWithoutTestEvidence === 'boolean'
+      ? { settledWithoutTestEvidence: value.settledWithoutTestEvidence }
+      : {}),
+    ...(typeof value.settledWithIncompleteScan === 'string'
+      ? { settledWithIncompleteScan: value.settledWithIncompleteScan }
+      : {}),
     ...(typeof value.machineEvidencePath === 'string'
       ? { machineEvidencePath: value.machineEvidencePath }
       : {}),
