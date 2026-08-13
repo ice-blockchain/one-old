@@ -68,6 +68,8 @@ interface FakeServerOptions {
   cwd?: string;
   noisyStderr?: boolean;
   inheritedStdoutDescendant?: boolean;
+  descendantPidPath?: string;
+  descendantReleasedPath?: string;
   exitAfterHooksResponse?: boolean;
 }
 
@@ -131,7 +133,32 @@ process.stdin.on('data', (chunk) => {
       if (message.method !== 'hooks/list' || message.id !== 2 || JSON.stringify(message.params) !== JSON.stringify({ cwds: [cwd] })) faults.push('hooks/list was not third');
       stage = 3;
       ${options.inheritedStdoutDescendant === true
-    ? "spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)'], { stdio: ['ignore', 'inherit', 'ignore'] }).unref();"
+    // IT HOLDS THE INHERITED STDOUT FOR THIRTY SECONDS, where it used to hold for
+    // 2.5, and that duration is what makes the row next door decidable without a
+    // clock in it. The claim there is that the probe resolves on its direct
+    // child's EXIT and not on stdio closing. Thirty seconds is longer than the
+    // probe's own protocol timeout for these fixtures (5 s), so a probe that
+    // waited for the pipe CANNOT come back `verified` — it must come back
+    // `indeterminate: timeout` — and that is an ordering between two of the
+    // fixture's own numbers rather than a race against the machine: no amount of
+    // scheduler delay makes 30 s fit inside 5 s. The old form asserted `elapsed <
+    // 1_400` against a 2.5 s hold instead, which is a bet on the whole probe
+    // finishing quickly; inside the full suite it took 3860 ms and the row failed
+    // while the probe was perfectly correct.
+    //
+    // It also announces its RELEASE, as a fixture-drift guard rather than as the
+    // discriminator — see `descendantStillHolding`.
+    //
+    // THE RELEASE IS A FILE AND NOT A PID CHECK, because the pid answers wrongly:
+    // `process.kill(pid, 0)` succeeds against a ZOMBIE, and this holder's parent
+    // never waits for it. Measured, that is not hypothetical — with a pid check
+    // the guard reported "still holding" for a holder that had been told to exit
+    // after 1 ms.
+    ? `const held = spawn(process.execPath, ['-e', ${JSON.stringify(
+      `setTimeout(() => { require('fs').writeFileSync(process.argv[1], 'released'); }, 30000)`,
+    )}, ${JSON.stringify(options.descendantReleasedPath || '')}], { stdio: ['ignore', 'inherit', 'ignore'] });
+      fs.writeFileSync(${JSON.stringify(options.descendantPidPath || '')}, String(held.pid));
+      held.unref();`
     : ''}
       ${options.hooksListError
     ? `fragmented({ id: 2, error: ${JSON.stringify(options.hooksListError)} });`
@@ -156,15 +183,46 @@ function probeEnv(root: string, codexHome: string, binary: string): NodeJS.Proce
 
 async function runFakeProbe(
   prefix: string,
-  options: Omit<FakeServerOptions, 'markerPath' | 'expectedConfig' | 'realHome' | 'cwd'>,
-): Promise<{ result: Awaited<ReturnType<typeof probeCodexHookTrust>>; shadowHome: string; root: string }> {
+  options: Omit<
+    FakeServerOptions,
+    'markerPath' | 'expectedConfig' | 'realHome' | 'cwd' | 'descendantPidPath' | 'descendantReleasedPath'
+  >,
+): Promise<{
+  result: Awaited<ReturnType<typeof probeCodexHookTrust>>;
+  shadowHome: string;
+  root: string;
+  /**
+   * Had the descendant still not released the inherited stdout when the probe
+   * resolved?
+   *
+   * A FIXTURE-DRIFT GUARD, not the discriminator, and it is worth being exact
+   * about which: what proves the probe did not wait for the pipe is that it
+   * returned `verified` at all, because the holder outlasts the probe's own
+   * protocol timeout (see the holder's comment). This one covers the case that
+   * argument rests on — if a future edit raises `timeoutMs` above the hold, a
+   * probe that waited would produce a `verified` result 30 s late and every other
+   * assertion in the row would accept it. Sampled here rather than in the row
+   * because the holder is reaped immediately afterwards, so every row that asks
+   * for one is cleaned up whether or not it looks at this.
+   *
+   * It is deliberately not read as "the holder is alive": the release marker is
+   * only reliable in the direction that matters (a released holder has written
+   * it), since on the passing path the sample lands within milliseconds of the
+   * holder's spawn, before it has finished booting.
+   */
+  descendantStillHolding: boolean;
+}> {
   const root = tmp(prefix);
   const config = '# byte-for-byte sentinel\n[plugins."traffic-one@traffic-one-local"]\n  enabled=true\n';
   const codexHome = makeCodexHome(root, config);
   const marker = path.join(root, 'shadow-home.txt');
+  const descendantPidPath = path.join(root, 'descendant.pid');
+  const descendantReleasedPath = path.join(root, 'descendant.released');
   const binary = writeExecutable(path.join(root, 'fake-codex'), fakeServerSource({
     ...options,
     markerPath: marker,
+    descendantPidPath,
+    descendantReleasedPath,
     expectedConfig: config,
     realHome: root,
     cwd: '/workspace/project',
@@ -182,10 +240,17 @@ async function runFakeProbe(
       onShadowHomePrepared: (shadowHome) => { preparedShadowHome = shadowHome; },
     },
   );
+  const holder = Number(fs.existsSync(descendantPidPath) ? fs.readFileSync(descendantPidPath, 'utf8') : 0);
+  const descendantStillHolding = holder > 0 && !fs.existsSync(descendantReleasedPath);
+  // Reaped whatever the sample said: it is holding a thirty-second handle, and no
+  // row wants to pay for it or leave it behind.
+  if (holder > 0) {
+    try { process.kill(holder, 'SIGKILL'); } catch { /* already gone */ }
+  }
   const childReportedShadowHome = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '';
   if (childReportedShadowHome) assert.equal(childReportedShadowHome, preparedShadowHome);
   const shadowHome = preparedShadowHome;
-  return { result, shadowHome, root };
+  return { result, shadowHome, root, descendantStillHolding };
 }
 
 test('probeCodexHookTrust handles fragmented JSONL + stderr, copies config bytes, isolates home, and cleans up', async () => {
@@ -298,15 +363,38 @@ test('probeCodexHookTrust classifies unsupported API, invalid JSON/schema/errors
   }
 });
 
+// WHAT MADE THIS ROW FAIL ON A BUSY BOX, and what it asserts instead.
+//
+// The claim is that the probe resolves on its DIRECT CHILD'S EXIT and does not
+// wait for stdio that a descendant inherited and is still holding. That was
+// asserted as `elapsed < 1_400` against a descendant that held for 2500 ms, so
+// the row really said "this machine got through the whole probe in under 1.4 s" —
+// and inside the full suite it did not: observed at 3860 ms, with the probe
+// perfectly correct. A ceiling between two fixture durations is decided by the
+// scheduler, not by the mechanism.
+//
+// What replaces it is an ordering between two of the FIXTURE'S OWN numbers: the
+// descendant holds the inherited stdout for 30 s, and this probe is given a 5 s
+// protocol timeout, so a probe that waits for the pipe cannot produce a `verified`
+// result at any machine speed — it must report `indeterminate: timeout`. The
+// verdict below therefore decides the mechanism, load or no load, and it decides
+// it in five seconds rather than by hanging. `descendantStillHolding` guards the
+// premise of that argument for the day someone raises the fixture's timeout.
 test('probeCodexHookTrust resolves on direct-child exit when a descendant inherits stdout', async () => {
-  const startedAt = Date.now();
   const run = await runFakeProbe('inherited-stdout', {
     hooks: hooks(() => 'trusted'),
     inheritedStdoutDescendant: true,
   });
   try {
     assert.equal(run.result.evaluation, 'verified');
-    assert.ok(Date.now() - startedAt < 1_400, 'probe must not wait for descendant-held stdio');
+    assert.equal(
+      run.descendantStillHolding,
+      true,
+      'probe must not wait for descendant-held stdio — the descendant had already released it when the '
+      + 'probe returned, so this verdict was reached by waiting for the pipe. (If this fires alone, check '
+      + "that the fixture's timeoutMs is still shorter than the descendant's hold: the assertion above "
+      + 'stops being able to see a waiting probe once it is not.)',
+    );
     assert.equal(fs.existsSync(run.shadowHome), false);
   } finally {
     fs.rmSync(run.root, { recursive: true, force: true });

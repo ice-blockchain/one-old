@@ -24,6 +24,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -176,8 +177,83 @@ async function withFakeBinary(name: string, body: string, fn: () => Promise<void
  */
 const MAX_OVERRUN_FRACTION = 0.5;
 const MAX_OVERRUN_MS = 2_000;
-const STACK_RUN_OVERHEAD_MS = 1_200;
-const NATIVE_RUN_OVERHEAD_MS = 300;
+
+/**
+ * WHY THE RUNNER OVERHEAD TERM IS GONE, and what replaced the claim it carried.
+ *
+ * The ceiling above used to be applied to the wall clock of a whole `main()`
+ * invocation — `boundMs + grace + overheadMs + overrun`, with `overheadMs` a
+ * measured idle figure for "the rest of the run" (~1200 ms for a stack run's two
+ * extra `npm run` legs, ~300 ms for a native one). That mixes two quantities
+ * whose behaviour under contention could not be more different. The bound and
+ * the grace window are TIMERS: they fire when they fire, whatever the machine is
+ * doing. The overhead is package-manager startups, contract loads and a report
+ * write — pure machine cost, and the one term a busy box stretches without
+ * limit. Folding them into one ceiling made the whole assertion as
+ * load-sensitive as its weakest term.
+ *
+ * Measured, on the full 5 533-test suite of this repo: `a native adapter killed
+ * at its bound says so` failed this ceiling at 6465 ms against 2600 — while the
+ * report it produced in the same run said the adapter `was still running at its
+ * bound and was killed after 1219 ms of a 1200 ms bound`. The mechanism was
+ * perfect (19 ms of overrun past a 1200 ms bound) and the assertion reported the
+ * machine.
+ *
+ * So the sharp claim moves onto the figure the RUNNER ITSELF publishes for the
+ * bounded leg — `assertLegStoppedAtBound` below — which is bound + kill + close
+ * and nothing else, and the wall clock of the whole invocation keeps only the
+ * job no other assertion can do: turning "the kill was suppressed and this runs
+ * forever" into a clean red instead of a wedged suite. That is what
+ * `RUNAWAY_MULTIPLE` is, and it is deliberately far too loose to grade an
+ * overrun.
+ */
+const RUNAWAY_MULTIPLE = 10;
+
+/**
+ * The bound for the one row whose premise is that the CHAIN COMPLETED.
+ *
+ * Every other bounded row here needs its command to still be running when the
+ * bound fires, and a bound that fires early only cuts short something even
+ * earlier in the chain — the verdict is the same. "A test command that exits
+ * leaving a server behind" needs the opposite: `node server.js & exit 0` has to
+ * have REACHED `exit 0`, so that the runner reports `exited 0` (the abandoned
+ * arm) rather than `still running at its bound` (the timeout arm), and the whole
+ * point of the row is that those two are told apart.
+ *
+ * At 1500 ms that premise is a race against `npm run` › shell › node on a machine
+ * the test does not control. Observed under 20 CPU + 6 IO workers on 10 cores:
+ * `the summary must not claim the command was still running — it exited, and said
+ * so`, i.e. the runner classified correctly what the fixture had actually done
+ * and the row failed for it. So the bound is measured off the machine, the same
+ * way process-group.test.ts sizes its fixture deadline and for the same reason:
+ * three times an `npm run` cold start (the probe is npm + shell + node; the
+ * fixture is that plus a fork and a write) plus the 1500 ms that is actually
+ * about the runner.
+ *
+ * It weakens nothing. The bound is not the claim — the claim is which cut-short
+ * ARM the runner picked — and both `assertHeldToBound` and
+ * `assertLegStoppedAtBound` are relative to whatever bound the row announces, so
+ * a larger one is held to a proportionally larger ceiling with the same 500 ms
+ * grace and the same overrun fraction.
+ */
+function npmStartupMs(): number | null {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-npm-probe-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'startup-probe',
+      private: true,
+      scripts: { test: `${JSON.stringify(process.execPath)} -e ""` },
+    }));
+    const startedAt = Date.now();
+    const probe = spawnSync('npm', ['run', 'test', '--silent'], { cwd: dir, encoding: 'utf8' });
+    const costMs = Date.now() - startedAt;
+    return probe.status === 0 ? costMs : null;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const LEAKED_SERVER_BOUND_MS = 1_500 + 3 * (npmStartupMs() ?? 1_000);
 
 /** Signal 0 delivers nothing and answers "does this process still exist". */
 function processAlive(pid: number): boolean {
@@ -189,19 +265,79 @@ function processAlive(pid: number): boolean {
   }
 }
 
-function assertHeldToBound(elapsedMs: number, boundMs: number, what: string, overheadMs: number): void {
+function overrunAllowance(boundMs: number): number {
+  return Math.min(MAX_OVERRUN_MS, Math.round(boundMs * MAX_OVERRUN_FRACTION));
+}
+
+/**
+ * The whole invocation waited out the bound, and did not run away.
+ *
+ * The lower half is what stops a row passing for a runner that skipped the
+ * command; it is externally measured and contention can only move it in the
+ * passing direction. The upper half is the anti-hang backstop described above,
+ * and it exists because these rows carry no `timeout` option and a suppressed
+ * kill leaves a live child holding pipes — node:test then prints nothing useful
+ * and the process never exits. 10x the ideal settlement is 17 s at the 1200 ms
+ * bound and 20 s at the 1500 ms one, against a worst observed full-suite reading
+ * of 6465 ms (2.6x of margin), and against a fixture that hangs for 600 s when
+ * the bound stops working.
+ */
+function assertHeldToBound(elapsedMs: number, boundMs: number, what: string): void {
   assert.ok(
     elapsedMs >= boundMs,
     `fixture guard: ${what} must have waited out its ${boundMs} ms bound, waited ${elapsedMs} ms`,
   );
-  const overrunMs = Math.min(MAX_OVERRUN_MS, Math.round(boundMs * MAX_OVERRUN_FRACTION));
-  const ceiling = boundMs + FORCED_KILL_GRACE_MS + overheadMs + overrunMs;
+  const runaway = (boundMs + FORCED_KILL_GRACE_MS) * RUNAWAY_MULTIPLE;
   assert.ok(
-    elapsedMs < ceiling,
+    elapsedMs < runaway,
+    `${what} did not stop at all — the fixture hangs for ten minutes when the bound is not enforced, so `
+    + `anything past ${runaway} ms (${RUNAWAY_MULTIPLE}x the ideal settlement of ${boundMs} + `
+    + `${FORCED_KILL_GRACE_MS}) is a runner that never came back. Took ${elapsedMs} ms. This is the `
+    + 'anti-hang backstop; whether the bound was honoured PROMPTLY is decided by '
+    + 'assertLegStoppedAtBound against the runner\'s own accounting for the leg.',
+  );
+}
+
+/**
+ * The bound's real contract, taken from the runner's own published accounting.
+ *
+ * Both the stack and the native path print the leg's own duration into the
+ * summary a human reads — stack.ts's `produced no verdict because <cause> after
+ * <n> ms`, native.ts's `<cause> after <n> ms of a <bound> ms bound` — so the
+ * quantity the bound is a promise about is already a number in the artifact, and
+ * it does not include the package-manager legs, the contract load or the report
+ * write that surround it.
+ *
+ * IT IS THE CODE UNDER TEST REPORTING ON ITSELF, which is worth stating rather
+ * than hiding: a runner that ran for 20 s and printed `1219 ms` would satisfy
+ * this. What forecloses that reading is the pairing — `assertHeldToBound` above
+ * measures the same run from OUTSIDE and refuses a runaway, and the lower bound
+ * here refuses a leg that never waited — so the surviving hole is a runner that
+ * both stops promptly and lies about a number nobody else reads. That is a
+ * different defect from the one this row guards, and the alternative on offer
+ * (a wall clock over `main()`) does not grade the mechanism at all on a busy
+ * machine, which is how this row came to fail while the runner was correct.
+ */
+function assertLegStoppedAtBound(summary: string, boundMs: number, what: string): void {
+  const stated = new RegExp(`after (\\d+) ms(?: of a ${boundMs} ms bound)?`).exec(summary);
+  assert.ok(
+    stated,
+    `fixture guard: ${what} must publish the cut-short leg's own duration — the bound is a promise about `
+    + `THAT number, and this summary carries none: ${JSON.stringify(summary)}`,
+  );
+  const legMs = Number(stated![1]);
+  assert.ok(
+    legMs >= boundMs,
+    `fixture guard: ${what} must have waited out its ${boundMs} ms bound, and the runner says it ran `
+    + `${legMs} ms`,
+  );
+  const ceiling = boundMs + FORCED_KILL_GRACE_MS + overrunAllowance(boundMs);
+  assert.ok(
+    legMs < ceiling,
     `${what} must also STOP at its bound — the runner announces one to its caller and `
-    + `cli.ts promises "a command killed at this bound reports INCONCLUSIVE". Expected settlement within `
-    + `${ceiling} ms (${boundMs} bound + ${FORCED_KILL_GRACE_MS} forced-kill grace + `
-    + `${overheadMs} for the rest of the run + ${overrunMs} allowed overrun), took ${elapsedMs} ms`,
+    + `cli.ts promises "a command killed at this bound reports INCONCLUSIVE". Expected the leg to settle `
+    + `within ${ceiling} ms (${boundMs} bound + ${FORCED_KILL_GRACE_MS} forced-kill grace + `
+    + `${overrunAllowance(boundMs)} allowed overrun), and the runner reports ${legMs} ms`,
   );
 }
 
@@ -268,10 +404,10 @@ test('a test command killed at its timeout is rejectable, not a pass', async () 
     const startedAt = Date.now();
     const code = await runStack(cwd, ['--timeout-ms', '1500']);
     const elapsedMs = Date.now() - startedAt;
-    // Second precondition, and the bound's own contract. The lower half is what
-    // stops this passing for a runner that skipped the command; the upper half
-    // is what stops it passing for a runner that never stopped running it.
-    assertHeldToBound(elapsedMs, 1_500, 'a hung test command', STACK_RUN_OVERHEAD_MS);
+    // Second precondition: the run waited out the bound and came back at all.
+    // The bound's own contract — that it STOPPED there — is asserted below,
+    // against the duration the runner published for the leg itself.
+    assertHeldToBound(elapsedMs, 1_500, 'a hung test command');
 
     const validated = readQaReportV2(cwd, 'R');
     assert.equal(validated.ok, false, 'a run with no test evidence must never validate');
@@ -291,6 +427,7 @@ test('a test command killed at its timeout is rejectable, not a pass', async () 
       'the summary must say the step produced no verdict, not that it "could not be executed"',
     );
     assert.match(String(check?.summary), /1500/, 'the summary must name the bound that cut it short');
+    assertLegStoppedAtBound(String(check?.summary), 1_500, 'a hung test command');
 
     // The consumer channel, read back from disk: `persistGateRejection` writes
     // the rejection into the artifact itself, so the file every downstream gate
@@ -378,8 +515,8 @@ test('a test command that exits leaving a server behind is rejectable, not a pas
     nonvisualProject(cwd, `node ${JSON.stringify(server)} & exit 0`);
     try {
       const startedAt = Date.now();
-      const code = await runStack(cwd, ['--timeout-ms', '1500']);
-      assertHeldToBound(Date.now() - startedAt, 1_500, 'a test command that leaked a server', STACK_RUN_OVERHEAD_MS);
+      const code = await runStack(cwd, ['--timeout-ms', String(LEAKED_SERVER_BOUND_MS)]);
+      assertHeldToBound(Date.now() - startedAt, LEAKED_SERVER_BOUND_MS, 'a test command that leaked a server');
 
       const validated = readQaReportV2(cwd, 'R');
       assert.equal(validated.ok, false, 'a suite whose output was truncated by its own leftovers proved nothing');
@@ -395,6 +532,7 @@ test('a test command that exits leaving a server behind is rejectable, not a pas
         /exited 0/,
         'the summary must not claim the command was still running — it exited, and said so',
       );
+      assertLegStoppedAtBound(String(check?.summary), LEAKED_SERVER_BOUND_MS, 'a test command that leaked a server');
 
       const pid = Number(fs.readFileSync(pidFile, 'utf8'));
       assert.ok(pid > 0, 'fixture guard: the leftover server must actually have started');
@@ -874,7 +1012,7 @@ test('a native adapter that exits leaving a process on its output pipe is inconc
         async () => {
           const startedAt = Date.now();
           const code = await runNative(cwd, ['--timeout-ms', '1200']);
-          assertHeldToBound(Date.now() - startedAt, 1_200, 'a native adapter that leaked a process', NATIVE_RUN_OVERHEAD_MS);
+          assertHeldToBound(Date.now() - startedAt, 1_200, 'a native adapter that leaked a process');
 
           assert.equal(code, 2, 'blocked-environment exits 2, the same as every other unanswerable run');
           const result = readQaReportV2(cwd, 'R');
@@ -892,6 +1030,7 @@ test('a native adapter that exits leaving a process on its output pipe is inconc
             /failed or produced no valid machine result/i,
             'the invented red is the defect; an adapter nobody watched fail must not be reported as failing',
           );
+          assertLegStoppedAtBound(message, 1_200, 'a native adapter that leaked a process');
 
           const pid = Number(fs.readFileSync(pidFile, 'utf8'));
           assert.ok(pid > 0, 'fixture guard: the leftover must actually have started');
@@ -917,9 +1056,10 @@ test('a native adapter killed at its bound says so, instead of blaming a missing
       const startedAt = Date.now();
       const code = await runNative(cwd, ['--timeout-ms', '1200']);
       const elapsedMs = Date.now() - startedAt;
-      // The adapter really ran, really was held to the bound, and really was
-      // released by it.
-      assertHeldToBound(elapsedMs, 1_200, 'a hung native adapter', NATIVE_RUN_OVERHEAD_MS);
+      // The adapter really ran and really was held to the bound; that it was
+      // RELEASED by the bound rather than left running is asserted on the
+      // runner's own accounting for the leg, below.
+      assertHeldToBound(elapsedMs, 1_200, 'a hung native adapter');
 
       assert.equal(code, 2);
       const result = readQaReportV2(cwd, 'R');
@@ -934,6 +1074,7 @@ test('a native adapter killed at its bound says so, instead of blaming a missing
       assert.match(message, /1200 ms bound/, 'the message must name the bound that cut it short');
       assert.match(message, /adapter was still running/, 'and this one really was the adapter');
       assert.doesNotMatch(message, /environment unavailable/i);
+      assertLegStoppedAtBound(message, 1_200, 'a hung native adapter');
     });
   });
 });

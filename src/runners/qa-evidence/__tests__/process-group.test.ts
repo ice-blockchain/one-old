@@ -38,30 +38,95 @@ import { type RunnerArgs } from '../types';
 // mysteriously on the one platform none of this applies to.
 const POSIX_ONLY = { skip: process.platform === 'win32' ? 'POSIX process groups' : false };
 
-const BOUND_MS = 1_500;
+/**
+ * One `node -e ""` cold start on this box, or null if the probe failed.
+ *
+ * Two constants below are sized off it, for the reason `FIXTURE_STARTUP_MS` is
+ * measured rather than written down, and against a failure that constant cannot
+ * prevent: see `BOUND_MS`.
+ */
+function nodeStartupMs(): number | null {
+  const startedAt = Date.now();
+  const probe = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf8' });
+  return probe.status === 0 ? Date.now() - startedAt : null;
+}
+
+const NODE_STARTUP_MS = nodeStartupMs();
+
+/**
+ * The bound the native rows announce — 1500 ms, unless this box cannot get a
+ * fixture up inside it.
+ *
+ * A BOUND THAT FIRES BEFORE THE FIXTURE EXISTS GRADES NOTHING, and no fixture
+ * deadline can rescue it. Every native row here spawns a leader that forks a
+ * grandchild, and then waits for the grandchild to announce itself while the run
+ * is in flight; the group kill at the bound reaches the whole chain, so a bound
+ * that fires before the fork has happened means the grandchild NEVER starts and
+ * `runningGrandchild` fails a guard about orphans on a machine that was merely
+ * busy. Observed under 40 CPU + 12 IO workers on 10 cores: `the grandchild never
+ * started, so nothing was orphanable` on the two rows this file is named for,
+ * where two node startups plus a fork plus two writes did not fit inside 1500 ms.
+ * Widening `FIXTURE_STARTUP_MS` cannot touch it — it is not the guard's patience
+ * that ran out, it is the runner that killed the tree the guard was waiting for.
+ *
+ * Eight startups, because the chain is two of them plus a fork and two file
+ * writes, which leaves 4x of headroom over the shape actually measured. AN IDLE
+ * BOX IS UNAFFECTED, deliberately: `node -e ""` costs 40-60 ms here, 8x of that
+ * is far under 1500, so the floor is what applies and every documented figure in
+ * this file was taken at it. Only a box that has become slow enough to break the
+ * premise pays anything, and it pays in proportion to how slow it got.
+ *
+ * Nothing downstream is weakened, because every timing assertion here is relative
+ * to the bound the row announced: `assertHeldToBound` and `assertSettledBy`
+ * derive the whole ceiling — grace plus a 15% overrun allowance — from this
+ * value, so a bigger bound is held to a proportionally bigger ceiling and the
+ * multiplier a regression has to breach is unchanged.
+ */
+const BOUND_MS = Math.max(1_500, 8 * (NODE_STARTUP_MS ?? 0));
 
 /** How long the grandchild is given to disappear after the runner returns. */
 const REAP_BUDGET_MS = 5_000;
 
 /**
- * How long after a run settles its leftovers may still be ALIVE.
+ * How many more heartbeats a leftover may write AFTER the runner has returned.
  *
- * `REAP_BUDGET_MS` above bounds liveness and nothing else, which left kill
- * PROMPTNESS invisible: measured, a reap deferred by anything under five seconds
- * passed every test in this file unchanged, so "the tree is gone by the time the
- * caller is told the run ended" was only ever asserted as "eventually gone". The
- * gap matters to the one caller shape this lane exists for — a harness that
- * starts the next run, against the same port, the moment this one settles.
+ * This is the promptness claim, and it used to be a 300 ms wall-clock ceiling on
+ * how long the tree stayed alive past `await run`. `REAP_BUDGET_MS` bounds
+ * liveness and nothing else, which left kill PROMPTNESS invisible — measured, a
+ * reap deferred by anything under five seconds passed every test in this file
+ * unchanged, so "the tree is gone by the time the caller is told the run ended"
+ * was only ever asserted as "eventually gone". The gap matters to the one caller
+ * shape this lane exists for: a harness that starts the next run, against the
+ * same port, the moment this one settles.
  *
- * 300 ms is 21x the worst reading taken for it. The kill is issued INSIDE
- * `finish`, before the promise resolves, so what is left to measure is kernel
- * teardown plus this file's poll interval: 0 ms on six idle runs of each shape,
- * 0–14 ms on six more per shape under 10-way CPU load. It is deliberately not
- * tighter than the most plausible regression it has to catch, a reap moved onto
- * the `FORCED_KILL_GRACE_MS` timer, and not so tight that a missed scheduler
- * slice can reach it.
+ * A FIXED DEADLINE IS THE WRONG INSTRUMENT FOR IT, and that is not a taste
+ * argument — 300 ms was 21x the worst idle reading and a machine running the
+ * whole suite still crossed it, which turns a claim about the runner into a
+ * report about the box. What the claim actually rests on is a synchronous fact
+ * with no duration in it: `finish` calls `reapGroup()` BEFORE
+ * `resolvePromise(result)`, so at the instant an awaiting caller resumes, the
+ * SIGKILL has already been delivered to the group. A process that has been
+ * SIGKILLed cannot write another byte, whatever the machine is doing.
+ *
+ * So promptness is counted in the LEFTOVER'S OWN WRITES rather than in
+ * milliseconds: sample the heartbeat file synchronously as the runner returns,
+ * and require that it has not grown by the time the tree is observed gone. That
+ * is immune to load in both directions — a busy box slows the leftover down,
+ * which can only reduce the count — and it still kills the regression the
+ * ceiling was calibrated against, a reap moved onto the `FORCED_KILL_GRACE_MS`
+ * timer: 500 ms of deferral at the fixture's 50 ms cadence is ten heartbeats
+ * idle and at least one at any load a scheduler can produce.
+ *
+ * ONE is the allowance, not zero, and it is the in-flight write rather than
+ * slack: SIGKILL terminates the target at its next kernel boundary, so an
+ * `appendFileSync` already issued when the signal landed still completes, and it
+ * can complete after the sample below is taken. Measured on this host across 24
+ * runs of every shape in this file, idle and under 26-way load: growth 0 in all
+ * of them, so the allowance has never been consumed. Ten beats against one is a
+ * 10x margin on the mutant, and a leftover that keeps writing indefinitely is
+ * caught by the liveness poll above regardless.
  */
-const PROMPT_REAP_MS = 300;
+const ALLOWED_IN_FLIGHT_BEATS = 1;
 
 /**
  * What a bounded run may overrun its own bound by before the bound is a lie.
@@ -182,7 +247,7 @@ function assertHeldToBound(elapsedMs: number, boundMs: number, what: string): vo
  * an assertion, because it is not one: every row still fails, loudly, if the
  * tree does not come up.
  */
-function fixtureStartupMs(): number {
+function npmStartupMs(): number | null {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-pgroup-probe-'));
   try {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
@@ -193,16 +258,57 @@ function fixtureStartupMs(): number {
     const startedAt = Date.now();
     const probe = spawnSync('npm', ['run', 'test', '--silent'], { cwd: dir, encoding: 'utf8' });
     const costMs = Date.now() - startedAt;
-    // Six, because a fixture tree is this shape plus a tsx-loaded runner, one
-    // more fork and two file writes; 20 s, because six times a probe taken on
-    // a merely BUSY box still came out under the time the fixture took.
-    return probe.status === 0 ? Math.min(Math.max(6 * costMs, 20_000), 120_000) : 20_000;
+    return probe.status === 0 ? costMs : null;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
-const FIXTURE_STARTUP_MS = fixtureStartupMs();
+/** The `npm run` cold start this box pays right now, or null if it failed. */
+const NPM_STARTUP_MS = npmStartupMs();
+
+// Six, because a fixture tree is the probe's shape plus a tsx-loaded runner, one
+// more fork and two file writes; 20 s, because six times a probe taken on a
+// merely BUSY box still came out under the time the fixture took.
+const FIXTURE_STARTUP_MS = NPM_STARTUP_MS === null
+  ? 20_000
+  : Math.min(Math.max(6 * NPM_STARTUP_MS, 20_000), 120_000);
+
+/**
+ * The bound the two STACK rows announce, which cannot be `BOUND_MS`.
+ *
+ * WIDENING `FIXTURE_STARTUP_MS` PROVABLY CANNOT FIX THOSE TWO ROWS, and that is
+ * the correction this constant carries. The comment above records that every
+ * constant tried moved WHICH row failed rather than whether one did, which is
+ * true and is a different problem for these two: their fixture is not merely
+ * slow to answer, it is racing the RUNNER'S OWN BOUND. `runningGrandchild` and
+ * `runStackChecks` are awaited together, and the chain the grandchild sits at the
+ * bottom of is `npm run` › shell › node › fork. If that chain has not reached the
+ * fork when the bound fires, the group is killed and the grandchild NEVER STARTS
+ * — so the guard's deadline is irrelevant, and at 20 s it simply waits 20 s for
+ * a process the runner already made impossible. Observed under 20 CPU + 6 IO
+ * workers on 10 cores: both stack rows failed at `the grandchild never started`
+ * while every other row in the file passed, because `npm run` on that box did not
+ * reach node inside 1500 ms.
+ *
+ * So the bound is sized from the machine the same way the guard is, off the same
+ * probe: the bound has to outlast the STARTUP of the tree it is bounding, or the
+ * row grades nothing. Three times the probe — the probe is npm + shell + node,
+ * the fixture is that plus one more fork and two writes — plus the native bound
+ * on top, which is the part that is actually about the runner. Idle that is
+ * ~1.5 s + 3x~0.8 s ≈ 3.9 s; on the loaded box above it scales with the same
+ * measurement that widens the guard.
+ *
+ * NOTHING IS WEAKENED BY IT. Every timing assertion in those two rows is
+ * relative to the bound they were given (`assertHeldToBound`,
+ * `assertSettledBy`, `elapsedMs < STACK_BOUND_MS`), so a larger bound is held to
+ * a proportionally larger ceiling with the same 15% overrun allowance and the
+ * same forced-kill grace; the group-kill and promptness claims do not involve it
+ * at all. Verified by mutation: with the group kill reduced to a leader-only kill
+ * both rows still fail, and with the reap deferred past the grace window row 61
+ * still fails.
+ */
+const STACK_BOUND_MS = BOUND_MS + 3 * (NPM_STARTUP_MS ?? 1_000);
 
 /**
  * A per-test ceiling. It is a backstop, not the bound assertion: measured with
@@ -252,9 +358,12 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeo
 /**
  * How long the pid took to disappear, or null if it outlived the budget.
  *
- * The poll is 25 ms rather than 50 because the return value is now ASSERTED
- * against `PROMPT_REAP_MS` and not merely checked for null: at 50 ms the reading
- * was mostly a measure of this loop.
+ * The returned figure is DIAGNOSTIC — it goes into the failure message of the
+ * liveness assertion and nothing decides on it. Promptness is decided by
+ * `ALLOWED_IN_FLIGHT_BEATS` instead, which is why the 25 ms poll no longer has
+ * to be fine enough to measure a ceiling; it stays there because a tighter poll
+ * costs nothing on the passing path, where the loop exits as soon as the tree
+ * answers.
  */
 async function waitForDeath(pid: number, budgetMs: number): Promise<number | null> {
   const startedAt = Date.now();
@@ -421,28 +530,59 @@ function adoptiveParent(pid: number): string {
   }
 }
 
+function beatsWritten(tree: Tree): number {
+  // One byte per beat, so the file size IS the count.
+  try {
+    return fs.statSync(tree.beatFile).size;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * The whole aftermath assertion, shared by both paths: gone, gone PROMPTLY, and
  * gone rather than merely un-signallable.
+ *
+ * IT MUST BE CALLED IN THE SAME TURN THE RUNNER RETURNED IN, because the first
+ * statement below samples the leftover's heartbeat and that sample is what the
+ * promptness claim is measured from — see `ALLOWED_IN_FLIGHT_BEATS`. Everything
+ * before the first `await` here runs synchronously in the caller's continuation,
+ * so `const result = await run;` followed by any number of synchronous
+ * assertions and then this call is exactly the right shape. An `await` in
+ * between would let the leftover beat for a turn that has nothing to do with the
+ * reap.
+ *
+ * `reapIssued` is how a caller says the reap did NOT happen before it called:
+ * the two cross-process rows signal a child runner and then look at the tree, so
+ * the kill is somewhere in another process's signal handler and no synchronous
+ * fact is available to either of them. Those rows are about liveness only, and
+ * they say so rather than measuring the courier.
  */
-async function assertTreeIsGone(tree: Tree, pid: number): Promise<void> {
+async function assertTreeIsGone(tree: Tree, pid: number, reapIssued = true): Promise<void> {
+  const atReturn = beatsWritten(tree);
   const deadAfterMs = await waitForDeath(pid, REAP_BUDGET_MS);
   if (deadAfterMs === null) {
     assert.fail(`the grandchild (pid ${pid}) outlived the runner — it is an orphan at ppid ${adoptiveParent(pid)}`);
   }
   // Liveness alone is not the claim the runner makes. A caller that starts the
   // next run the moment this one settles — against the same port — is protected
-  // by the kill having ALREADY HAPPENED when the promise resolved, and the only
-  // way that is visible from out here is how little time this took.
-  assert.ok(
-    deadAfterMs <= PROMPT_REAP_MS,
-    `the reap must be part of settling, not something that merely happens later: the tree was still `
-    + `alive ${deadAfterMs} ms after the runner returned, past the ${PROMPT_REAP_MS} ms ceiling`,
-  );
-  const atDeath = fs.statSync(tree.beatFile).size;
+  // by the kill having ALREADY HAPPENED when the promise resolved, and what
+  // makes that visible from out here is that the leftover wrote NOTHING more
+  // afterwards. A reap deferred onto a timer shows up as the beats it wrote
+  // while waiting for it.
+  const beatsAfterReturn = beatsWritten(tree) - atReturn;
+  if (reapIssued) {
+    assert.ok(
+      beatsAfterReturn <= ALLOWED_IN_FLIGHT_BEATS,
+      'the reap must be part of settling, not something that merely happens later: the tree wrote '
+      + `${beatsAfterReturn} more heartbeats after the runner returned (at most ${ALLOWED_IN_FLIGHT_BEATS} `
+      + `in-flight write is allowed), and it was still alive ${deadAfterMs} ms later`,
+    );
+  }
+  const atDeath = beatsWritten(tree);
   await sleep(300);
   assert.equal(
-    fs.statSync(tree.beatFile).size,
+    beatsWritten(tree),
     atDeath,
     'the grandchild is still writing, so the pid check above found a recycled or reaped id rather than a dead process',
   );
@@ -470,7 +610,42 @@ posixTest('a timed-out native command kills the whole process group, not just it
 // same allowance as every other shape here. Without it this was the one bounded
 // test in the lane carrying no timing assertion at all, and it stayed green
 // under a mutation that made every other bounded test fail.
-const OVERFLOW_AT_MS = 800;
+//
+// It scales with the same node-startup probe as `BOUND_MS`, and for the same
+// premise: the delay exists so the grandchild is fully up before the overflow
+// kills the group, so on a box where a startup costs half a second it has to be
+// longer than a box where it costs forty milliseconds.
+const OVERFLOW_AT_MS = Math.max(800, 5 * (NODE_STARTUP_MS ?? 0));
+
+/**
+ * What 8 MB costs to push through a pipe on this box, measured.
+ *
+ * THE OVERFLOW INSTANT IS NOT THE INSTANT THE FIXTURE STARTS WRITING, and the
+ * ceiling above was anchored as if it were. The runner cuts the run short when
+ * ITS OWN capture crosses `MAX_NATIVE_PROCESS_OUTPUT`, which cannot happen until
+ * 8 MB has actually transited the pipe and been read on this side — a cost the
+ * old anchor accounted for nowhere, and one that IO contention stretches without
+ * limit. Observed under 40 CPU + 12 IO workers on 10 cores: settlement in 1439 ms
+ * against a 1420 ms ceiling, with the kill and the reap both perfect. That is a
+ * latent defect in the assertion rather than slack that needs widening: on an
+ * idle box the transfer is fast enough to hide inside the 15% overrun allowance,
+ * and the row passed for that reason and not because the term was accounted for.
+ *
+ * The probe is the same transfer through the same kind of pipe, doubled, so it
+ * reports on the machine at the moment the file loads. Twice, because the fixture
+ * writes 9 MB in one call while the probe's own child is a fresh node startup —
+ * neither is exactly the other, and the direction of the error should be the one
+ * that does not fail a correct runner.
+ */
+function pipeDrainMs(bytes: number): number | null {
+  const startedAt = Date.now();
+  const probe = spawnSync(process.execPath, ['-e', `process.stdout.write('x'.repeat(${bytes}))`], {
+    maxBuffer: bytes * 2,
+  });
+  return probe.status === 0 ? Date.now() - startedAt : null;
+}
+
+const OVERFLOW_TRANSFER_MS = 2 * (pipeDrainMs(MAX_NATIVE_PROCESS_OUTPUT) ?? 500);
 
 posixTest('a native command killed for overflowing its output bound also kills its group', { timeout: TEST_TIMEOUT_MS }, async () => {
   await withTree(async (tree) => {
@@ -491,7 +666,11 @@ posixTest('a native command killed for overflowing its output bound also kills i
       elapsedMs >= OVERFLOW_AT_MS,
       `fixture guard: the run cannot have ended before the overflow began, ended in ${elapsedMs} ms`,
     );
-    assertSettledBy(elapsedMs, OVERFLOW_AT_MS, 'a run killed for overflowing its capture bound');
+    assertSettledBy(
+      elapsedMs,
+      OVERFLOW_AT_MS + OVERFLOW_TRANSFER_MS,
+      'a run killed for overflowing its capture bound',
+    );
     await assertTreeIsGone(tree, pid);
   });
 });
@@ -509,7 +688,7 @@ posixTest('a timed-out stack check kills the whole process group', { timeout: TE
     }));
     const args = {
       projectRoot: tree.dir,
-      timeoutMs: BOUND_MS,
+      timeoutMs: STACK_BOUND_MS,
       timeoutMsExplicit: true,
     } as unknown as RunnerArgs;
     const startedAt = Date.now();
@@ -525,7 +704,7 @@ posixTest('a timed-out stack check kills the whole process group', { timeout: TE
     ]);
     if (typeof guard !== 'number') throw guard;
     const pid = guard;
-    assertHeldToBound(Date.now() - startedAt, BOUND_MS, 'a timed-out stack check');
+    assertHeldToBound(Date.now() - startedAt, STACK_BOUND_MS, 'a timed-out stack check');
     // Precondition: the check really was cut short by the bound. Asserted on
     // the marker rather than the status, because `not-applicable` is also what
     // an undeclared command produces.
@@ -604,29 +783,53 @@ posixTest('a bound still settles when the surviving child is beyond every signal
 // Measured through the escapee shape, because it is the one where the window is
 // wide and the writer is certain to survive it: the kill reaches nothing, so the
 // descendant on the inherited stdout keeps narrating until the grace timer
-// settles the run. The discriminator is a line the fixture only writes AFTER the
-// bound has fired — the grandchild starts strictly later than the run does, so
-// any `t=` at or past the bound was written after the kill decision.
+// settles the run.
+//
+// THE DISCRIMINATOR IS THE DESCENDANT'S OWN PARENT, not a clock, and that is a
+// correction rather than a refinement. It used to narrate `t=<ms since its own
+// boot>` and require a line at or past the BOUND, on the reasoning that the
+// grandchild starts strictly later than the run does. True, and it silently
+// assumes the grandchild starts SOON after: the two clocks have different
+// origins, so the assertion is really "the fixture booted within a few
+// milliseconds of the run", which is a statement about the machine. Observed
+// under load, exactly there: `the last line captured was t=260 of a 1500 ms
+// bound` — a fixture that came up 1.7 s late, narrated correctly through the
+// whole grace window, and failed anyway.
+//
+// A descendant that outlives its parent is REPARENTED — to pid 1 on this
+// platform — so `process.ppid` changing is the same event as the group kill
+// reaching the leader, observed from inside the writer, with no duration
+// anywhere in it. A captured line carrying the new parent was therefore written
+// after the kill; a line carrying the leader's own pid was written before it, so
+// seeing both is proof that capture spanned the kill rather than stopping at it.
 posixTest('a run that was cut short keeps the output written after its kill', { timeout: TEST_TIMEOUT_MS }, async () => {
   await withTree(async (tree) => {
     fs.appendFileSync(
       tree.grandchildScript,
-      [
-        'const bootedAt = Date.now();',
-        "setInterval(() => process.stdout.write(`t=${Date.now() - bootedAt}\\n`), 50);",
-        '',
-      ].join('\n'),
+      ["setInterval(() => process.stdout.write(`ppid=${process.ppid}\\n`), 50);", ''].join('\n'),
     );
     const run = runBoundedProcess([process.execPath, tree.childScript], tree.dir, BOUND_MS);
     await runningGrandchild(tree);
     const result = await run;
     assert.equal(result.kind, 'timeout', 'fixture guard: the bound must be what ended this run');
-    const narrated = [...result.stdout.matchAll(/^t=(\d+)$/gm)].map((match) => Number(match[1]));
-    assert.ok(narrated.length > 0, `fixture guard: the descendant must have narrated at all, got ${JSON.stringify(result.stdout.slice(0, 200))}`);
+    const parents = [...result.stdout.matchAll(/^ppid=(\d+)$/gm)].map((match) => Number(match[1]));
     assert.ok(
-      Math.max(...narrated) >= BOUND_MS,
+      parents.length > 0,
+      `fixture guard: the descendant must have narrated at all, got ${JSON.stringify(result.stdout.slice(0, 200))}`,
+    );
+    // The pre-kill half, as a fixture guard: without a line naming the LIVE
+    // leader there is no before-state, and "every line says pid 1" would be
+    // satisfied by a fixture that only started narrating after the kill.
+    assert.ok(
+      parents[0]! > 1,
+      `fixture guard: the first captured line must name the live leader, not ${parents[0]} — capture has to `
+      + 'span the kill for this row to be about the tail at all',
+    );
+    assert.ok(
+      parents.some((ppid) => ppid !== parents[0]),
       'the tail a killed run wrote during its grace window is what the inconclusive summary quotes, and it '
-      + `must survive to the caller — the last line captured was t=${Math.max(...narrated)} of a ${BOUND_MS} ms bound`,
+      + `must survive to the caller — every captured line still named the live leader (${JSON.stringify(parents)}), `
+      + 'so nothing written after the group kill reached it',
     );
   }, { holdsPipe: true, escapes: true });
 });
@@ -923,7 +1126,7 @@ posixTest('a stack check that passes does not leave a server behind', { timeout:
     }));
     const args = {
       projectRoot: tree.dir,
-      timeoutMs: BOUND_MS,
+      timeoutMs: STACK_BOUND_MS,
       timeoutMsExplicit: true,
     } as unknown as RunnerArgs;
     const startedAt = Date.now();
@@ -941,8 +1144,9 @@ posixTest('a stack check that passes does not leave a server behind', { timeout:
     assert.equal(check?.status, 'passed', 'the command exited 0 and its verdict must still be a pass');
     assert.doesNotMatch(String(check?.summary), /inconclusive:/i, 'nothing about this run was unknown');
     assert.ok(
-      elapsedMs < BOUND_MS,
-      `fixture guard: the bound must not be what ended this run, settled in ${elapsedMs} ms`,
+      elapsedMs < STACK_BOUND_MS,
+      `fixture guard: the bound must not be what ended this run, settled in ${elapsedMs} ms of a `
+      + `${STACK_BOUND_MS} ms bound`,
     );
     await assertTreeIsGone(tree, guard);
   }, { leaderExits: true });
@@ -1085,7 +1289,14 @@ posixTest('a host with its own interrupt handler sees one Ctrl-C once, and still
           + ` (${String(error)})`);
       });
       process.kill(runner.pid!, 'SIGINT');
-      await assertTreeIsGone(tree, pid);
+      // LIVENESS ONLY here: the kill is issued inside the driver's own signal
+      // handler, in another process, with nothing this side can synchronise on —
+      // unlike the row above, which waits for the driver to CLOSE and therefore
+      // reaches this call after the reap has provably run. Asserting promptness
+      // from here would be timing the courier: signal delivery plus a `tsx`
+      // process's handler, which is exactly the kind of wall clock a busy machine
+      // decides instead of the runner.
+      await assertTreeIsGone(tree, pid, false);
       // Read BEFORE the release, because it is the state of a host that is still
       // running after its interrupt, and asserted again after the exit so a
       // second delivery arriving late cannot pass unnoticed.

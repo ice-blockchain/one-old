@@ -76,6 +76,18 @@ test('a stale canonical state write cannot erase or replace a minted report id',
   });
 });
 
+/**
+ * How many times a racer may re-enter the mint after its lock wait expired.
+ *
+ * Sized against the queue rather than against a clock: twelve racers each
+ * holding the lock for one short transaction, with a 1 s wait per attempt, so
+ * eight attempts is 8 s of waiting per racer against a queue whose honest cost
+ * is milliseconds. It exists to stop a genuinely wedged lock from hanging the
+ * suite, and a racer that burns all eight rethrows the timeout it last saw, so
+ * the row still reports a wedge as a failure and never as a pass.
+ */
+const RACER_LOCK_ATTEMPTS = 8;
+
 test('concurrent report-id minting elects exactly one durable worker decision', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-report-race-'));
   const barrier = path.join(cwd, 'start');
@@ -83,13 +95,42 @@ test('concurrent report-id minting elects exactly one durable worker decision', 
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
     const modulePath = path.resolve(__dirname, '..', 'report-id-mint.ts');
+    // A RACER RETRIES ITS OWN LOCK TIMEOUT, and that is what production does at
+    // this boundary rather than a licence taken by the test. `createReportId`
+    // spends at most `ONE_MCP_REPORT_ID_LOCK_TIMEOUT_MS` (1 s) waiting for the
+    // project state lock and then THROWS; `maybeStartOneMcpReport` catches that
+    // and reports `{ started: false, reason: 'error' }`, and the next hook mints
+    // again — the row above pins exactly that fail-open shape. Twelve racers
+    // through one 1 s lock is a queue whose tail cannot fit inside the deadline
+    // on a busy machine, so a racer that let the throw escape was reporting the
+    // MACHINE and not the election: observed inside the full suite as
+    // `Error: traffic-one project state lock timed out after 1000ms` out of the
+    // child, and green in isolation.
+    //
+    // Retrying does not soften the claim, because the claim is a COUNT and not a
+    // duration: whichever racer wins, exactly one of the twelve may come back
+    // `created: true` and all twelve must name the same id. A second minter
+    // still shows up as a second `created`, and a racer that never gets in at
+    // all still cannot fabricate the winner. The attempt cap only keeps a wedged
+    // lock from hanging the suite — it is not the deadline under test, and a
+    // racer that exhausts it fails loudly with its own reason.
     const childSource = [
       'const fs = require("fs");',
       `const { createReportId } = require(${JSON.stringify(modulePath)});`,
       'const [cwd, barrier] = process.argv.slice(1);',
       'const wait = new Int32Array(new SharedArrayBuffer(4));',
       'while (!fs.existsSync(barrier)) Atomics.wait(wait, 0, 0, 5);',
-      'process.stdout.write(JSON.stringify(createReportId(cwd)));',
+      'let minted = null;',
+      'let lastError = null;',
+      `for (let attempt = 0; attempt < ${RACER_LOCK_ATTEMPTS} && !minted; attempt += 1) {`,
+      '  try { minted = createReportId(cwd); } catch (error) {',
+      '    lastError = error;',
+      '    if (!/lock timed out/i.test(String(error && error.message))) throw error;',
+      '    Atomics.wait(wait, 0, 0, 25);',
+      '  }',
+      '}',
+      'if (!minted) throw lastError;',
+      'process.stdout.write(JSON.stringify(minted));',
     ].join('\n');
     const runChild = (): Promise<{ id: string; created: boolean }> => new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ['--import', 'tsx', '-e', childSource, cwd, barrier], {
@@ -161,11 +202,33 @@ test('a cross-process stale canonical writer preserves the concurrent minted id'
         : reject(new Error(stderr || `state writer child exited ${code}`)));
     });
 
-    const deadline = Date.now() + 5_000;
-    while (!fs.existsSync(ready) && Date.now() < deadline) {
+    // THE BARRIER WAIT IS BOUNDED BY THE CHILD, NOT BY A CLOCK. It was
+    // `Date.now() + 5_000`, and the thing being waited for is a `node --import
+    // tsx` startup that has to compile `normalize.ts` and everything it imports
+    // — seconds of CPU on an idle box, and observed crossing five seconds under
+    // 20 CPU + 6 IO workers on 10 cores, where this row failed at `stale writer
+    // reached the deterministic barrier` with the child still perfectly healthy
+    // and about to arrive. A startup is not a deadline: the fixture either gets
+    // there or DIES, and both are events, so the loop waits for whichever
+    // happens. `closed` rejects on a non-zero exit, so a child that fell over on
+    // its way to the barrier is reported by ITS OWN stderr instead of as an
+    // anonymous timeout.
+    let childGone = false;
+    void closed.then(() => { childGone = true; }, () => { childGone = true; });
+    // The ceiling is the anti-hang backstop only — a child that neither reaches
+    // the barrier nor exits would otherwise wedge the suite forever, since
+    // node:test's default is no timeout. 120 s is ~40x the worst startup measured
+    // on the loaded box above, and it decides nothing on any path but that one.
+    const backstopAt = Date.now() + 120_000;
+    while (!fs.existsSync(ready) && !childGone && Date.now() < backstopAt) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    assert.equal(fs.existsSync(ready), true, 'stale writer reached the deterministic barrier');
+    if (!fs.existsSync(ready) && childGone) await closed;
+    assert.equal(
+      fs.existsSync(ready),
+      true,
+      'stale writer reached the deterministic barrier — it neither arrived nor exited within 120 s',
+    );
     const minted = createReportId(cwd);
     fs.writeFileSync(release, 'go', 'utf8');
     await closed;

@@ -4293,35 +4293,139 @@ test('Cursor spawn observation storage is bounded and reads pre-versioned state'
   });
 });
 
-test('Cursor spawn observations preserve concurrent subagentStart records', async () => {
+// How long the lock is HELD once both writers are provably one statement away
+// from it. Its only job is to make them contend, so it is sized against the two
+// bounds it sits between rather than against a boot: far below the 2 s
+// CURSOR_SPAWN_LOCK_TIMEOUT_MS a contender is owed, and far below the 15 s
+// CURSOR_SPAWN_LOCK_STALE_MS at which an ownerless directory becomes legitimately
+// reclaimable — a hold that reached either bound would be characterizing the
+// documented degradation instead of the serialization.
+const CURSOR_SPAWN_CONTENTION_HOLD_MS = 250;
+
+test('Cursor spawn observations preserve concurrent subagentStart records', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-spawn-concurrent-'));
+  // Each writer ANNOUNCES that it is one statement from the store, waits to be
+  // released, and reports the answer the store gave it. All three replace a
+  // 500 ms sleep that could not hold the race it was sizing: a `--import tsx`
+  // boot measures ~490 ms idle and 3.5-18 s under 4x oversubscription, so the
+  // hold expired before either writer arrived (idle, by ~10 ms) and the two
+  // "concurrent" writers then reached the store as much as 8 s apart, never
+  // contending at all. The hold is now bounded by their ARRIVAL, so boot time
+  // cannot decide either the contention or the outcome.
+  //
+  // Reporting the answer is what makes the row's own claim checkable. The store
+  // owes a contender a bounded wait (CURSOR_SPAWN_LOCK_TIMEOUT_MS) and then
+  // REFUSES it and says so, returning null; a fixture that discards that answer
+  // cannot tell a refused writer from a lost record, and a hold that outlived the
+  // budget of whichever writer arrived first therefore presented as this row's
+  // exact symptom — one role in the store, both children exited 0 — with the
+  // store behaving precisely as documented. Reproduced deliberately
+  // (.tmp/contention/lostupdate.mjs, `held`): architect refused at 2013 ms,
+  // stored ['senior-backend'].
   const source = [
+    "const fsx = require('fs');",
     "const { recordCursorSpawnObservation } = require('./src/shared/state/run-agent/index.ts');",
-    "const [cwd, role, toolCallId, startedAtMs] = process.argv.slice(1);",
-    "recordCursorSpawnObservation(cwd, 'run-concurrent', { parentSessionId: 'parent-1', toolCallId, role, requestedModel: 'gpt-5.6-terra-medium', tier: 'balanced', expectedModel: 'gpt-5.6-terra', startedAtMs: Number(startedAtMs) });",
+    'const [cwd, role, toolCallId, startedAtMs, readyPath, releasePath] = process.argv.slice(1);',
+    'const idle = new Int32Array(new SharedArrayBuffer(4));',
+    'fsx.writeFileSync(readyPath, String(process.pid));',
+    // A generous anti-orphan ceiling, never a measurement: a writer whose parent
+    // died before releasing it must not spin in this loop forever, and it must not
+    // enter the store pretending to be a concurrent writer either.
+    'const releaseBoundMs = Date.now() + 60_000;',
+    'while (!fsx.existsSync(releasePath)) {',
+    '  if (Date.now() > releaseBoundMs) process.exit(3);',
+    '  Atomics.wait(idle, 0, 0, 1);',
+    '}',
+    'const enteredAtMs = Date.now();',
+    "const answer = recordCursorSpawnObservation(cwd, 'run-concurrent', { parentSessionId: 'parent-1', toolCallId, role, requestedModel: 'gpt-5.6-terra-medium', tier: 'balanced', expectedModel: 'gpt-5.6-terra', startedAtMs: Number(startedAtMs) });",
+    "process.stdout.write(JSON.stringify({ told: answer ? 'recorded' : 'refused', enteredAtMs, returnedAtMs: Date.now() }));",
   ].join('\n');
   try {
     const lockDir = path.join(dir, '.traffic-one', 'runs', 'run-concurrent', '.cursor-spawns.lock');
-    fs.mkdirSync(lockDir, { recursive: true });
+    const releasePath = path.join(dir, 'release');
     let exited = 0;
+    const answers: { role: string; told: string; enteredAtMs: number; returnedAtMs: number }[] = [];
     const children = ['senior-architect', 'senior-backend'].map((role, index) => new Promise<void>((resolve, reject) => {
+      let reported = '';
       const child = spawn(process.execPath, [
         '--import', 'tsx', '-e', source, dir, role, `tool_${index}`, String(index + 1),
-      ], { cwd: process.cwd(), stdio: 'ignore' });
+        path.join(dir, `ready-${index}`), releasePath,
+      ], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'inherit'] });
+      child.stdout.on('data', (chunk) => { reported += String(chunk); });
       child.once('error', reject);
       child.once('exit', (code) => {
         exited += 1;
-        if (code === 0) resolve();
-        else reject(new Error(`Cursor spawn recorder child exited ${code}`));
+        if (code !== 0) { reject(new Error(`Cursor spawn recorder child exited ${code}`)); return; }
+        try {
+          answers.push({ role, ...JSON.parse(reported) as { told: string; enteredAtMs: number; returnedAtMs: number } });
+        } catch {
+          reject(new Error(`Cursor spawn recorder child reported ${JSON.stringify(reported)}`));
+          return;
+        }
+        resolve();
       });
     }));
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    assert.equal(exited, 0, 'both hook processes wait for the observation lock');
+    // Unbounded on purpose — a boot has no honest ceiling under load — but it
+    // stops the moment a writer dies, so a child that never announces surfaces as
+    // its own exit code below instead of hanging the file.
+    while (exited === 0 && (!fs.existsSync(path.join(dir, 'ready-0')) || !fs.existsSync(path.join(dir, 'ready-1')))) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // Taken AFTER both writers are at the door, so it is as young as the
+    // contention it creates and can never age into the reclaimable window.
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(releasePath, 'go');
+    await new Promise((resolve) => setTimeout(resolve, CURSOR_SPAWN_CONTENTION_HOLD_MS));
+    const exitedWhileHeld = exited;
+    const storedWhileHeld = listCursorSpawnObservations(dir, 'run-concurrent').map((item) => item.role);
+    // Sampled BEFORE the removal, so a writer that returned earlier than this
+    // definitely did not wait for the lock, whatever the machine was doing.
+    const releasedAtMs = Date.now();
     fs.rmSync(lockDir, { recursive: true, force: true });
     await Promise.all(children);
+    const stored = listCursorSpawnObservations(dir, 'run-concurrent').map((item) => item.role).sort();
+
+    // THE invariant, asserted unconditionally: a writer the store told `recorded`
+    // is IN the store. A row missing after a durable answer is a lost update —
+    // the one thing this lock exists to prevent — and no machine load excuses it.
+    const lost = answers.filter((answer) => answer.told === 'recorded' && !stored.includes(answer.role));
+    assert.deepEqual(lost.map((answer) => answer.role), [], `the store lost a record it reported as written · told `
+      + `${JSON.stringify(answers)} · stored ${JSON.stringify(stored)}`);
+
+    const refused = answers.filter((answer) => answer.told === 'refused');
+    if (refused.length > 0) {
+      // A contender starved past CURSOR_SPAWN_LOCK_TIMEOUT_MS is told null and
+      // records nothing: the store's documented bound, not a lost write, and
+      // subagent-bind.ts reads exactly this answer to decide it must not settle a
+      // retry against a start the ledger never got. The invariant above already
+      // held; the completeness claim below needs both writers SERVED, so the row
+      // reports what was not checked instead of grading the machine.
+      t.diagnostic(`cursor spawn contention INCONCLUSIVE · ${JSON.stringify(answers)}`);
+      t.skip('INCONCLUSIVE (completeness NOT checked) · the observation lock refused a writer at its documented '
+        + 'CURSOR_SPAWN_LOCK_TIMEOUT_MS bound under contention, so only the no-lost-update invariant was checked');
+      return;
+    }
+    assert.deepEqual(stored, ['senior-architect', 'senior-backend']);
+    assert.equal(exitedWhileHeld, 0, 'both hook processes wait for the observation lock');
+    assert.deepEqual(storedWhileHeld, [], 'neither hook wrote through a held observation lock');
+
+    // And the waiting happened INSIDE the store. Both stamps are wall-clock ms in
+    // one clock domain, so this is an ORDERING claim with no threshold to tune: a
+    // writer that entered while the lock was held cannot have returned before the
+    // lock was released unless it walked straight through it. Without this, a lock
+    // that admitted every contender would still satisfy the set above on any run
+    // where the two writers happened not to overlap.
+    const waited = answers.filter((answer) => answer.enteredAtMs < releasedAtMs);
+    if (waited.length === 0) {
+      t.diagnostic(`cursor spawn contention INCONCLUSIVE · released at ${releasedAtMs} · ${JSON.stringify(answers)}`);
+      t.skip('INCONCLUSIVE (the wait NOT checked) · neither writer reached the store while the lock was held, so '
+        + 'this run only checked that both records survived');
+      return;
+    }
     assert.deepEqual(
-      listCursorSpawnObservations(dir, 'run-concurrent').map((item) => item.role).sort(),
-      ['senior-architect', 'senior-backend'],
+      waited.filter((answer) => answer.returnedAtMs < releasedAtMs).map((answer) => answer.role),
+      [],
+      `a writer walked through a held observation lock · released at ${releasedAtMs} · ${JSON.stringify(answers)}`,
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

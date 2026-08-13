@@ -36,6 +36,28 @@ function baseState(mode: unknown): Record<string, unknown> {
   return { mode, stack: 'default', frontend: 'react-vite', backend: 'supabase' } as Record<string, unknown>;
 }
 
+/**
+ * The one clock `normalizeState` stamps, supplied by the fixture instead.
+ *
+ * `stateTimestamp()` deliberately drops milliseconds (state/io.ts keeps the
+ * legacy `2026-05-27T12:00:00Z` shape), so two publishes taken microseconds
+ * apart carry DIFFERENT stamps whenever a second boundary happens to fall
+ * between them. The byte-identity row below publishes twice, so it was decided
+ * by that coin flip roughly once per second of wall clock spent between the two
+ * writes — observed failing at `confirmedAt` 09:35:19 against 09:35:20 inside
+ * the full suite, and passing every time in isolation, where the two writes are
+ * microseconds apart and almost never straddle a boundary.
+ *
+ * Pinning it removes the nondeterminism from the INPUT rather than excluding
+ * the field from the comparison: the assertion stays a whole-file byte
+ * equality, which is the claim the row is named for. `normalizeState` only
+ * stamps when the field is absent (`if (!s.confirmedAt)`), and the row asserts
+ * below that this value survived — so a future change that re-stamps
+ * unconditionally reddens the row instead of quietly making it a coin flip
+ * again.
+ */
+const PINNED_CONFIRMED_AT = '2026-05-27T12:00:00Z';
+
 test('a whitespace-only mode is blank, and is repaired like every other blank spelling', () => {
   withProject((cwd) => {
     const state = published(cwd, baseState('   '));
@@ -51,9 +73,16 @@ test('the repaired file is byte-identical to one that simply said new-project', 
   // publish the same bytes — so the claim SET is unchanged, and only the
   // spelling that used to fall outside it now lands inside it.
   withProject((cwd) => {
-    const blank = JSON.stringify(published(cwd, baseState(' \t ')));
+    const blankState = published(cwd, { ...baseState(' \t '), confirmedAt: PINNED_CONFIRMED_AT });
+    const blank = JSON.stringify(blankState);
     fs.rmSync(path.join(cwd, '.traffic-one', '.one.json'));
-    const declared = JSON.stringify(published(cwd, baseState('new-project')));
+    const declaredState = published(cwd, { ...baseState('new-project'), confirmedAt: PINNED_CONFIRMED_AT });
+    const declared = JSON.stringify(declaredState);
+    // The premise of the equality, checked rather than assumed: if the publish
+    // ever starts re-stamping `confirmedAt`, these bytes stop being comparable
+    // and the row must say so here instead of failing at a second boundary.
+    assert.equal(blankState.confirmedAt, PINNED_CONFIRMED_AT, 'the publish must not re-stamp a supplied confirmedAt');
+    assert.equal(declaredState.confirmedAt, PINNED_CONFIRMED_AT, 'nor on the declared-mode publish');
     assert.equal(blank, declared);
   });
 });
