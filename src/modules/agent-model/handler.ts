@@ -9,7 +9,10 @@ import * as path from 'path';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { readRegularFileResult } from '../../shared/bounded-read';
 import { STATE_DIR, STATE_FILE } from '../../config/paths';
-import { obj } from '../../shared/obj';
+import { stateWritePermitted } from '../../shared/fsjson';
+import { runHostCapabilityPath } from '../../shared/host/capabilities';
+import { resetRecoveryLine } from '../../shared/reset-command';
+import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
@@ -18,6 +21,7 @@ import {
   ensureCurrentRunId,
   hookSessionIdentity,
   readEffectiveState,
+  runLedgerStatusRecord,
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { hasRunIdPlaceholder, strayRunIdInText, substituteRunIdPlaceholder } from '../../shared/run-id-paths';
@@ -30,12 +34,14 @@ import {
   ensureRunModelPolicy,
   readRunModelPolicy,
   runModelPolicyPath,
+  RUN_MODEL_POLICY_SCHEMA_VERSION,
 } from '../../shared/run-model-policy';
 import {
+  activeRunBootstrapPath,
   ensureRunBootstrap,
   roleRequiresCompiledAssignment,
 } from '../../shared/run-bootstrap-policy';
-import { readRuntimeAssignments } from '../../shared/architecture-contract';
+import { readCompiledArchitecture, readRuntimeAssignments } from '../../shared/architecture-contract';
 
 import {
   CURSOR_MODELS_CAPTURE_FALLBACK,
@@ -176,6 +182,316 @@ function runIdUnresolvedDeny(cwd: string): string {
     + restore;
 }
 
+/**
+ * The path as the AGENT will read it, derived from the path the runtime actually
+ * opens rather than from a template over the run id. `safeRunId` rewrites every
+ * character outside `[A-Za-z0-9._-]` and clips at 160, so a hand-edited
+ * `currentRunId` makes a `runs/${runId}/…` template name a file that is NOT the
+ * one being judged — and a deny whose whole remedy is "that ONE file" must not
+ * misname it.
+ */
+function projectRelative(cwd: string, file: string): string {
+  return path.relative(cwd, file).split(path.sep).join('/');
+}
+
+/**
+ * THE THREE RUN-SIDECAR DENIES SHARE ONE MEASURED FACT, so it is stated once
+ * here: `.traffic-one/runs/` IS GITIGNORED, and none of these files has a
+ * committed copy.
+ *
+ * `runs/` is one of `TRAFFIC_ONE_RUN_STATE_ENTRIES` in
+ * architecture-contract/scaffold-content.ts, so the `.gitignore` the product
+ * writes hides the whole subtree. MEASURED (.tmp/denyprose/routes-2.txt) on a
+ * real `git init` fixture through `ensureProjectGitignore`: `git check-ignore`
+ * reports `model-policy.json`, `host-capability-v1.json` and
+ * `bootstrap/<role>/active.json` all IGNORED, `git add -A` stages ZERO paths
+ * under `runs/`, and `.traffic-one/.one.json` is NOT ignored and IS staged.
+ *
+ * That last row is why this fact has to be said rather than assumed: the run-id
+ * deny beside these three legitimately offers `git show HEAD:<pointer>` and a
+ * verbatim restore, because the state pointer really is committed by design.
+ * Copying that shape onto a run sidecar would be the `backups/` defect again —
+ * a recovery route pointing at bytes that were never there. So none of the three
+ * denies below names git, and each says what IS on disk instead.
+ *
+ * The write fence is the second shared fact, MEASURED in each state separately
+ * through the real Claude PreToolUse entry points (`check-onboarding-gate`,
+ * `check-plan-write`, `check-library-allowlist`) rather than inherited: with the
+ * policy torn, `cat <sidecar>`, `git show`, and `git status --porcelain` are
+ * permitted while `Write`, `Edit`, `rm -f <sidecar>`, `rm -rf runs/<id>` and the
+ * control `git restore .traffic-one` are REFUSED by all three — and the control
+ * `Write src/x.ts` is refused too, so the reads passing is a property of reads
+ * and not of an unfenced fixture. `plan-readiness/contracts.ts`
+ * `runtimeOwnedRunSidecar` is the predicate: `.traffic-one/runs/<id>/<anything>`
+ * except `architecture-input-v1.json`.
+ */
+const NO_COMMITTED_COPY = ` There is nothing to restore it from either: \`${STATE_DIR}/runs/\` is gitignored by`
+  + ' design, so no commit carries a copy of that file.';
+
+/**
+ * THE MODEL-POLICY DENY: the prohibition was right, the diagnosis was asserted,
+ * and the remedy named no path, no command and no actor.
+ *
+ * It read, unconditionally: "immutable model-policy.json is corrupt for run
+ * <id>. Do not reconstruct it from the current plan, One MCP cache, or project
+ * availableModels; start a repaired parent run."
+ *
+ * THE PROHIBITION STAYS, and its reason is now stated instead of assumed. Every
+ * child's model check and every published bootstrap envelope in the run is bound
+ * to the `policyId` in that file (run-bootstrap-policy/index.ts hashes it into
+ * the envelope), so a hand-rebuilt policy with a recomputed digest does not
+ * repair the run — it silently re-authorizes it under models nobody froze. That
+ * is exactly what `ensureRunModelPolicy`'s create-once refuses to do on its own.
+ *
+ * "IS CORRUPT" WAS ASSERTED IN SIX STATES AND TRUE IN ONE. The branch fires
+ * whenever `readRunModelPolicy` returns null while `existsSync` says the file is
+ * there, and that reader folds a bounded-read failure, a JSON failure and a
+ * whole schema+digest validation into one `null`. DRIVEN through this gate on
+ * mkdtemp fixtures (.tmp/denyprose/census-1.txt), all reaching this deny: torn
+ * bytes; an EMPTY file; valid JSON that is an ARRAY and valid JSON that is a
+ * STRING (neither is a record at all); a DIRECTORY at the path (EISDIR — nothing
+ * was read, so nothing "is corrupt"); mode 0000 (EACCES, same); an INTACT policy
+ * whose `runId` names a different run; an intact policy declaring
+ * `schemaVersion` 2; an intact policy with a role row removed; and a tampered
+ * field, which fails the `policyId` digest. Three of those files are not corrupt
+ * in any sense a reader would recognise.
+ *
+ * WHAT IS UNREACHABLE, with controls, because a state nobody can reach must not
+ * get a sentence: a healthy frozen policy and an ABSENT policy both walk past
+ * this branch (`existsSync` is false for absent, and `ensureRunModelPolicy`
+ * publishes); a DANGLING SYMLINK at the path is ABSENT to `existsSync`, which
+ * follows links, so it never reaches here either; a symlink to a VALID policy
+ * elsewhere reads through and is accepted; and a valid policy frozen for another
+ * HOST goes to `spawn-model-policy-host-mismatch` one branch down. So — unlike
+ * the run-id deny next door, whose reader refuses to follow links — this deny
+ * needs no symlink arm, and saying so is the point of having measured it.
+ *
+ * "START A REPAIRED PARENT RUN" NAMED NOTHING, and every route it might have
+ * meant was measured before one was printed:
+ *
+ *   THE AGENT HAS NO ROUTE AT ALL, and the deny now says so outright. MEASURED
+ *     in this exact state through the real PreToolUse entry points: `Write` and
+ *     `Edit` to the policy path, `rm -f` of it, and `rm -rf` of the run
+ *     directory are each REFUSED (`runtimeOwnedRunSidecar`), while `cat` is
+ *     permitted. There is no committed copy to restore (see NO_COMMITTED_COPY).
+ *   RETRYING IS THE ONE THING THE OLD TEXT IMPLIED AND THE ONE THING THAT CANNOT
+ *     WORK. The freeze is create-once — `ensureRunModelPolicy` returns null the
+ *     moment `existsSync(filePath)` — so while that path exists no replacement
+ *     is ever published. MEASURED: the same deny returns on every call.
+ *   REMOVING THE FILE IS THE USER'S FIRST ROUTE, and it works. MEASURED: with
+ *     the file gone the deny clears and a fresh policy is frozen for the SAME
+ *     run id. It is stated as the user's decision rather than a step, because
+ *     what it produces is a policy re-derived from the CURRENT host catalog —
+ *     the silent rebase create-once exists to prevent.
+ *   RETIRING THE RUN IS THE SECOND, and it is CONDITIONAL, for the reason
+ *     codex-child-model.ts:467 already prints `resetRecoveryLine` conditionally:
+ *     `traffic-one-reset` accepts only a terminally `failed` ledger. MEASURED
+ *     (.tmp/denyprose/routes2-1.txt) with the ledger set by the real transition
+ *     writer: `failed` → `ok=true code=reset`; `planned` → `run-not-failed`; no
+ *     ledger → `ledger-absent`. So the command is printed on `failed` and the
+ *     refusal is named otherwise — advising a command that gets refused is how
+ *     prose stops being trusted.
+ */
+function modelPolicyCorruptDeny(cwd: string, runId: string): string {
+  const file = runModelPolicyPath(cwd, runId);
+  const rel = projectRelative(cwd, file);
+  const read = readRegularFileResult(file);
+  const json = read.kind === 'text'
+    ? ((): { ok: true; value: unknown } | { ok: false } => {
+      try { return { ok: true, value: JSON.parse(read.text) }; } catch { return { ok: false }; }
+    })()
+    : { ok: false } as const;
+  const record: Rec | null = json.ok ? obj(json.value) : null;
+  // `existsSync` said the file was there a moment ago and the bounded read says
+  // it is not. That is a race and not a diagnosis, so it gets the retry it
+  // deserves rather than a sentence about bytes nobody saw.
+  if (read.kind === 'absent') {
+    return `traffic-one — spawn blocked: run ${runId}'s immutable model policy was at \`${rel}\` when this gate`
+      + ' looked for it and is gone now, so no child could be bound to a frozen policy. Nothing is wrong with the'
+      + ' run. Re-send the SAME spawn, unchanged — same role, same model, same prompt: the freeze runs again on a'
+      + ' path with nothing at it. Do NOT author that file and do NOT build inline because of this.';
+  }
+  // Named separately from the state clause because it is what the USER is asked
+  // to do, and a `rm` of a DIRECTORY is not the same instruction as a `rm` of a
+  // file — the sibling deny makes the same distinction for the state pointer.
+  const removable = read.kind === 'unreadable' && read.errno === 'EISDIR'
+    ? 'remove whatever is at that path'
+    : 'delete that ONE file';
+  const state = read.kind === 'unreadable'
+    ? `Nothing can be read at \`${rel}\` (${read.errno}), so there are no policy bytes there to judge.`
+    : !json.ok
+      ? `\`${rel}\` is there and its bytes do not parse.`
+      : record === null
+        ? `\`${rel}\` holds valid JSON that is not an object (${Array.isArray(json.value)
+          ? 'a JSON array' : `a JSON ${typeof json.value}`}), so it is not a policy record at all.`
+        : typeof record.runId === 'string' && record.runId !== runId
+          ? `\`${rel}\` is intact, but it is run \`${record.runId}\`'s policy and this spawn is in run \`${runId}\`.`
+          : record.schemaVersion !== RUN_MODEL_POLICY_SCHEMA_VERSION
+            ? `\`${rel}\` declares \`schemaVersion\` ${JSON.stringify(record.schemaVersion)}, and this runtime`
+              + ` freezes and reads version ${RUN_MODEL_POLICY_SCHEMA_VERSION} only.`
+            : `\`${rel}\` parses as a JSON object but does not validate as run \`${runId}\`'s frozen policy — a`
+              + ' field, or the `policyId` digest taken over it, does not match what was frozen.';
+  const ledger = runLedgerStatusRecord(cwd, runId);
+  // Printed ONLY for `failed`, the one status `traffic-one-reset` accepts. Every
+  // other status names the refusal instead, so this deny never hands over a
+  // command the runner will decline.
+  const retire = ledger.status === 'failed' ? ` ${resetRecoveryLine(runId)}` : ' Retiring the run is not'
+    + ` available in this state: run ${runId}'s ledger ${ledger.status
+      ? `reads \`${ledger.status}\`` : `is \`${ledger.legibility}\``}, and \`traffic-one-reset\` recovers only a`
+    + ' terminally `failed` run — it refuses every other status.';
+  return `traffic-one — spawn blocked: no child can be bound to run ${runId}'s immutable model policy. ${state}`
+    + ' Do NOT reconstruct it from the current plan, the One MCP cache, or the project\'s `availableModels`, and do'
+    + ' not hand-write a replacement: every child\'s model check and every published bootstrap envelope in this run'
+    + ` is bound to the \`policyId\` in that file, so a rebuilt one does not repair run ${runId} — it`
+    + ' re-authorizes it under models nobody froze. RETRYING CANNOT CLEAR THIS: the freeze is create-once, so while'
+    + ' that path exists no replacement is ever published and this same deny returns on every spawn, indefinitely.'
+    + ` You MAY read the file — \`cat ${rel}\` is permitted — and that is the whole of what you may do here:`
+    + ' writing it, editing it, and removing it or the run directory are each refused for you, because it is a'
+    + ` runtime-owned run sidecar.${NO_COMMITTED_COPY}`
+    + ` So this is the USER's move, and there are two. Ask them to ${removable}, after which the next spawn freezes`
+    + ' a fresh policy for this same run from the CURRENT host catalog — that is a rebase this gate deliberately'
+    + ` will not perform on its own, so it is their decision.${retire}`
+    + ' Until one of those happens, do not retry this spawn and do not build the project inline instead.';
+}
+
+/**
+ * THE HOST-CAPABILITY DENY: "missing or corrupt" put two states in one sentence
+ * when only one of them is durable, and the durable one is the one the remedy
+ * could not reach.
+ *
+ * It read: "per-run host capability evidence is missing or corrupt for <host>.
+ * No child was started. Repair the parent run and retry." Neither half is false.
+ * Both halves are unusable: "repair the parent run" names no file, and "retry"
+ * is precisely what does not work in the state that matters.
+ *
+ * MISSING IS SELF-CLEARING, AND THAT IS MEASURED RATHER THAN REASONED.
+ * `core/dispatch.ts:36-43` calls `observeCurrentRunHostCapabilityFromHook`
+ * BEFORE the pipeline runs, and `ensureRunHostCapability` writes a fresh record
+ * whenever nothing is at the path. DRIVEN through the real Claude entry
+ * (`runClaudeHook('check-agent-model', …)`, .tmp/denyprose/routes-2.txt): with
+ * the sidecar deleted, `readRunHostCapability` is valid AFTER that invocation
+ * and a `agentModelGate` call on the same fixture is then ALLOWED. So the
+ * invocation that denies is the invocation that repairs it, and "re-send the
+ * same spawn" is a remedy that actually completes — the shape
+ * `SPAWN_CLAIM_UNAVAILABLE_FALLBACK` beside it already uses.
+ *
+ * PUBLISHED-BUT-INVALID IS DURABLE, and the old text told it to retry.
+ * `ensureRunHostCapability` returns without writing when `!existing &&
+ * existsSync(file)` — published-but-invalid is evidence loss and is never
+ * silently replaced. DRIVEN, all reaching this deny and all still invalid after
+ * a real hook invocation: unparseable bytes, a tampered `hostVersion` (the
+ * `evidenceHash` no longer matches), a `runId` naming another run, a `host` of
+ * `codex`, a DIRECTORY at the path, a DANGLING SYMLINK at the path, and mode
+ * 0000. A healthy sidecar is the control and does not reach it.
+ *
+ * SO THE REMEDY IS A REMOVAL, AND IT IS NOT THE AGENT'S. MEASURED in the
+ * unparseable state through the real entry points: `rm -f` and `Write` to that
+ * path are REFUSED, `cat` is permitted. MEASURED that the removal is what
+ * clears it: with the file gone, a hook invocation leaves a valid record and the
+ * next gate call is allowed. And there is no copy to restore
+ * (NO_COMMITTED_COPY), which is why this deny asks for a DELETION and not for
+ * the version-control restore its nearest sibling
+ * (`codex-child-model-ledger-illegible`) offers for a file in the same
+ * gitignored directory.
+ */
+function hostCapabilityDeny(cwd: string, runId: string, host: string): string {
+  const file = runHostCapabilityPath(cwd, runId);
+  const rel = projectRelative(cwd, file);
+  const read = readRegularFileResult(file);
+  if (read.kind === 'absent') {
+    return `traffic-one — spawn blocked: run ${runId} has no host-capability record for ${host} — \`${rel}\` is`
+      + ' not on disk, and no child may be bound to enforcement evidence that is not there. This one is'
+      + ' SELF-CLEARING: the request path writes that record from the host contract before any gate runs, so this'
+      + ' invocation has already created it. Re-send the SAME spawn, unchanged — same role, same model, same'
+      + ' prompt. Do NOT author that file, do not change the role or the model, and do not build inline instead.';
+  }
+  const removable = read.kind === 'unreadable' && read.errno === 'EISDIR'
+    ? 'remove whatever is at that path'
+    : 'delete that ONE file';
+  const state = read.kind === 'unreadable'
+    ? `Nothing can be read at \`${rel}\` (${read.errno}).`
+    : `\`${rel}\` is on disk but does not validate as run ${runId}'s ${host} capability record.`;
+  return 'traffic-one — spawn blocked: this spawn has no host-capability evidence to bind a child to, so no child'
+    + ` was started. ${state}`
+    + ' RETRYING CANNOT CLEAR THIS: a published-but-invalid capability record is evidence loss, so the runtime'
+    + ' never replaces whatever is already at that path, and the same deny returns on every spawn. Clearing that'
+    + ' path is what clears the deny — the next hook invocation writes a fresh record from the host contract — and'
+    + ` it is refused for YOU: \`${rel}\` is a runtime-owned run sidecar, so your Write, Edit and \`rm\` are all`
+    + ` denied there, though reading it is permitted.${NO_COMMITTED_COPY}`
+    + ` Ask the USER to ${removable}, then re-send this spawn unchanged. Do not spawn another child into this run`
+    + ' in the meantime, and do not build the project inline instead.';
+}
+
+/**
+ * THE BOOTSTRAP-PUBLISH DENY: two causes with nothing in common, one sentence,
+ * and a remedy — "Repair the parent materialization/policy and retry" — that
+ * names the wrong subsystem for both.
+ *
+ * A NARROW DOOR, which is what made the measurement worth doing. This deny sits
+ * inside `allowSpawn`, which the phase and model gates invoke only on their way
+ * to an ALLOW, and two self-healing siblings claim most of the surface first. So
+ * the census varied the ROLE and the run shape as well as the disk
+ * (.tmp/denyprose/census-d3-1.txt), and exactly TWO states reach it:
+ *
+ *   NO WORK UNIT COMPILES FOR THE ROLE. `senior-reviewer` in a run with no
+ *     compiled architecture and no published assignments: DRIVEN, this deny,
+ *     durably, with the publish target perfectly writable. Materialization is
+ *     intact in that fixture — so "repair the parent materialization" named a
+ *     subsystem that is not involved. And it is precisely the case
+ *     `spawn-role-no-compiled-assignment` beside it cannot claim: that arm needs
+ *     `readRuntimeAssignments` to return a set it can consult, and this run has
+ *     none. The deny now says that in prose, because an orchestrator told
+ *     "repair and retry" retries, and nothing about a retry compiles a plan.
+ *   THE PUBLISH TARGET IS FENCED OFF. With the role's bootstrap directory
+ *     replaced by a symlink to a directory OUTSIDE `.traffic-one/`,
+ *     `stateWritePermitted` is false and the envelope write is refused before
+ *     any bytes are computed: DRIVEN, this deny, durable across retries, and
+ *     CLEARED the moment the link is removed — a removal that is itself refused
+ *     for the agent (MEASURED). `stateWritePermitted` is the discriminator
+ *     because it asks the fence's own question with no side effect, and it
+ *     answers TRUE in the first state above, so it separates the two rather
+ *     than merely describing one.
+ *
+ * WHAT IS NOT REACHABLE HERE, and worth recording because it is a worse outcome
+ * than this deny: a role bootstrap directory at mode 0555, and a FILE planted
+ * where the `bootstrap` directory belongs, both make `ensureRunBootstrap` THROW
+ * (EACCES, ENOTDIR) — fsjson's writers rethrow every errno but ELOOP, and this
+ * call site does not guard. Those land as a crashed-pipeline deny with none of
+ * this text. Same shape as the escaping EACCES in `ensureCurrentRunId` the
+ * sibling round reported; not fixed here, reported.
+ */
+function bootstrapPublishDeny(cwd: string, runId: string, role: string, assignments: boolean): string {
+  const active = activeRunBootstrapPath(cwd, runId, role);
+  const rel = projectRelative(cwd, active);
+  if (!stateWritePermitted(active)) {
+    return `traffic-one — spawn blocked: \`${role}\`'s bootstrap envelope for run ${runId} cannot be published`
+      + ` because the state write fence REFUSES its destination, \`${rel}\`, before any envelope bytes are`
+      + ' computed. No child was started, and nothing about the plan or the model is wrong. Four things refuse'
+      + ' that write: an unanswered "use Traffic One here?" consent question for this project, a symlink at or'
+      + ` above that path, a path that resolves outside \`${STATE_DIR}/\`, and a path nothing can resolve.`
+      + ' Retrying changes none of them, and nothing you can write fixes a refused write: clearing whatever'
+      + ' occupies that path is refused for you too, because it is a runtime-owned run sidecar. If the consent'
+      + ' question is the cause, answer it and re-send this spawn; otherwise report this to the USER, naming that'
+      + ' exact path, and do not spawn into this run in the meantime.';
+  }
+  const architecture = Boolean(readCompiledArchitecture(cwd, runId));
+  // The fence said yes, so the destination is not the problem: the inputs are.
+  const cause = !architecture && !assignments
+    ? `Run ${runId} has no compiled architecture and no published assignments, so there is no plan for`
+      + ` \`${role}\`'s work unit to be compiled FROM. This is NOT the "\`${role}\` has no assignment" refusal`
+      + ' beside it — that one reads a published assignment set, and this run has none. The architect phase is what'
+      + ' produces both, and no retry of this spawn compiles a plan: complete (or replan) the architect phase'
+      + ' first, and if it has already run in this run, report that to the USER.'
+    : `Run ${runId} has ${architecture ? 'a compiled architecture' : 'no compiled architecture'} and`
+      + ` ${assignments ? 'published assignments' : 'no published assignments'}, and \`${role}\`'s work unit still`
+      + ' did not compile from them. Nothing about re-sending this spawn changes those inputs, so do not retry it'
+      + ' unchanged; report it to the USER, naming this run and this role.';
+  return `traffic-one — spawn blocked: no work unit could be compiled for \`${role}\` in run ${runId}, so the`
+    + ' parent had no role/rule/skill bootstrap to publish and no child was started. The destination is not what'
+    + ` is wrong — \`${rel}\` is writable. ${cause}`
+    + ' Do NOT author an envelope for this role and do not build the project inline instead.';
+}
+
 export function agentModelGate(ctx: Ctx): HookResult {
   if (pluginUseDeclined(ctx.cwd)) return noop();
 
@@ -270,11 +586,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const configuredSubagentTeam = obj(state.team)?.mode === 'subagents';
   const existingRunPolicy = readRunModelPolicy(cwd, spawnRunId);
   if (!existingRunPolicy && fs.existsSync(runModelPolicyPath(cwd, spawnRunId))) {
-    return deny(
-      `traffic-one — spawn blocked: immutable model-policy.json is corrupt for run ${spawnRunId}. `
-      + 'Do not reconstruct it from the current plan, One MCP cache, or project availableModels; start a repaired parent run.',
-      { denyId: 'spawn-model-policy-corrupt', denyTarget: spawnRunId },
-    );
+    // "is corrupt" was announced for a directory, a mode-0000 file and three
+    // INTACT policies too, and "start a repaired parent run" named no path, no
+    // command and no actor — see modelPolicyCorruptDeny.
+    return deny(modelPolicyCorruptDeny(cwd, spawnRunId), {
+      denyId: 'spawn-model-policy-corrupt',
+      denyTarget: spawnRunId,
+    });
   }
   if (existingRunPolicy && existingRunPolicy.host !== ctx.host) {
     return deny(
@@ -396,11 +714,14 @@ export function agentModelGate(ctx: Ctx): HookResult {
         spawnPromptText,
       });
       if (plan.kind === 'capability-missing') {
-        return deny(
-          `traffic-one — spawn blocked: per-run host capability evidence is missing or corrupt for ${ctx.host}. `
-          + 'No child was started. Repair the parent run and retry.',
-          { denyId: 'spawn-host-capability-missing', denyTarget: spawnRunId },
-        );
+        // "missing or corrupt" folded a state the request path has already
+        // repaired into one that no retry ever clears, and "repair the parent
+        // run and retry" named neither the file nor who may touch it — see
+        // hostCapabilityDeny.
+        return deny(hostCapabilityDeny(cwd, spawnRunId, ctx.host), {
+          denyId: 'spawn-host-capability-missing',
+          denyTarget: spawnRunId,
+        });
       }
       const boundedMaintenanceOutputs = plan.boundedScope;
       const envelope = ensureRunBootstrap(cwd, spawnRunId, role, state, plan.options);
@@ -434,11 +755,14 @@ export function agentModelGate(ctx: Ctx): HookResult {
             { denyId: 'spawn-bounded-scope-missing', denyTarget: role },
           );
         }
-        return deny(
-          `traffic-one — spawn blocked: parent could not resolve and atomically publish the role/rule/skill bootstrap `
-          + `for ${role} in run ${spawnRunId}. No child was started. Repair the parent materialization/policy and retry.`,
-          { denyId: 'spawn-bootstrap-publish-failed', denyTarget: role },
-        );
+        // "Repair the parent materialization/policy and retry" named the wrong
+        // subsystem for both reachable states — materialization is intact in
+        // one and the destination's fence is the whole story in the other — and
+        // named no path and no actor for either. See bootstrapPublishDeny.
+        return deny(bootstrapPublishDeny(cwd, spawnRunId, role, Boolean(publishedAssignments)), {
+          denyId: 'spawn-bootstrap-publish-failed',
+          denyTarget: role,
+        });
       }
       // The immutable envelope is the bootstrap transport shared by all hosts.
       // Host-specific prompt/agent renderers already inject the role contract;
