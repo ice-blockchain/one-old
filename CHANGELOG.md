@@ -32,6 +32,7 @@ publication date.**
 
 ### Agent-visible content — what your agents are told
 
+- P8 shipped prose: two walks, two answers about a skipped link (`23e89265`)
 - P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
 - P5/P6 release accuracy: truthful deny causes, atomic write-set, corrected licence record (`c241fde8`)
 - fix: report write refusals instead of silently reporting success (`199dcb19`)
@@ -52,6 +53,9 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 shipped prose: two walks, two answers about a skipped link (`23e89265`)
+- P8 write gate: the project root is a member of its own project (`2c4de0d5`)
+- P8 lighthouse: bound every read the audited project can shape (`2713083c`)
 - P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
 - P8 shared runtime: bounded reads, directory copies, durable writers (`1359eca6`)
 - P8 agent model and runners: model gating, doctor probes, reset obligations (`fe5b8b15`)
