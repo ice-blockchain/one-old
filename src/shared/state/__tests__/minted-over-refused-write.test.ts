@@ -130,6 +130,96 @@ test('a blanked currentRunId that cannot be re-persisted is not reported as adop
     'and no sibling run was minted beside the one it declined to adopt');
 });
 
+// ── run-paths.ts#ensureCurrentRunId, the ERRNO route ────────────────────────
+// A SIBLING of the two rows above and deliberately not the same claim. There the
+// fence DECLINED, `writeState` answered `false`, and the function already had a
+// branch for it. Here nothing declines: the filesystem RAISES, and it raises out
+// of the recovery the `catch` runs — so the throw escapes the `catch` itself and
+// the caller's hook ends as an uncaught exception rather than as a gate's deny.
+//
+// The recovery is `mint()`, which publishes through `writeState`, which takes the
+// project state lock — the very lock whose failure put us in that `catch`. So the
+// "keep the previous unserialized behavior" the arm promises has never existed:
+// both routes below re-raise identically, one line later.
+//
+// Driven through the real gates before the guard: on PreToolUse core/pipeline.ts
+// answered `pipeline-handler-crashed` ("Traffic One agent-model gate failed
+// (EACCES)"), a deny no gate chose; on SessionStart — which
+// session/session-start.ts reaches on every subagent-enabled project — the throw
+// left the pipeline altogether, because only the PreToolUse arm converts one.
+
+/**
+ * Run `fn` with `target` unwritable, restoring its mode whatever happens.
+ *
+ * The `finally` is not tidiness: a 0o555 directory left behind survives this
+ * file's own teardown (`rmSync` cannot unlink entries inside it) and fails a
+ * LATER, unrelated test in a shape that looks like the defect under measurement.
+ */
+function withUnwritable(target: string, fn: () => void): void {
+  const mode = fs.statSync(target).mode & 0o777;
+  fs.chmodSync(target, 0o555);
+  try {
+    fn();
+  } finally {
+    fs.chmodSync(target, mode);
+  }
+}
+
+test('a state dir this process may not write fails closed rather than throwing out of the hook', () => {
+  const open = project('eacces-baseline');
+  seedState(open);
+  assert.match(ensureCurrentRunId(open, { mode: 'new-project' }), /^\d{13}$/,
+    'writable baseline: the identical fixture mints, so the row below is about the MODE and nothing else');
+
+  const locked = project('eacces-locked');
+  seedState(locked);
+  const before = fs.readFileSync(statePath(locked), 'utf8');
+  withUnwritable(path.join(locked, '.traffic-one'), () => {
+    assert.equal(ensureCurrentRunId(locked, { mode: 'new-project' }), '',
+      'EACCES is the documented fail-closed exit, not an exception: the lock stages a directory INSIDE '
+      + 'the state dir, so acquisition raises — and so does the mint the catch runs to recover from it');
+  });
+  assert.equal(fs.readFileSync(statePath(locked), 'utf8'), before,
+    'and nothing was written: the containment is about the ERROR, never about when a mint happens');
+  assert.equal(fs.existsSync(runsRoot(locked)), false,
+    'no ledger was opened for an id no disk read would ever find');
+});
+
+test('a project state lock held by a live owner fails closed rather than throwing out of the hook', () => {
+  // The contention edge the `catch` names in its own first sentence, and the one
+  // it never handled: the recovery re-enters the same lock, spends a second full
+  // deadline against the same holder, and raises the same timeout.
+  const plantLiveLock = (cwd: string): string => {
+    const lockPath = `${statePath(cwd)}.report-id.lock`;
+    fs.mkdirSync(lockPath);
+    // OUR pid, so neither reaper may take it: `processAlive` guards both arms
+    // unconditionally, which makes the contention deterministic instead of a
+    // race against a stale-window clock.
+    const token = 'contendedlock';
+    fs.writeFileSync(
+      path.join(lockPath, `owner-${token}.json`),
+      JSON.stringify({ pid: process.pid, token, createdAt: Date.now() }),
+      'utf8',
+    );
+    return lockPath;
+  };
+
+  const open = project('contended-baseline');
+  seedState(open);
+  assert.match(ensureCurrentRunId(open, { mode: 'new-project' }), /^\d{13}$/,
+    'writable baseline: the same fixture with no holder mints, so the row below is about the LOCK');
+
+  const contended = project('contended');
+  seedState(contended);
+  const lockPath = plantLiveLock(contended);
+  assert.equal(ensureCurrentRunId(contended, { mode: 'new-project' }), '',
+    'a lock held by a live owner reaches the same fail-closed exit — callers gate on the empty string');
+  assert.equal(readRaw(contended).currentRunId, undefined,
+    'fixture guard: nothing was persisted past a lock this call never held');
+  assert.ok(fs.existsSync(lockPath),
+    'fixture guard: the live holder kept its lock, so this really was contention and not a reclaim');
+});
+
 // ── claims-store.ts#ensureRunAgentClaimResult ───────────────────────────────
 // The sharpest of the fifteen: the claim row lands under `runId` and then the
 // write that records WHICH RUN the project is in is refused — and the mutation

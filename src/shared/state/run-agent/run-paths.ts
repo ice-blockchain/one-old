@@ -157,7 +157,35 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
     // Lock acquisition failed (timeout/contention edge): keep the previous
     // unserialized behavior rather than failing the caller's hook outright —
     // but still never mint over an unreadable state file.
-    if (!runId && !stateFileDegraded(cwd)) mint();
+    //
+    // The recovery needs a guard of its own because it RE-ENTERS what just
+    // failed: `mint` publishes through `writeState`, and `writeState` takes this
+    // same lock. There is no unserialized route to disk from here, so whatever
+    // refused the acquisition refuses again one line later — and re-raises past
+    // the `catch` written to stop exactly that. Measured twice, each beside a
+    // writable control that mints normally: `.traffic-one/` at 0o555 raises
+    // EACCES from the lock's staging mkdir, and a lock held by a live owner
+    // spends a second full 1000 ms deadline and raises its own timeout — the
+    // contention edge the sentence above names, which this arm has therefore
+    // never once handled.
+    //
+    // Unguarded, PreToolUse turned that into `pipeline-handler-crashed` (a deny
+    // no gate chose), and every other event dropped the throw out of the pipeline
+    // entirely — including the SessionStart call every subagent project makes.
+    // Guarded, the function reaches its designed `return ''` and the caller's own
+    // fail-closed branch decides. Nothing is hidden that `mint` could have
+    // reported: its only channel is persisted-or-not, and it already takes the
+    // second branch silently when `writeState` answers `false`. WHEN a mint is
+    // attempted does not move — both "never mint over an unreadable state file"
+    // conjuncts still gate the call, and `stateFileDegraded` stays outside the
+    // guard because it cannot throw.
+    if (!runId && !stateFileDegraded(cwd)) {
+      try {
+        mint();
+      } catch {
+        // An id that cannot be persisted is the `return ''` below, not a throw.
+      }
+    }
   }
   // Fail closed: no id could be resolved without fabricating one. Callers gate
   // on the empty string and surface a concrete repair instead of proceeding.
