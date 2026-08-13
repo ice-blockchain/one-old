@@ -9,7 +9,9 @@ import * as path from 'path';
 import {
   canonicalTrafficOneContextLink,
   contextAliasHash,
+  ignoreRuleDigest,
   isScanSkippedPath,
+  nameSkippedProjectSource,
   scanSkipPredicate,
   type ArchitectureBaselineV1,
   type CompiledArchitectureV1,
@@ -17,9 +19,11 @@ import {
 import { sha256 } from '../text';
 
 import {
+  SKIP_NAME_DISCLOSURE_MARKER,
   VERIFICATION_SCAN_MAX_FILES,
   type ChangedPathSnapshot,
 } from './types';
+import { readRegularBytesOrThrow, readRegularFileOrThrow } from '../bounded-read';
 
 const GIT_OBJECT_ID_RE = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 
@@ -257,10 +261,107 @@ export function fileHash(projectRoot: string, relPath: string): string {
   // changed on every single scan.
   const aliasTarget = canonicalTrafficOneContextLink(projectRoot, filePath, relPath);
   if (aliasTarget) return contextAliasHash(aliasTarget);
-  try { return sha256(fs.readFileSync(filePath).toString('base64')); } catch { return '<deleted>'; }
+  try { return sha256(readRegularBytesOrThrow(filePath).toString('base64')); } catch { return '<deleted>'; }
+}
+
+/**
+ * The diff's skip authority has two halves and the project can only move one.
+ *
+ * `isScanSkippedPath` reads nothing outside the plugin: SKIP_DIRS/SKIP_FILES are
+ * compile-time constants and the answer is byte-identical across projects.
+ * `scanSkipPredicate` — the half the file-manifest walk actually uses, and the
+ * half `git ls-files --others --exclude-standard` applies on the git branch —
+ * adds this project's own ignore rules, which are a FILE the run can edit.
+ *
+ * Both baselines are captured under the rules in force at capture time and both
+ * diffs are taken under the rules in force NOW, with nothing pinning the two
+ * together. Measured on a git fixture: two new `.tsx` under a directory added to
+ * `.gitignore` after capture reduce `changedPaths` from 2 to 1 (`.gitignore`
+ * itself) on the file-manifest branch and from 1 to 0 on the git branch, both
+ * reporting `complete: true` — the diff-side spelling of exactly the finding
+ * this lane exists to close.
+ *
+ * The rules ARE pinned now, by `ArchitectureBaselineV1.ignoreRules` — a digest
+ * of every `.gitignore` in the worktree plus `.git/info/exclude` and
+ * `core.excludesFile`, taken at capture and recomputed here. That replaced an
+ * inference from the changed paths (an ignore-rule file among them) which was
+ * real but walked through by one respelling: a `.gitignore` that lists
+ * `.gitignore` hides ITSELF from git and from the file-manifest walk, so the
+ * rule it added to hide `src/panels/` was reported by neither side and both
+ * still said `complete: true`. Reading the rule files cannot be defeated that
+ * way, and it also closes `.git/info/exclude` and `core.excludesFile`, which
+ * were disclosed as permanently unreportable under the old instrument and were
+ * only unreportable under THAT one.
+ *
+ * The changed-path inference is kept as a second, weaker signal for baselines
+ * captured before the field existed, where there is nothing to compare against.
+ *
+ * Neither is a proof of loss and neither tries to be one; both are the same
+ * fail-closed trade the bounded scans make. An incomplete snapshot raises
+ * `uiImpact` to the truncated-scan floor and blocks nothing, so a run that
+ * legitimately edits `.gitignore` owes browser evidence it would otherwise have
+ * skipped, and a run that edits it to hide source pays the floor it was trying
+ * to avoid.
+ *
+ * Still NOT covered: `git update-index --skip-worktree` and `--assume-unchanged`
+ * hide a tracked file from `git diff` without touching any ignore rule. They are
+ * a different authority — the index, not the rules — readable only from
+ * `git ls-files -v`, and they are recorded here rather than claimed closed.
+ */
+function ignoreRuleAuthorityMoved(
+  projectRoot: string,
+  baseline: ArchitectureBaselineV1,
+  paths: readonly string[],
+): string | null {
+  if (baseline.ignoreRules) {
+    return ignoreRuleDigest(projectRoot) === baseline.ignoreRules
+      ? null
+      : 'ignore rules changed since baseline capture, so paths this diff skipped may be source';
+  }
+  const moved = paths.find((entry) => entry.split('/').pop() === '.gitignore');
+  return moved
+    ? `ignore rules changed since baseline capture (${moved}), so paths this diff skipped may be source`
+    : null;
+}
+
+/**
+ * The static half of the skip authority, tested against the only project input
+ * there is. See `nameSkippedProjectSource`: a `.tsx` git makes visible under a
+ * directory called `generated` is hidden from BOTH sides of this diff by a
+ * compile-time name set, so the changed set comes back empty and complete.
+ * Naming the directory is the whole exploit; nothing else has to happen.
+ *
+ * "Git does not ignore" is the accurate subject and the wording was wrong
+ * before: the probe lists `--cached --others --exclude-standard`, so an
+ * UNTRACKED file that no ignore rule covers counts, and it must — committing
+ * nothing is precisely what makes the exploit cheap. The old sentence said
+ * "source this project tracks", which named only the `--cached` half and would
+ * have sent a reader looking in the index for a file that was never in it. That
+ * inaccuracy cost real time: it is the sentence a build output in an existing
+ * project produces, and it describes the situation wrongly.
+ *
+ * The tail is `SKIP_NAME_DISCLOSURE_MARKER`, which is what tells a consumer this
+ * particular incompleteness is disclosable rather than fatal. Rewording it is
+ * therefore a behaviour change, not an edit.
+ */
+function nameSkipAuthorityHidesSource(projectRoot: string): string | null {
+  const hidden = nameSkippedProjectSource(projectRoot);
+  if (hidden.length === 0) return null;
+  return `authored source Git does not ignore is ${SKIP_NAME_DISCLOSURE_MARKER} ${hidden.join(', ')}`;
 }
 
 export function changedPathsFromImmutableBaseline(
+  projectRoot: string,
+  baseline: ArchitectureBaselineV1,
+): ChangedPathSnapshot {
+  const snapshot = immutableBaselineDiff(projectRoot, baseline);
+  if (!snapshot.complete) return snapshot;
+  const reason = ignoreRuleAuthorityMoved(projectRoot, baseline, snapshot.paths)
+    || nameSkipAuthorityHidesSource(projectRoot);
+  return reason ? { ...snapshot, complete: false, reason } : snapshot;
+}
+
+function immutableBaselineDiff(
   projectRoot: string,
   baseline: ArchitectureBaselineV1,
 ): ChangedPathSnapshot {
@@ -288,8 +389,41 @@ export function changedPathsFromBaseline(
   return changedPathsFromImmutableBaseline(projectRoot, architecture.baseline);
 }
 
+/**
+ * The read bound every text probe on this path shares. 512 KB is far past any
+ * hand-written source file and exists so one generated blob in `changedPaths`
+ * cannot turn a hook into a memory event.
+ */
+export const TEXT_READ_CLIP = 512_000;
+
 export function safeRead(projectRoot: string, relPath: string): string {
-  try { return fs.readFileSync(path.join(projectRoot, relPath), 'utf8').slice(0, 512_000); } catch { return ''; }
+  try {
+    return readRegularFileOrThrow(path.join(projectRoot, relPath)).slice(0, TEXT_READ_CLIP);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Did a text probe reach the end of what it was reading, or stop at the clip?
+ *
+ * The clip could only ever LOWER a verdict, which is this plan item's defect
+ * class on the diff side rather than the scan side. `changedHunkEvidence`
+ * compares clipped text against clipped text: a markup-structural edit past the
+ * 512 KB mark in a larger file leaves both projections identical, the
+ * changed-hunk probe finds nothing visual in what it can see, and the run
+ * settles `behavioral` — one browser check and no screenshots — for a change
+ * that moved the DOM. Nothing anywhere recorded that the read had been cut
+ * short, which is exactly the shape the bounded scans were fixed for.
+ *
+ * A clipped read is therefore incomplete evidence, not clean evidence, and the
+ * caller treats it the same way it treats an unreadable baseline: `available:
+ * false`, which raises to `visual`. The fail-closed direction costs a run with
+ * a genuinely enormous changed file the extra screenshots; the other direction
+ * costs the UI nobody looked at.
+ */
+export function textWasClipped(text: string): boolean {
+  return text.length >= TEXT_READ_CLIP;
 }
 
 export interface ChangedHunkEvidence {
@@ -381,6 +515,18 @@ export function changedHunkEvidence(
   relPath: string,
 ): ChangedHunkEvidence {
   const after = safeRead(projectRoot, relPath);
+  // Before anything is compared: a projection that stopped at the clip is not
+  // evidence that the two sides agree, it is evidence that the probe ran out of
+  // file. See `textWasClipped`.
+  if (textWasClipped(after)) {
+    return {
+      available: false,
+      before: '',
+      after,
+      changedText: after,
+      reason: `changed file exceeds the ${TEXT_READ_CLIP}-byte text read bound`,
+    };
+  }
   if (!baseline) {
     return {
       available: false,
@@ -411,6 +557,19 @@ export function changedHunkEvidence(
         after,
         changedText: after,
         reason: 'Git changed hunks could not be read',
+      };
+    }
+    // The same argument one level in: `gitTextAtBaseline` and `gitChangedText`
+    // each clip at the same bound, so a hunk list or a baseline body that hit it
+    // has unread remainder, and the remainder is where the markup edit sits in
+    // the shape this guards against.
+    if (textWasClipped(before.text) || textWasClipped(changedText)) {
+      return {
+        available: false,
+        before: before.text,
+        after,
+        changedText,
+        reason: `changed-hunk evidence exceeds the ${TEXT_READ_CLIP}-byte text read bound`,
       };
     }
     return { available: true, before: before.text, after, changedText };

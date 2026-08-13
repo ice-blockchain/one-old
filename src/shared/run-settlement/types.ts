@@ -56,8 +56,15 @@ export interface SettlementUpdate {
   /**
    * Set ONLY by `transitionRunStatus`, and only after `writeRunLedgerTransition`
    * actually recorded a user-authorized `blocked -> active` entry. Unlocks
-   * exactly one edge of the terminal-immutability guard; `verified` and `failed`
-   * stay absolutely immutable for every caller.
+   * exactly one edge of the terminal-immutability guard, and does not widen:
+   * no value of this field reopens `verified` or `failed` through any writer in
+   * this product.
+   *
+   * That is a rule the writers keep, not a property of the file, and the
+   * distinction is load-bearing wherever the immutability is cited as the REASON
+   * for a refusal — `settlementHash` is an UNKEYED digest, so a short script
+   * produces a settlement the parser accepts in any status it likes. See
+   * io.ts's terminal-write guard, which carries the full argument.
    *
    * A string-literal type rather than a boolean on purpose: no generic truthy
    * flag can widen the hatch, and grepping the constant enumerates every

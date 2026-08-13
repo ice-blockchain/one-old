@@ -25,12 +25,20 @@ export {
 } from './projection';
 
 export {
+  ILLEGIBLE_SETTLEMENT_SUFFIX,
+  SETTLEMENT_RECORD_ILLEGIBLE_CHECK,
   activeRunClaimCount,
   activeRunClaimScan,
+  bothRunRecordsRemedy,
   readRunSettlement,
+  readRunSettlementResult,
   runLiveClaimEvidence,
+  runSettlementIllegible,
+  runSettlementQuarantinePath,
   writeRunSettlement,
   type RunLiveClaimEvidence,
+  type RunSettlementLegibility,
+  type RunSettlementRead,
 } from './io';
 
 export {

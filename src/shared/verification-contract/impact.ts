@@ -905,10 +905,37 @@ export function deriveUiImpact(
   };
 }
 
+// The surfaces known to carry NO user interface. Enumerated rather than
+// inferred, because this list is what the floor below fails toward MORE
+// evidence against: a surface absent from it is one this file does not
+// recognise, and a partial walk over an unrecognised UI is exactly the case
+// the floor exists for.
+const NON_UI_SURFACES = new Set<string>(['api', 'cli', 'worker', 'data']);
+
 /**
- * The one rule that composes the two authorities, stated in the only place that
- * gets to compose them. It is TWO-SIDED, and both sides are failure modes that
- * have to be closed together:
+ * What a scan that DID NOT FINISH may be treated as: the maximum its domain can
+ * produce, because the paths the walk never reached could have been any of them.
+ *
+ * `native-ui` is already the maximum and a project with no surface at all has
+ * nothing a partial walk could have hidden, so only the web domain has a floor
+ * to RAISE — but "no surface at all" and "no surface I recognise" are not the
+ * same fact, and `baseImpact` answers `none` for both. A future
+ * `desktop-ui`-shaped surface therefore floored at `none`, i.e. a walk that
+ * missed part of a UI asked for LESS evidence than one that read all of it.
+ * Every surface known to be headless is named above; anything else takes the
+ * web maximum, on the same reasoning the rest of this floor rests on.
+ */
+export function truncatedScanUiImpactFloor(profile: CapabilityProfileV1): UiImpact {
+  const domain = baseImpact(profile);
+  if (domain === 'nonvisual') return 'visual';
+  if (domain !== 'none') return domain;
+  return profile.surfaces.some((surface) => !NON_UI_SURFACES.has(surface)) ? 'visual' : 'none';
+}
+
+/**
+ * The one rule that composes every authority allowed to bound the impact, stated
+ * in the only place that gets to compose them. It is TWO-SIDED, and both sides
+ * are failure modes that have to be closed together:
  *
  *   - The planned floor is a LOWER BOUND that no scan outcome may reduce. A scan
  *     that fails, times out, exceeds its file bound, or simply sees nothing
@@ -924,13 +951,44 @@ export function deriveUiImpact(
  * half is safe alone — `deriveUiImpact`'s ignorance-as-behavior default was the
  * over-escalation that made runs unsettleable, and a floor applied as `=` instead
  * of `max` is the under-escalation that lets unverified UI ship.
+ *
+ * A TRUNCATED scan is the one case the planned floor cannot cover, and it enters
+ * as a THIRD bound rather than as an exception to either rule above.
+ * `plannedUiImpactFloor` is a NEW-work instrument — it skips every module and
+ * output already in the baseline — so a run that MODIFIES existing UI plans
+ * nothing new and floors at `nonvisual`, while the scan that would have seen the
+ * `.tsx` was cut short. Both inputs are then silent for the same reason (nobody
+ * looked), not because there was nothing to see, and the published contract said
+ * `nonvisual` for a run that owed a browser. The weakening ratchet in
+ * plan-readiness/contracts.ts cannot catch that either: it compares two
+ * contracts, and a floor missing from both of them is not a weakening.
+ *
+ * `truncatedScanUiImpactFloor` is the answer, on the principle `deriveUiImpact`
+ * already applies one level down: when the changed-hunk evidence for a file it
+ * KNOWS changed is unavailable, it answers `visual`, because unavailable evidence
+ * is not evidence of absence. This is not the ignorance-as-behavior default rule
+ * two forbids — that one fired on every run, from an extension alone. This one
+ * fires only when the runtime knows its own diff is partial, and the contract says
+ * why in `scanReason`. It is still a maximum, so an evidence-backed complete scan
+ * is untouched and nothing here is ever an assignment.
  */
 export function uiImpactWithPlannedFloor(
   projectRoot: string,
   architecture: CompiledArchitectureV1,
   scanned: UiImpact,
+  /**
+   * EVERY bounded scan this run performed finished. Not `scanComplete` from the
+   * contract, which is the baseline diff alone: the structure walk's file cap
+   * and COLLAPSE_MAX_FILES leave the same hole in the same evidence and raise
+   * the same floor. The caller composes them (buildVerificationContract).
+   */
+  allScansComplete: boolean,
 ): UiImpact {
-  return raiseImpact(scanned, plannedUiImpactFloor(projectRoot, architecture));
+  const planned = plannedUiImpactFloor(projectRoot, architecture);
+  const floor = allScansComplete
+    ? planned
+    : raiseImpact(planned, truncatedScanUiImpactFloor(architecture.profile));
+  return raiseImpact(scanned, floor);
 }
 
 export function changedRoutes(

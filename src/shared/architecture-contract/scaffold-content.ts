@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SKIP_DIRS, SKIP_OS_FILES } from '../../config/reporting';
+import { readRegularFileResult } from '../bounded-read';
 import { profileHasWebUi, type CapabilityProfileV1 } from '../capabilities';
 import { O_NOFOLLOW, isSymlink, nofollowEnforcedByKernel, writeAll } from '../fs-nofollow';
 import { greenfieldEvidence, hasCommittedHistory } from '../greenfield-evidence';
@@ -29,6 +30,7 @@ import {
 import { profileUsesReactI18n } from './i18n';
 import { moduleSkeleton, type ModuleSkeletonReferenceV1 } from './skeletons';
 import type { CompiledArchitectureV1 } from './types';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 // Mirror of the baseline scan-skip + lockfile knowledge in
 // `architecture-contract/baseline.ts` (isScanSkippedPath / LOCKFILE): what the
@@ -837,7 +839,20 @@ function openGitignoreForUpdate(absolute: string): number | 'absent' | 'refused'
     // O_RDWR also refuses a DIRECTORY outright (EISDIR), and reading and
     // writing through one fd guarantees the bytes we rewrite are the bytes we
     // read — the path cannot be swapped underneath us between the two.
-    return fs.openSync(absolute, fs.constants.O_RDWR | O_NOFOLLOW);
+    //
+    // O_NONBLOCK IS THE ONE FLAG THAT WAS MISSING, and the round that added it
+    // also had to correct the reason the census carried for this line. That row
+    // said the open "blocks BEFORE the fstat guard, so the fd rule does not
+    // reach it", and that is FALSE on this pair of flags: DRIVEN, `O_RDWR` opens
+    // a FIFO in 0 ms on Darwin (the round-3 peer measured 76 ms end to end) and
+    // O_NOFOLLOW ELOOPs the symlink, so neither shape could block here. The
+    // reason was over-cautious in the safe direction, which still costs — a
+    // wrong reason sends the next round at a non-defect. What O_NONBLOCK buys is
+    // not a fix for a live hang but the PROOF: the census decides boundedness
+    // from the flags, and the flags now say it. POSIX leaves O_RDWR on a FIFO
+    // undefined and this tree ships on three platforms; a proof that depends on
+    // a platform's undefined behaviour is not one.
+    return fs.openSync(absolute, fs.constants.O_RDWR | O_NOFOLLOW | (fs.constants.O_NONBLOCK || 0));
   } catch (error) {
     // ELOOP (a symlink, refused by O_NOFOLLOW), EISDIR, EACCES, … all mean
     // "not ours to rewrite". Only a genuinely absent path may be created.
@@ -887,14 +902,43 @@ function createGitignore(absolute: string, content: string): boolean {
  * of them. What the predicate actually wants to know is whether the project
  * itself ever stated anything about git; Traffic One's own block is not the
  * project stating anything.
+ *
+ * BOUNDED (shared/bounded-read.ts), and `null` IS THE POINT OF THE THIRD ARM
+ * rather than tidiness about types. The bare `fs.readFileSync` this replaces
+ * hung on a committed `.gitignore -> /dev/zero`: SIGKILL at 12 070 ms (round-1
+ * peer) and at 12 090 ms re-driven here against a byte-verified copy carrying
+ * the bare read, versus `null` in 161 ms after (.tmp/bounded2/
+ * {before,after}-owned-devzero.txt, load 3.34 → 3.52 of 10 cpus)
+ * — and the obvious repair, folding a shape we cannot read into the `''` the
+ * `catch` already returns, would have been WORSE than the hang it removes.
+ * `greenfieldEvidence` answers TRUE on empty bytes, so `''` means "the project
+ * has stated nothing about git", and the one production consumer spends that
+ * answer on `ensureInitialCommit({ initIfNeeded: true })` — `git init`, `add -A`
+ * and a commit authored as Traffic One over a working tree whose `.gitignore` we
+ * could not see, which is precisely the misclassification that caller's own
+ * comment says it added the disk veto to prevent.
+ *
+ * So the three outcomes the bounded reader distinguishes are kept distinct here:
+ *   absent      `''` — no `.gitignore` is a project that genuinely stated
+ *                      nothing, and this is the greenfield case the predicate
+ *                      exists to recognise.
+ *   text        the owner bytes, exactly as before.
+ *   unreadable  `null` — something IS there and we cannot see it, so the project
+ *                      may well have spoken. Every caller must fail toward NOT
+ *                      greenfield.
+ *
+ * That last arm is what makes `greenfieldEvidence`'s own docblock TRUE. It has
+ * claimed since it was written that "both [arms] fail toward not greenfield when
+ * they cannot be read", and for this arm that was FALSE: a directory or a
+ * mode-000 `.gitignore` reached the `catch` and came back as `''`, i.e. as
+ * greenfield. The recorded claim is left where it is and this note says what the
+ * behaviour under it used to be.
  */
-export function projectOwnedGitignore(projectRoot: string): string {
-  let existing: string;
-  try {
-    existing = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf8');
-  } catch {
-    return '';
-  }
+export function projectOwnedGitignore(projectRoot: string): string | null {
+  const read = readRegularFileResult(path.join(projectRoot, '.gitignore'));
+  if (read.kind === 'absent') return '';
+  if (read.kind === 'unreadable') return null;
+  const existing = read.text;
   const rawLines = linesKeepingTerminators(existing);
   const scan = scanManagedRegion(rawLines);
   // A malformed pair means a human edited our delimiters: every byte is theirs
@@ -1060,7 +1104,7 @@ function conventionSlotOf(rel: string): ConventionSlot | null {
 // or blank is one this function may fill.
 function blankOrMissing(projectRoot: string, rel: string): boolean {
   try {
-    return fs.readFileSync(path.join(projectRoot, rel), 'utf8').trim().length === 0;
+    return readRegularFileOrThrow(path.join(projectRoot, rel)).trim().length === 0;
   } catch {
     return true;
   }
@@ -1220,7 +1264,7 @@ function seedIfBlank(projectRoot: string, rel: string, body: string): boolean {
   const absolute = path.join(projectRoot, rel);
   try {
     if (fs.existsSync(absolute)) {
-      const current = fs.readFileSync(absolute, 'utf8');
+      const current = readRegularFileOrThrow(absolute);
       if (current.trim().length > 0) return false;
     } else {
       fs.mkdirSync(path.dirname(absolute), { recursive: true });

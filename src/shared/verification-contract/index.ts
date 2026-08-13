@@ -17,6 +17,7 @@ import { sha256 } from '../text';
 import {
   DEFAULT_LIGHTHOUSE_THRESHOLDS,
   VERIFICATION_CONTRACT_SCHEMA_VERSION,
+  skipNameDisclosure,
   type PerformanceContractV1,
   type VerificationCompileOptions,
   type VerificationContractV2,
@@ -98,7 +99,86 @@ export function buildVerificationContract(
     baselineDiff.paths,
     architecture.baseline,
   );
-  const runtimeImpact = uiImpactWithPlannedFloor(projectRoot, architecture, derived.impact);
+  // The skip-authority name disclosure is NOT truncation, and this is the site
+  // where treating it as one was expensive.
+  //
+  // `scanComplete`'s own definition is "the walk finished within bounds", and
+  // for this class it did: the probe enumerated every path Git makes visible and
+  // can NAME the ones the diff excludes. Nothing went unread. Every complete
+  // scan in this tree excludes `dist/` — `isScanSkippedPath` runs on all of
+  // them, and they all report `complete: true` — so the disclosure does not
+  // discover that a scan was partial. It discovers that an always-skipped
+  // directory holds something source-shaped, which is a different fact and
+  // belongs in a different channel.
+  //
+  // Both consequences of calling it truncation were wrong here, and MEASURED so:
+  //
+  //   - The FLOOR compensates for ignorance by asserting the domain maximum.
+  //     There is no ignorance to compensate: the paths are named. And the floor
+  //     cannot lift again — `truncationPinLifted` needs the diff to come back
+  //     complete, and a `dist/` does not delete itself, so a run pays the pin
+  //     for the rest of its life for having built.
+  //   - IDENTITY is worse. `scanComplete`/`scanReason` are hashed into
+  //     `contractHash`, and the trigger is usually the run's OWN build output,
+  //     which appears DURING QA. So the reviewer's refresh was the first compile
+  //     to see it, published a new hash, and `APPROVED` was then forbidden
+  //     because "the current review bootstrap predates that contract" while the
+  //     QA report it had just validated became `contract-mismatch`. Measured on
+  //     both `test:env --strict` scenarios: `scanComplete: false`, a `scanReason`
+  //     naming `dist/assets/app-ca5e0bbf.js`, `uiImpactPinned` ABSENT (both
+  //     projects derived `visual` on their own evidence, so the floor moved no
+  //     value at all) — the churn was the two fields and nothing else.
+  //
+  // This is the exclusion `isRuntimeMaintainedContextPath` makes twenty lines
+  // above, for the same reason: the runtime's own side effects must not churn the
+  // identity a review is pinned to. The disclosure is not dropped — it is
+  // RE-DERIVED live at `currentVerificationSourceHash`, on every report
+  // validation and every settlement read, and recorded durably in the artifact
+  // that actually claims evidence (`QaReportV2.settledWithIncompleteScan`, which
+  // the validator refuses a qualified run for omitting). Remembering it here
+  // would add nothing a reader cannot see and would cost the chain of custody.
+  //
+  // `skipNameDisclosure` is the tree's single classifier for this and is
+  // fail-closed: an unrecognised reason stays fatal. It is a substring test
+  // because the marker is a sentence TAIL (see its own note), which is safe
+  // here only because a snapshot carries ONE reason —
+  // `changedPathsFromImmutableBaseline` picks the first cause with `||` and
+  // never concatenates — so a disclosure cannot arrive wearing a fatal cause.
+  const nameDisclosure = baselineDiff.complete
+    ? null
+    : skipNameDisclosure(baselineDiff.reason);
+  const scanComplete = baselineDiff.complete || Boolean(nameDisclosure);
+  // THREE truncation notions reach this contract, and until now the floor
+  // covered one of them. The baseline diff is the notion `scanComplete`
+  // publishes; the structure walk's file cap and COLLAPSE_MAX_FILES are the
+  // other two, and they arrive as `boundedScanTruncated` because the caller is
+  // the only party that has seen those scans. All three mean the same thing to
+  // the floor — some part of this project went unread — so all three raise it.
+  // Only the first may touch `scanComplete` (see the option's own note).
+  const scanTruncated = !scanComplete || options.boundedScanTruncated === true;
+  const unpinnedImpact = uiImpactWithPlannedFloor(
+    projectRoot,
+    architecture,
+    derived.impact,
+    true,
+  );
+  const runtimeImpact = uiImpactWithPlannedFloor(
+    projectRoot,
+    architecture,
+    derived.impact,
+    !scanTruncated,
+  );
+  // The truncation floor's own justification, carried where a reader looks for
+  // one. `scanReason` already says the diff is partial; this says what that cost
+  // the contract, which is the fact an implementer needs when the run suddenly
+  // owes browser evidence for a change that looks nonvisual.
+  const truncationPinned = rank(runtimeImpact) > rank(unpinnedImpact);
+  const impactReason = [
+    ...(derived.reason ? [derived.reason] : []),
+    ...(truncationPinned
+      ? [`A bounded scan did not finish, so uiImpact is pinned to the truncated-scan floor (${runtimeImpact}) rather than the ${unpinnedImpact} the evidence read.`]
+      : []),
+  ].join(' ');
   const raised = options.agentRaisedImpact && rank(options.agentRaisedImpact) > rank(runtimeImpact)
     ? options.agentRaisedImpact
     : runtimeImpact;
@@ -143,7 +223,15 @@ export function buildVerificationContract(
     baseline: architecture.baseline,
     uiImpact: impact,
     uiImpactSource: impact !== runtimeImpact ? 'agent-raised' as const : 'runtime' as const,
-    ...(derived.reason ? { uiImpactReason: derived.reason } : {}),
+    ...(impactReason ? { uiImpactReason: impactReason } : {}),
+    // Published only when it is true, so a contract that was never pinned reads
+    // the same as one written before the field existed — the ratchet treats both
+    // as unexempt. `impact === runtimeImpact` is the second half of the
+    // provenance: an agent that raised the impact ABOVE the floor published its
+    // own number, and there is nothing of the runtime's to withdraw.
+    ...(truncationPinned && impact === runtimeImpact
+      ? { uiImpactPinned: true, unpinnedUiImpact: unpinnedImpact }
+      : {}),
     changedPaths: paths,
     // Honesty split (additive; changedPaths stays the authorization union the
     // refresh path depends on): observedChangedPaths is the REAL baseline
@@ -153,8 +241,12 @@ export function buildVerificationContract(
     observedChangedPaths: baselineDiff.paths,
     plannedOutputs: [...architecture.allowedOutputs],
     changedRoutes: changedRoutes(architecture, paths, impact),
-    scanComplete: baselineDiff.complete,
-    ...(baselineDiff.reason ? { scanReason: baselineDiff.reason } : {}),
+    scanComplete,
+    // The reason is withheld with the flag, not in spite of it. A `scanReason`
+    // on a `scanComplete: true` contract would read as a truncation that was
+    // forgiven, and it is hashed all the same — publishing it would churn the
+    // identity this whole branch exists to leave alone.
+    ...(baselineDiff.reason && !nameDisclosure ? { scanReason: baselineDiff.reason } : {}),
     requiredChecks: requiredChecks(impact, !webUi && Boolean(options.performanceRisk)),
     browserRequired: browserRequired(impact),
     nativeAdapter: impact === 'native-ui' ? (architecture.profile.qaAdapters[0] || null) : null,
@@ -262,20 +354,62 @@ export function readVerificationContract(
   return raw;
 }
 
+/**
+ * The run's live source identity, and — when the scan behind it was partial —
+ * whether that partiality is DISCLOSABLE or fatal.
+ *
+ * `complete: false` used to be the end of every conversation, and one member of
+ * that set does not belong there. `types.ts`'s note on `boundedScanTruncated`
+ * already wrote the argument down: "`scanComplete: false` is a DEAD END:
+ * validateQaReportV2 rejects such a contract outright (`scan-incomplete`), so a
+ * run that merely walked past a generated tree too large to judge could never be
+ * certified at all." The skip-authority name disclosure is that same shape and
+ * was still wired into the dead end — and it is worse than the case that note
+ * fixed, because the trigger is usually the run's OWN build output (see
+ * `nameSkippedProjectSource`). Measured: two `test:env --strict` scenarios lost
+ * every QA check to it, on a contract whose own `scanComplete` was `true`, over a
+ * `dist/assets/app-<hash>.js` that `npm run build` had just written.
+ *
+ * `qualification` is the third answer. `complete` STAYS FALSE — a caller that
+ * knows nothing about this field keeps refusing, which is the fail-closed
+ * direction and the reason the flag is additive rather than a relaxation of
+ * `complete` — but `hash` is populated, so a caller that does know may proceed
+ * PROVIDED it carries this text into what it publishes. That proviso is not
+ * advice: `validateQaReportV2` refuses a report that proceeded on a qualified
+ * scan and does not say so.
+ *
+ * The LIVE diff is now the only entry point that produces one, because
+ * `buildVerificationContract` no longer publishes this class into
+ * `scanComplete`/`scanReason` (see its own note: the fields are hashed, and the
+ * trigger is usually build output that appears mid-run, so remembering it there
+ * broke the chain of custody a review is pinned to). The contract-side branch is
+ * kept anyway and is not dead code: contracts published by an earlier runtime —
+ * including every run in flight across an upgrade — carry exactly that shape, and
+ * refusing them would strand the runs this change exists to unblock.
+ */
 export function currentVerificationSourceHash(
   projectRoot: string,
   contract: VerificationContractV2,
-): { hash: string; complete: boolean; reason?: string } {
+): { hash: string; complete: boolean; reason?: string; qualification?: string } {
+  const qualifications: string[] = [];
   if (!contract.scanComplete) {
-    return { hash: '', complete: false, reason: contract.scanReason || 'verification scan is incomplete' };
+    const disclosure = skipNameDisclosure(contract.scanReason);
+    if (!disclosure) {
+      return { hash: '', complete: false, reason: contract.scanReason || 'verification scan is incomplete' };
+    }
+    qualifications.push(disclosure);
   }
   const currentDiff = changedPathsFromImmutableBaseline(projectRoot, contract.baseline);
   if (!currentDiff.complete) {
-    return {
-      hash: '',
-      complete: false,
-      reason: currentDiff.reason || 'baseline diff could not be recomputed',
-    };
+    const disclosure = skipNameDisclosure(currentDiff.reason);
+    if (!disclosure) {
+      return {
+        hash: '',
+        complete: false,
+        reason: currentDiff.reason || 'baseline diff could not be recomputed',
+      };
+    }
+    if (!qualifications.includes(disclosure)) qualifications.push(disclosure);
   }
   const contracted = new Set(contract.changedPaths);
   // Runtime-maintained root context is excluded from the contract identity
@@ -299,20 +433,29 @@ export function currentVerificationSourceHash(
     file,
     fileHash(projectRoot, file),
   ]);
+  // The hash is the contract's OWN changed paths, so it is byte-identical
+  // whether or not a skipped directory name hid something else: a qualified run
+  // and the same run with the offending directory gitignored produce the same
+  // identity, which is what makes the qualification a disclosure rather than a
+  // second build identity nobody could reconcile.
+  const qualification = qualifications.join('; ');
   return {
     hash: sha256(stableContractJson({
       baseline: contract.baseline.identity,
       architectureHash: contract.architectureHash,
       rows,
     })),
-    complete: true,
+    complete: qualifications.length === 0,
+    ...(qualification ? { reason: qualification, qualification } : {}),
   };
 }
 
 export {
   DEFAULT_LIGHTHOUSE_THRESHOLDS,
+  SKIP_NAME_DISCLOSURE_MARKER,
   VERIFICATION_CONTRACT_SCHEMA_VERSION,
   VERIFICATION_SCAN_MAX_FILES,
+  skipNameDisclosure,
   type ChangedPathSnapshot,
   type LighthouseThresholdsV1,
   type PerformanceContractV1,
@@ -330,5 +473,6 @@ export {
   deriveUiImpact,
   plannedUiImpactFloor,
   requiredChecks,
+  truncatedScanUiImpactFloor,
   uiImpactWithPlannedFloor,
 } from './impact';

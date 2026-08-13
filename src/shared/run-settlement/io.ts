@@ -10,8 +10,8 @@ import { ageAttestsLiveness, timestampAgeMs } from '../state/run-agent/session-i
 import { isMaintenanceTerminal, maintenanceOutcome } from '../maintenance/terminal';
 import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-proof';
 import { pluginVersion } from '../../config/plugin-identity';
-import { readJson, readJsonResult, writeJson } from '../fsjson';
-import { runUsedOperatorOverride } from '../override';
+import { movePath, readJson, readJsonResult, writeJson } from '../fsjson';
+import { overrideEvidenceChecks, runQuarantinedByOverrideReconciliation, runUsedOperatorOverride } from '../override';
 import { withProjectStateLock } from '../state/project-state-lock';
 import { strictRunVerificationEvidence } from '../strict-verification-evidence';
 
@@ -31,6 +31,7 @@ import {
 import {
   writeLegacyProjection,
 } from './projection';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 function parseSettlement(value: unknown, runId: string): RunSettlementV2 | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -58,8 +59,130 @@ function parseSettlement(value: unknown, runId: string): RunSettlementV2 | null 
   return raw as RunSettlementV2;
 }
 
+/**
+ * ONE spelling, at both ends. The path helper sanitises (`runDir` →
+ * `safeRunId`) and the parser demands the record's `runId` match EXACTLY, so
+ * the two used to disagree for any id that is not already canonical: writing a
+ * settlement for `"R "` landed it in `runs/R/` carrying the unsanitised `"R "`,
+ * after which reading the canonical `"R"` parsed the file, compared the ids and
+ * answered `null` — a free way to blank another run's canonical record from
+ * anything that can pass a run id. MEASURED at the real writer. Certification
+ * fails closed on a missing record, so it was never a bypass on its own; it
+ * composed with the refusal above, which reads "exists and does not parse" as a
+ * reason to refuse every later write.
+ *
+ * Sanitising here rather than refusing a non-canonical id keeps both spellings
+ * naming the one record instead of turning the second one into a silent
+ * "no settlement", which is the reading that fails OPEN at every caller that
+ * treats `null` as "nothing was ever settled".
+ */
 export function readRunSettlement(projectRoot: string, runId: string): RunSettlementV2 | null {
-  return parseSettlement(readJson(runSettlementPath(projectRoot, runId), null), runId);
+  return readRunSettlementResult(projectRoot, runId).settlement;
+}
+
+/**
+ * HOW THE READ WENT, which the `| null` above structurally cannot say: it
+ * answers "this run never had a canonical settlement" and "this run's canonical
+ * settlement is damaged" with the same `null`.
+ *
+ * That collapse is the one this module already refuses to make one layer down
+ * (fsjson's `readJsonResult`), re-made here by the parser: a hash-damaged
+ * `verified` record and a legacy/V1 run with no record at all both arrive as
+ * `null`, and the doctor rendered BOTH as `(no settlement-v2.json — legacy/V1
+ * run)`. MEASURED before this existed: damage the hash of an `active`
+ * settlement and `doctor --run R` prints byte-identical output to a run that
+ * never had one, while every settlement write for that run is refused. A
+ * refusal nobody can see is half a control, and this is the read that lets the
+ * report say which of the two it is looking at.
+ *
+ * FIVE KINDS, not three, because the two damage classes have different causes
+ * and only one of them is a permissions problem:
+ *
+ *   'ok'         — parsed, hash intact, and it names THIS run.
+ *   'absent'     — ENOENT. The complete answer, and the common one.
+ *   'corrupt'    — bytes are there and are not JSON (a torn write, or the empty
+ *                  file an O_TRUNC open leaves when the write never landed).
+ *   'malformed'  — valid JSON that is not a settlement FOR THIS RUN: a wrong
+ *                  shape, another run's record (what `cp -r` of a run dir
+ *                  produces), or a digest that does not match its own contents.
+ *   'unreadable' — EACCES/EISDIR/EIO. There are bytes and we were refused.
+ */
+export type RunSettlementLegibility = 'ok' | 'absent' | 'corrupt' | 'malformed' | 'unreadable';
+
+export interface RunSettlementRead {
+  readonly kind: RunSettlementLegibility;
+  /** Non-null exactly when `kind === 'ok'`. */
+  readonly settlement: RunSettlementV2 | null;
+}
+
+/**
+ * Can this read be trusted as an account of the run's canonical status?
+ * `absent` can — there is nothing there, and every caller already fails closed
+ * on a missing record. Nothing else can. Deliberately the same shape (and the
+ * same argument) as override/token.ts's `overrideLedgerIllegible`.
+ */
+export function runSettlementIllegible(kind: RunSettlementLegibility): boolean {
+  return kind !== 'ok' && kind !== 'absent';
+}
+
+/**
+ * The check id a run carries FOREVER once its canonical record was found
+ * illegible, and the reason `verified` is refused for it.
+ *
+ * Carried in `incompleteChecks`, i.e. inside the hashed record, so removing it
+ * breaks the digest — which makes the record illegible again and puts it back.
+ * That is exactly as strong as everything else here and no stronger: anything
+ * that can write the project tree can forge a whole settlement (`settlementHash`
+ * is an UNKEYED digest), which is this product's pre-existing evidence-forgery
+ * floor. What the marker buys is that DAMAGING a record is no longer a way to
+ * launder one — the run comes back drivable and permanently uncertifiable.
+ */
+export const SETTLEMENT_RECORD_ILLEGIBLE_CHECK = 'settlement-record-illegible';
+
+/** Where illegible bytes are preserved before the record is rebuilt. The same
+ *  `.corrupt` spelling state/normalize.ts uses for a torn `.one.json` and
+ *  projection.ts uses for a torn `run.json`, so an operator finding one beside a
+ *  run directory does not have to learn a third convention. */
+export const ILLEGIBLE_SETTLEMENT_SUFFIX = '.corrupt';
+
+export function runSettlementQuarantinePath(projectRoot: string, runId: string): string {
+  return `${runSettlementPath(projectRoot, safeRunId(runId))}${ILLEGIBLE_SETTLEMENT_SUFFIX}`;
+}
+
+/**
+ * BOTH HALVES, wherever a wedged run is printed — the whole of the
+ * operator-facing half of the fail-closed writer, and the reason it is a
+ * function rather than a sentence typed twice.
+ *
+ * A wedged run has TWO records, and the escape that was measured out of the
+ * wedge repairs only ONE of them: remove `run.json`, re-run `run-status
+ * --status failed`, reset. An operator who does exactly that finds every later
+ * settlement write still refused, because the damaged `settlement-v2.json` is
+ * untouched — and nothing anywhere named it.
+ *
+ * LIVES HERE, in the module that owns the second record, rather than in the
+ * doctor that first printed it: the reset runner refuses on the SAME wedge from
+ * the other side ("repair or remove run.json first") and has to say the same
+ * thing in the same words. A shared sentence is the only version of "one voice"
+ * that survives one of the two being edited.
+ */
+export function bothRunRecordsRemedy(runId: string): string {
+  return 'A wedged run has TWO records and both have to be checked: '
+    + `\`.traffic-one/runs/${runId}/run.json\` (the ledger, which decides whether the run can be reset) and `
+    + `\`.traffic-one/runs/${runId}/settlement-v2.json\` (the canonical status, which decides whether it can `
+    + 'settle). Repairing or removing one and not the other leaves the run stuck in the other half: a '
+    + 'repaired ledger over a damaged settlement still refuses to certify, and a repaired settlement under a '
+    + 'corrupt ledger still refuses to reset.';
+}
+
+export function readRunSettlementResult(projectRoot: string, runId: string): RunSettlementRead {
+  const id = safeRunId(runId);
+  const read = readJsonResult<unknown>(runSettlementPath(projectRoot, id));
+  if (read.kind === 'absent') return { kind: 'absent', settlement: null };
+  if (read.kind === 'corrupt') return { kind: 'corrupt', settlement: null };
+  if (read.kind === 'unreadable') return { kind: 'unreadable', settlement: null };
+  const settlement = parseSettlement(read.value, id);
+  return settlement ? { kind: 'ok', settlement } : { kind: 'malformed', settlement: null };
 }
 
 interface ActiveRunClaimScan {
@@ -193,7 +316,12 @@ export function activeRunClaimCount(projectRoot: string, runId: string): number 
  * stale: the scan stops at `scanned: 2048` with `count: 0`, the sentinel reports
  * 1, and the sweep files the run under `liveRunIds` — outside the newest-N
  * budget, so it holds a reserved slot permanently while NEWER runs are reclaimed
- * around it. Nothing clears the condition, because the only thing that would
+ * around it. (`liveRunIds` in the sense of a legible sweep: one whose run caps are
+ * SUSPENDED never asks the liveness question at all, so it reports that list
+ * empty while keeping every run anyway. Same outcome for this run, reached without
+ * the reservation — and no consumer outside retention's own tests reads either
+ * field, so the distinction is about reading the report, not about behaviour.)
+ * Nothing clears the condition, because the only thing that would
  * remove those 2,048 files is the sweep the sentinel is refusing. The bound is
  * not the only trigger either: a single unreadable SUBDIRECTORY under the run
  * returns `complete: false` with `scanned: 0`, so one EACCES is enough.
@@ -218,18 +346,105 @@ export function runLiveClaimEvidence(projectRoot: string, runId: string): RunLiv
 
 export function writeRunSettlement(
   projectRoot: string,
-  runId: string,
+  projectRunId: string,
   update: SettlementUpdate,
 ): RunSettlementV2 | null {
-  if (!runId.trim() || /[\\/]/.test(runId)) return null;
+  if (!projectRunId.trim() || /[\\/]/.test(projectRunId)) return null;
   if (!runtimeVersionSatisfies(pluginVersion(), RUN_SETTLEMENT_MIN_RUNTIME_VERSION)) return null;
+  // The canonical spelling, and the ONLY one used below — for the directory,
+  // for the record's own `runId` field, and for every read this body makes. See
+  // readRunSettlement: the path helper sanitises and the parser compares
+  // exactly, so a body that mixed the raw id with the derived path wrote a
+  // record its own reader could not match.
+  const runId = safeRunId(projectRunId);
+  if (!runId) return null;
   let written: RunSettlementV2 | null = null;
   try {
     withProjectStateLock(projectRoot, () => {
-      const previous = readRunSettlement(projectRoot, runId);
-      // Canonical terminal settlements are immutable for this run. A delayed
+      // A previous record that EXISTS and does not parse is never treated as a
+      // blank slate, and this is the one place the distinction between "no
+      // settlement" and "a settlement I could not read" is acted on rather than
+      // merely noted.
+      //
+      // WHAT IT CLOSES, measured: the terminal guard below reads `previous`
+      // through a parser that answers `null` for any hash or shape damage, so an
+      // intact `verified` settlement resisted being overwritten as `failed`
+      // while the SAME record with one byte edited was overwritten at revision
+      // 1. Immutability that one edit removes is not immutability, and the file
+      // is inside the tree the attacker writes.
+      //
+      // HOW IT CLOSES IT, and the correction of a real cost rather than a
+      // tightening of it. The first shape of this guard REFUSED the write
+      // outright, which bought the property above at the price of a WEDGE: no
+      // writer, including `failed` and `blocked`, could settle that run again.
+      // MEASURED across 9 damaged record shapes x 7 ledger states, before and
+      // after, at this writer: 32 of the 63 cells lost their canonical terminal
+      // status that way — every damaged shape except a DIRECTORY planted at the
+      // path (which no writer can replace either way) crossed with a V2 ledger
+      // that is active or failed, and with a ledger that is itself corrupt or
+      // empty. The escape that existed — remove `run.json`, `run-status --status
+      // failed`, reset — worked only because a legacy/V1 ledger short-circuited
+      // the sync before it ever reached this function, i.e. because the run
+      // reported a status nothing had written. That is the laundering this lane
+      // exists to prevent, so it cannot be the recovery story either.
+      //
+      // RE-MEASURED ACROSS BOTH LEDGER VERSIONS, because the account above was
+      // taken on a V2 ledger and the two versions did not agree. One damaged
+      // record, `run-status --status failed`, what the command reported and what
+      // the canonical record said afterwards:
+      //
+      //   ledger      refusal-era               now
+      //   V2 active   unavailable:settlement-   applied, canonical `failed`
+      //               not-failed, canonical none
+      //   V1 active   APPLIED, canonical none   applied, canonical `failed`
+      //   absent      APPLIED, canonical none   applied, canonical `failed`
+      //   corrupt     unavailable:ledger-       unavailable:ledger-corrupt,
+      //               corrupt, canonical none   canonical `failed` once the
+      //                                         ledger is repaired or removed
+      //
+      // The two APPLIED rows are the omission: the command reported success
+      // having written nothing, which is worse than the refusal it was meant to
+      // be measured against. Both versions now reach this writer and both end
+      // with a canonical record that says what the operator was told. Whole
+      // table, all three arms: 0 cells newly unable to settle or reset against
+      // pristine HEAD, 22 that HEAD could not settle now settling.
+      //
+      // What replaces the refusal keeps the property and drops the wedge. The
+      // illegible bytes are PRESERVED beside the record (`.corrupt`, the same
+      // convention projection.ts uses for a torn `run.json`), the record is
+      // rebuilt from this update, and the run is marked
+      // `settlement-record-illegible` — permanently, because the marker is
+      // carried forward below and lives inside the hashed record. So the run
+      // stays drivable and resettable, and the ONE thing damaging a record could
+      // ever have bought — reopening it toward `verified` — is exactly the thing
+      // it can no longer buy. A quarantine that FAILS still refuses the write:
+      // rebuilding over bytes we could not preserve would destroy the only copy
+      // of what the record used to say, which is the same rule
+      // `writeLegacyProjection` applies to a corrupt `run.json`.
+      const record = readRunSettlementResult(projectRoot, runId);
+      const previous = record.settlement;
+      const illegibleNow = runSettlementIllegible(record.kind);
+      if (illegibleNow && !quarantineIllegibleSettlement(projectRoot, runId)) return;
+      // …and once, forever. `previous` is null on the pass that finds the
+      // damage, so the marker has to be re-read from the record this writer
+      // itself wrote afterwards, or the very next write would certify the run.
+      const illegibleRecord = illegibleNow
+        || Boolean(previous?.incompleteChecks.includes(SETTLEMENT_RECORD_ILLEGIBLE_CHECK));
+      // Canonical terminal settlements are immutable TO THIS WRITER. A delayed
       // projection/reconciliation pass may have read an older active ledger,
       // but it must never reopen verified, failed, or blocked work.
+      //
+      // Not immutable to anything holding a text editor, and the qualifier is
+      // load-bearing rather than pedantic: `settlementHash` is an UNKEYED digest
+      // over the record with sorted keys, so a twenty-line script produces a
+      // settlement this parser accepts, in any status it likes. That is the
+      // product's pre-existing forgery floor — the same floor that lets
+      // fabricated evidence certify a fresh run id — and no guard in this
+      // function raises it. What the refusal above adds is that damaging a
+      // record no longer converts it into a blank slate; what it cannot add is
+      // authenticity. Anywhere this immutability is cited as the REASON for
+      // another refusal, the citation has to carry that (runners/doctor/
+      // unblock.ts's `run-already-verified`, which is where it did not).
       //
       // The single exception is the ledger's own resume edge: transitionRunStatus
       // sets `authorizedResume` only after the run-ledger state machine accepted
@@ -369,6 +584,66 @@ export function writeRunSettlement(
         reason = 'operator-override-used';
         incompleteChecks.push('operator-override-used');
       }
+      // …and the half the guard above structurally cannot cover: it reads the
+      // ledger, so DELETING the ledger answered it with "no override was ever
+      // minted" and the run settled `verified` with `reason=none`. Measured:
+      // mint, `rm ~/.traffic-one/overrides/<projectKey>/overrides.jsonl`, green.
+      //
+      // `overrideEvidenceChecks` asks whether the record can still account for
+      // itself — an illegible ledger, a snapshot no vouchable line names, a
+      // signed mint counter ahead of the lines that remain (shared/override/
+      // integrity.ts). Project-scoped, because none of the three can be pinned
+      // to a run without trusting a field the same edit could have chosen.
+      //
+      // Scoped to CERTIFICATION exactly like the fallback-marker refusal above,
+      // and for the same reason: every other status still publishes, the run
+      // stays drivable, and only the claim "this run is verified" — a claim
+      // about evidence — is refused while the evidence cannot be read.
+      if (status === 'verified') {
+        const overrideEvidenceGaps = overrideEvidenceChecks(projectRoot);
+        if (overrideEvidenceGaps.length > 0) {
+          status = 'validating';
+          reason = overrideEvidenceGaps[0];
+          incompleteChecks.push(...overrideEvidenceGaps);
+        }
+      }
+      // The price of the repair for the two refusals above. An operator can
+      // clear an incomplete override record by RECONCILING it — a signed,
+      // append-only acknowledgement of the exact anomalous state, minted at a
+      // terminal (shared/override/reconcile.ts) — and because an erased ledger
+      // line took its runId with it, that acknowledgement names every run in
+      // the project at that moment and permanently refuses certification for
+      // each. Without it the repair would be the laundering: clear the finding,
+      // certify the run the deleted line was hiding.
+      //
+      // Reported AFTER the gaps so a project with a fresh, repairable gap
+      // names the gap rather than the older quarantine.
+      if (status === 'verified' && runQuarantinedByOverrideReconciliation(projectRoot, runId)) {
+        status = 'validating';
+        reason = 'override-reconciliation-quarantined';
+        incompleteChecks.push('override-reconciliation-quarantined');
+      }
+      // The price of no longer wedging on an illegible record, and the reason
+      // dropping the refusal costs nothing an attacker wants. This run's
+      // canonical record was found damaged at least once; nothing on disk can
+      // say what it used to claim, so no later pass may claim it is verified.
+      //
+      // LAST of the certification refusals, so its `reason` wins: each block
+      // above overwrites `reason` when it fires, and this is the only one an
+      // operator cannot repair by fixing something else — a reconciliation
+      // clears an override gap, and nothing clears this. The remedy is a fresh
+      // run, which is what the doctor finding says.
+      //
+      // Every other status still publishes, exactly like the two override
+      // refusals above: the run stays drivable, `failed`/`blocked` still settle,
+      // and the reset runner still retires it.
+      if (illegibleRecord) {
+        incompleteChecks.push(SETTLEMENT_RECORD_ILLEGIBLE_CHECK);
+        if (status === 'verified') {
+          status = 'validating';
+          reason = SETTLEMENT_RECORD_ILLEGIBLE_CHECK;
+        }
+      }
       if (update.status === 'verified' && (
         activeClaims > 0
         || incompleteChecks.length > 0
@@ -429,10 +704,48 @@ export function writeRunSettlement(
   return written;
 }
 
+/**
+ * Move the illegible record aside so the rebuilt one does not destroy it.
+ *
+ * A RENAME, not a copy: the bytes are preserved without being read, which is
+ * the only preservation available for the `unreadable` kind (EACCES, EISDIR) —
+ * projection.ts's `.corrupt` copy reads its base first, so it can only preserve
+ * `corrupt`, and refuses `unreadable` outright. That difference is why the
+ * settlement can recover from a mode-000 record and `run.json` cannot.
+ *
+ * A SYMLINK at the path is left exactly where it is and refuses the whole
+ * write, which is today's behaviour and must stay it: that path is the consent
+ * fence's (fsjson.ts), moving the link aside would let this function write
+ * through a planted one by clearing it first, and the replay corpus pins the
+ * refusal. `movePath` refuses a link at either end for the same reason; the
+ * `lstat` here is what keeps the decision explicit rather than incidental.
+ *
+ * An earlier quarantine IS overwritten, and deliberately: a second damage event
+ * is damage to a record this writer already rebuilt, so the newest bytes are
+ * the ones an operator is diagnosing. The permanent marker on the record
+ * survives either way — it is what says damage happened at all.
+ */
+function quarantineIllegibleSettlement(projectRoot: string, runId: string): boolean {
+  const file = runSettlementPath(projectRoot, runId);
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+  try {
+    return movePath(file, runSettlementQuarantinePath(projectRoot, runId));
+  } catch {
+    // EACCES/ENOSPC on the rename. `movePath` reports a refusal as `false` and
+    // rethrows a real errno; either way the bytes are still there and the write
+    // above declines rather than replacing them.
+    return false;
+  }
+}
+
 export function digestExists(projectRoot: string, runId: string, names: string[]): boolean {
   return names.some((name) => {
     try {
-      return fs.readFileSync(path.join(projectRoot, '.traffic-one', 'digests', safeRunId(runId), name), 'utf8').trim().length > 0;
+      return readRegularFileOrThrow(path.join(projectRoot, '.traffic-one', 'digests', safeRunId(runId), name)).trim().length > 0;
     } catch {
       return false;
     }

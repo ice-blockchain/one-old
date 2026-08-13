@@ -11,6 +11,7 @@ import {
 } from '../capabilities';
 import { readJson, writeJson } from '../fsjson';
 import { obj, type Rec } from '../obj';
+import { isNewProjectMode } from '../state/lifecycle';
 import { withProjectStateLock } from '../state/project-state-lock';
 
 import {
@@ -328,7 +329,14 @@ export function compileArchitecture(
   // from a project with commits, and seeds only missing-or-blank files. Adding a
   // second evidence gate here would instead make the contract itself disagree
   // with itself between runs as the tree fills in.
-  const isNewProject = obj(state)?.mode === 'new-project';
+  // Through the predicate, not the raw string. The guess is still a guess, but
+  // it has to be the SAME guess the gates make: a hand-edited ` New-Project `
+  // reads as scaffolded to every gate (`isNewProjectMode` normalizes case and
+  // whitespace) and read as existing-codebase here, which took 39 of 43 planned
+  // scaffold outputs out of the compiled contract while every deny stayed armed.
+  // `changedPaths` unions planned outputs, so that narrowed the authorization
+  // surface and the planned floors along with it.
+  const isNewProject = isNewProjectMode(state);
   const i18n = resolveArchitectureI18n(profile, input, isNewProject, selectedEntrypoints);
   const scaffoldOutputs = resolveInitialScaffoldOwners(profile, [
     ...(isNewProject ? frontendScaffoldOutputs(profile) : []),
@@ -392,6 +400,24 @@ export function compileArchitecture(
   if (runtimeOwnedOutput) {
     throw new Error(`compiled output ${runtimeOwnedOutput} is runtime/materializer-owned`);
   }
+  // A declared build output that CONTAINS a compiled source root or a compiled
+  // output is not a build output. It is a way to tell the structure scan that
+  // this project's own source is derived, which would turn the declaration into
+  // the laundering channel the scan's link accounting exists to catch. Refuse
+  // the contract rather than compile a declaration that disables an instrument.
+  const declaredBuildOutputs = [...new Set((input.buildOutputs || [])
+    .map((output) => normalizeRelative(output))
+    .filter((output): output is string => Boolean(output)))].sort();
+  const swallowedByDeclaration = declaredBuildOutputs.find((output) => (
+    [...compiledSourceRoots, ...allowedOutputs].some((owned) => (
+      owned === output || owned.startsWith(`${output}/`)
+    ))
+  ));
+  if (swallowedByDeclaration) {
+    throw new Error(
+      `declared build output ${swallowedByDeclaration} contains compiled source or a compiled output`,
+    );
+  }
   const withoutHash = {
     schemaVersion: COMPILED_ARCHITECTURE_SCHEMA_VERSION,
     runId,
@@ -404,6 +430,7 @@ export function compileArchitecture(
     modules,
     ...(uiPrimitives.length > 0 ? { uiPrimitives } : {}),
     ...(i18n ? { i18n } : {}),
+    ...(declaredBuildOutputs.length > 0 ? { buildOutputs: declaredBuildOutputs } : {}),
     scaffoldOutputs,
     allowedOutputs,
     exceptions: input.exceptions || [],

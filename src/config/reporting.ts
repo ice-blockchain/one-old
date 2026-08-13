@@ -104,6 +104,29 @@ export const SKIP_DIRS = new Set([
   '.claude', '.codex', '.cursor', '.devin', '.kilo', '.idea', '.vscode',
 ]);
 
+// The SKIP_DIRS names that are USUALLY derived and sometimes not. A repository
+// may hold authored code in `generated/` (checked-in codegen a human then
+// edits), in `out/` or `build/` (ordinary directory names in enough ecosystems
+// to have been argued over), and `dist` and `coverage` are one `git add` away
+// from the same thing. `node_modules`, `.git`, `vendor` and the tool caches are
+// NOT here: nothing in them is this project's authored source however git is
+// configured, so a visible path under one of those is never worth reporting.
+//
+// Read by `nameSkippedProjectSource`, which is the only project-input test the
+// static name sets have. Keep it a strict subset of SKIP_DIRS.
+export const AMBIGUOUS_SKIP_DIRS: ReadonlySet<string> = new Set([
+  '__generated__', '_build', 'build', 'coverage', 'dist', 'generated', 'obj', 'out', 'target',
+]);
+
+// Extensions that carry AUTHORED behavior — the ones whose silent disappearance
+// from a diff can delete a real finding. Deliberately much narrower than
+// `ONE_MCP_REPORTED_FILE_EXTENSIONS`: `json`, `md` and `txt` are excluded
+// because a build writes hundreds of those and a `test-results/.last-run.json`
+// appearing after capture already deadlocked one green run.
+export const AUTHORED_SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
+  'astro', 'cjs', 'js', 'jsx', 'mjs', 'svelte', 'ts', 'tsx', 'vue',
+]);
+
 // OS/editor droppings. Noise for every consumer, git included.
 export const SKIP_OS_FILES = new Set([
   '.DS_Store', 'Thumbs.db',

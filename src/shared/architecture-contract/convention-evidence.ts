@@ -54,6 +54,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 /**
  * One linter/formatter slot. A slot, not a tool: what matters is whether the
@@ -228,7 +229,7 @@ const SOURCE_SCAN_SKIPPED_DIRS = new Set<string>([
 /** Non-blank content at `rel`, or null. Blank is "nothing stated", never a declaration. */
 function statedContent(dir: string, rel: string): string | null {
   try {
-    const body = fs.readFileSync(path.join(dir, rel), 'utf8');
+    const body = readRegularFileOrThrow(path.join(dir, rel));
     return body.trim().length > 0 ? body : null;
   } catch {
     return null; // absent, or unreadable from here — states nothing

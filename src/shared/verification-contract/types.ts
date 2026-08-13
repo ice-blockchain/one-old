@@ -72,6 +72,35 @@ export interface VerificationContractV2 {
   uiImpact: UiImpact;
   uiImpactSource: 'runtime' | 'agent-raised';
   uiImpactReason?: string;
+  /**
+   * PROVENANCE, not value: true when `uiImpact` is the truncated-scan floor
+   * ASSERTED FROM IGNORANCE rather than a number any evidence produced.
+   *
+   * The ratchet exemption in plan-readiness/contracts.ts is keyed on this and
+   * cannot be keyed on anything cheaper. Its predecessor test was
+   * `previous.uiImpact === truncatedScanUiImpactFloor(profile)`, which for a web
+   * profile compares `visual` against `visual` — the floor's value and the
+   * commonest EARNED value are the same string, so an honest run that read
+   * `visual` off a stylesheet was granted the withdrawal a truncated run is
+   * owed, and shed real evidence with it.
+   *
+   * Absent on contracts published before this field existed, which reads as
+   * `false` and gives them the unconditional ratchet: the fail-closed direction.
+   */
+  uiImpactPinned?: boolean;
+  /**
+   * What the same evidence would have produced with no truncation floor, and so
+   * exactly how far the exemption may forgive. Published only when
+   * `uiImpactPinned` is true.
+   *
+   * Without it the exemption forgave the WHOLE `impactWeakened` disjunction,
+   * including the part the agent's own edits caused between the two contracts:
+   * a predecessor pinned to `visual` over `behavioral` evidence could be
+   * succeeded by `nonvisual` and nothing refused, because a pin was in the
+   * neighbourhood. The pin is entitled to withdraw the distance it invented and
+   * no further.
+   */
+  unpinnedUiImpact?: UiImpact;
   changedPaths: string[];
   // Additive honesty split (1.0.37): changedPaths is the AUTHORIZATION union
   // (observed diff + every compiled output) and stays load-bearing for the
@@ -106,12 +135,59 @@ export interface VerificationCompileOptions {
   changedPaths?: string[];
   scanComplete?: boolean;
   scanReason?: string;
+  /**
+   * A BOUNDED scan other than the baseline diff hit its hard bound during this
+   * run: the structure walk's file cap, or COLLAPSE_MAX_FILES. It raises the
+   * `uiImpact` floor exactly as an incomplete diff does, and it is a separate
+   * input on purpose.
+   *
+   * Folding it into `scanComplete` would have been one line shorter and wrong.
+   * `scanComplete: false` is a DEAD END: validateQaReportV2 rejects such a
+   * contract outright (`scan-incomplete`), so a run that merely walked past a
+   * generated tree too large to judge could never be certified at all. That
+   * converts a legible early deny into an unexplained QA rejection paid for
+   * after the whole implementation. `scanComplete` stays tied to the baseline
+   * diff; the floor gets its own input.
+   */
+  boundedScanTruncated?: boolean;
 }
 
 export interface ChangedPathSnapshot {
   paths: string[];
   complete: boolean;
   reason?: string;
+}
+
+/**
+ * The one incompleteness reason on this surface that names a gap the run cannot
+ * close and does not have to: authored source Git declines to ignore, sitting
+ * under a directory whose NAME the compile-time skip sets read as derived
+ * (`nameSkippedProjectSource`).
+ *
+ * Every other reason a diff comes back incomplete describes a scan that could
+ * not be trusted to have LOOKED — a symlink it refused to follow, a file cap it
+ * hit, an ignore authority that moved under it. This one describes a scan that
+ * looked, finished, and can name exactly what it stepped over, which is why it
+ * is the one a consumer can honestly proceed on if it repeats the name.
+ *
+ * A MARKER inside the prose rather than a field beside it, for the same reason
+ * `CHECK_INCONCLUSIVE_PREFIX` is one: the reason travels through
+ * `VerificationContractV2.scanReason`, a persisted string, so a classification
+ * carried alongside would be lost on the round trip through disk and the two
+ * would then be free to disagree. It is the TAIL of the sentence, not the head,
+ * so a contract compiled by a runtime that worded the subject differently is
+ * still classified correctly on re-read.
+ */
+export const SKIP_NAME_DISCLOSURE_MARKER = 'hidden from the diff by a skipped directory name:';
+
+/**
+ * The incompleteness reason, when it is the disclosable one — otherwise null.
+ *
+ * Fail-closed by construction: anything this does not recognise stays fatal, so
+ * a reason added later is refused until somebody decides it is disclosable.
+ */
+export function skipNameDisclosure(reason: string | undefined): string | null {
+  return reason && reason.includes(SKIP_NAME_DISCLOSURE_MARKER) ? reason : null;
 }
 
 // Path-skip authority lives in architecture-contract (`isScanSkippedPath`) so

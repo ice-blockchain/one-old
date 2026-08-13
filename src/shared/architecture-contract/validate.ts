@@ -45,7 +45,9 @@ function validateExceptionRequest(request: ArchitectureExceptionRequestV1): stri
   return errors;
 }
 
-const ARCHITECTURE_INPUT_KEYS = new Set(['schemaVersion', 'routes', 'modules', 'i18n', 'uiPrimitives', 'exceptions']);
+const ARCHITECTURE_INPUT_KEYS = new Set([
+  'schemaVersion', 'routes', 'modules', 'i18n', 'uiPrimitives', 'buildOutputs', 'exceptions',
+]);
 const ARCHITECTURE_MODULE_KEYS = new Set(['id', 'name', 'kind', 'placement']);
 const ARCHITECTURE_ROUTE_KEYS = new Set(['id', 'path', 'moduleId', 'redirect']);
 const ARCHITECTURE_EXCEPTION_KEYS = new Set(['ruleId', 'glob', 'reason']);
@@ -92,6 +94,27 @@ export function validateArchitectureInput(input: unknown): ArchitectureValidatio
     const normalized = typeof primitive === 'string' ? primitive.trim() : '';
     if (!UI_PRIMITIVE_RE.test(normalized) || normalized.length > 64) {
       errors.push(`uiPrimitives[${index}] is invalid (expected a safe kebab-case shadcn CLI identifier, max 64 chars)`);
+    }
+  }
+
+  // A declared build output is read by the structure scan as a reason NOT to
+  // record a skip, so its shape is checked here rather than trusted: an absolute
+  // path, a `..` segment or a glob would let one declaration answer for a tree
+  // the project does not own.
+  if (raw.buildOutputs !== undefined && !Array.isArray(raw.buildOutputs)) {
+    errors.push('buildOutputs must be an array when provided');
+  }
+  const buildOutputs = Array.isArray(raw.buildOutputs) ? raw.buildOutputs : [];
+  for (const [index, output] of buildOutputs.entries()) {
+    const normalized = typeof output === 'string' ? output.trim().replace(/\\/g, '/') : '';
+    const invalid = !normalized
+      || normalized.length > 200
+      || normalized.startsWith('/')
+      || /^[A-Za-z]:/.test(normalized)
+      || normalized.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+      || /[*?[\]]/.test(normalized);
+    if (invalid) {
+      errors.push(`buildOutputs[${index}] is invalid (expected a relative project directory, no globs and no ..)`);
     }
   }
 

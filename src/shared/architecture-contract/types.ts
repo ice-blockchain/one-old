@@ -63,6 +63,19 @@ export interface ArchitectureInputV1 {
   modules: ArchitectureModuleInputV1[];
   i18n?: ArchitectureI18nInputV1;
   uiPrimitives?: string[];
+  /**
+   * Directories this project DECLARES to be toolchain build output, relative to
+   * the project root. Read by the structure scan: a symbolic link whose target
+   * resolves under one of these is a no-loss by declaration rather than a guess
+   * from a directory name, so it costs no coverage.
+   *
+   * The declaration is frozen into `contractHash` with everything else, which
+   * is what makes it unlaunderable mid-run; the compiler additionally refuses a
+   * declaration that would swallow a compiled source root or a compiled output,
+   * because those are the two shapes that would turn this into a way to hide
+   * source from the scan.
+   */
+  buildOutputs?: string[];
   exceptions?: ArchitectureExceptionRequestV1[];
 }
 
@@ -75,6 +88,17 @@ export interface ArchitectureBaselineV1 {
   files?: Array<{ path: string; hash: string }>;
   /** Immutable non-Git directory evidence, including empty framework roots. */
   directories?: string[];
+  /**
+   * Digest of every ignore rule in force at capture time — every `.gitignore`
+   * in the worktree, `.git/info/exclude`, and `core.excludesFile`.
+   *
+   * The half of the diff's skip authority the project can MOVE. Both baselines
+   * are captured under the rules in force at capture and both diffs are taken
+   * under the rules in force now, and without this field nothing pinned the two
+   * together. Optional on read: a baseline captured before the field, or in a
+   * project where git cannot answer, pins nothing and behaves exactly as it did.
+   */
+  ignoreRules?: string;
 }
 
 export interface ArchitectureRunSnapshotV1 {
@@ -166,6 +190,12 @@ export interface CompiledArchitectureV1 {
   uiPrimitives?: string[];
   /** Resolved only for UI projects whose run owns or explicitly declares i18n. */
   i18n?: CompiledI18nContractV1;
+  /**
+   * Normalized `ArchitectureInputV1.buildOutputs`. Optional on read so contracts
+   * compiled before the field remain parseable; absent means "declared nothing",
+   * which is the same answer the scan gave before the field existed.
+   */
+  buildOutputs?: string[];
   /**
    * Runtime-derived scaffold/test outputs. Optional on read so v1.0.19
    * sidecars remain ignorable/parseable; every newly compiled contract emits

@@ -3,12 +3,18 @@
 // artifact deletability, context-alias links, and snapshot/baseline IO.
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import {
   type CapabilityProfileV1,
 } from '../capabilities';
-import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
+import {
+  AMBIGUOUS_SKIP_DIRS,
+  AUTHORED_SOURCE_EXTENSIONS,
+  SKIP_DIRS,
+  SKIP_FILES,
+} from '../../config/reporting';
 import { readJson } from '../fsjson';
 import { sha256 } from '../text';
 
@@ -30,6 +36,7 @@ import {
 import {
   moduleOutputVariants,
 } from './naming';
+import { readRegularBytesOrThrow, readRegularFileOrThrow } from '../bounded-read';
 
 export function baselinePathSet(
   projectRoot: string,
@@ -142,7 +149,7 @@ function findGitDir(projectRoot: string): string | null {
       const stat = fs.statSync(dotGit);
       if (stat.isDirectory()) return dotGit;
       if (stat.isFile()) {
-        const match = /^gitdir:\s*(.+)\s*$/m.exec(fs.readFileSync(dotGit, 'utf8'));
+        const match = /^gitdir:\s*(.+)\s*$/m.exec(readRegularFileOrThrow(dotGit));
         if (match?.[1]) return path.resolve(cursor, match[1]);
       }
     } catch {
@@ -158,16 +165,16 @@ function gitHead(projectRoot: string): string | null {
   const gitDir = findGitDir(projectRoot);
   if (!gitDir) return null;
   try {
-    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    const head = readRegularFileOrThrow(path.join(gitDir, 'HEAD')).trim();
     if (/^[a-f0-9]{40,64}$/i.test(head)) return head.toLowerCase();
     const ref = /^ref:\s+(.+)$/.exec(head)?.[1];
     if (!ref) return null;
     const direct = path.join(gitDir, ref);
     try {
-      const value = fs.readFileSync(direct, 'utf8').trim();
+      const value = readRegularFileOrThrow(direct).trim();
       if (/^[a-f0-9]{40,64}$/i.test(value)) return value.toLowerCase();
     } catch {
-      const packed = fs.readFileSync(path.join(gitDir, 'packed-refs'), 'utf8');
+      const packed = readRegularFileOrThrow(path.join(gitDir, 'packed-refs'));
       const line = packed.split(/\r?\n/).find((entry) => entry.endsWith(` ${ref}`));
       const value = line?.split(' ')[0] || '';
       if (/^[a-f0-9]{40,64}$/i.test(value)) return value.toLowerCase();
@@ -279,6 +286,154 @@ export function scanSkipPredicate(projectRoot: string): (relativePath: string) =
       probe = probe.slice(0, cut);
     }
   };
+}
+
+function fileContentHash(fullPath: string): string | null {
+  try { return sha256(readRegularBytesOrThrow(fullPath).toString('base64')); } catch { return null; }
+}
+
+function gitConfigValue(projectRoot: string, key: string): string | null {
+  try {
+    return execFileSync('git', ['-C', projectRoot, 'config', '--get', key], {
+      encoding: 'utf8',
+      timeout: 3_000,
+      maxBuffer: 64 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A digest of every ignore rule in force, or null when Git cannot answer.
+ *
+ * This pins the half of the skip authority the project can MOVE, and it is the
+ * field `verification-contract/git.ts` said it needed. The previous compensation
+ * keyed on an ignore-rule file appearing among the CHANGED PATHS, which a
+ * `.gitignore` listing `.gitignore` walks straight through: git stops reporting
+ * the file, the file-manifest walk stops seeing it, and the rule it added goes
+ * unmentioned by both sides. Reading the rules directly cannot be defeated that
+ * way, because a file that hides itself from git is still a file on disk.
+ *
+ * What is digested is the RULES, not their effect. Digesting the ignored SET —
+ * `git ls-files --others --ignored` — would move the moment a build wrote its
+ * first artifact, so it would report "the authority moved" on every run that
+ * compiled anything and the fail-closed floor would be permanently on.
+ *
+ * The `.gitignore` files are found from Git's own two listings rather than by
+ * walking: every directory holding a visible path, plus every directory holding
+ * an ignored one, which together cover every rule file that can hide anything
+ * reachable. A `.gitignore` inside a wholly ignored directory is not read, and
+ * it cannot matter — everything below it is already ignored by the rule that
+ * collapsed the parent.
+ *
+ * `.git/info/exclude` and `core.excludesFile` are included here. They were
+ * disclosed as permanently unreportable when the authority was inferred from
+ * the changed paths, which was true of THAT instrument and is not true of this
+ * one: neither is a tracked file, and neither needs to be to be read.
+ */
+export function ignoreRuleDigest(projectRoot: string): string | null {
+  const visible = gitPaths(projectRoot, ['--cached', '--others', '--exclude-standard']);
+  if (!visible) return null;
+  const ignored = gitPaths(projectRoot, ['--others', '--ignored', '--exclude-standard', '--directory']) || [];
+  const directories = new Set<string>(['']);
+  for (const entry of [...visible, ...ignored]) {
+    for (let cut = entry.lastIndexOf('/'); cut > 0; cut = entry.lastIndexOf('/', cut - 1)) {
+      directories.add(entry.slice(0, cut));
+    }
+  }
+  const rows: string[] = [];
+  for (const directory of [...directories].sort()) {
+    const rel = directory ? `${directory}/.gitignore` : '.gitignore';
+    const hash = fileContentHash(path.join(projectRoot, rel));
+    if (hash) rows.push(`${rel}:${hash}`);
+  }
+  const gitDir = findGitDir(projectRoot);
+  if (gitDir) {
+    const hash = fileContentHash(path.join(gitDir, 'info', 'exclude'));
+    if (hash) rows.push(`.git/info/exclude:${hash}`);
+  }
+  const configured = gitConfigValue(projectRoot, 'core.excludesFile');
+  if (configured) {
+    const resolved = configured.startsWith('~')
+      ? path.join(os.homedir(), configured.slice(1))
+      : path.resolve(projectRoot, configured);
+    // An unreadable configured file is still a moved authority the moment the
+    // setting itself appears or disappears, so the row is emitted either way.
+    rows.push(`core.excludesFile:${fileContentHash(resolved) || 'unreadable'}`);
+  }
+  return contractHash({ ignoreRules: rows });
+}
+
+/**
+ * Paths this project's own Git configuration makes visible that the STATIC name
+ * sets hide anyway — authored code under a directory called `generated`,
+ * `dist`, `out`, `build` or `coverage`.
+ *
+ * "Makes visible" is `--cached --others --exclude-standard`: TRACKED, plus
+ * untracked-and-not-ignored. Not the index alone, and the second half is the
+ * half that matters — the exploit below requires no commit, and this module's
+ * own closure test plants its files without ever running `git add`. Narrowing
+ * the probe to `--cached` would turn that test green while deleting the defence
+ * it is named for.
+ *
+ * This is the other half of the skip authority, and it is the half no diff
+ * could report before, because `isScanSkippedPath` is a compile-time constant
+ * with no project input to test against. Git supplies the input. Five new
+ * `.tsx` under `apps/web/generated/` are invisible to BOTH sides of every diff
+ * — `boundedGitPaths` drops them at the name filter and the file-manifest walk
+ * never lists them — so the changed set is EMPTY and reports `complete: true`.
+ * Nothing in the run had to act for that: naming a directory `generated` is
+ * enough.
+ *
+ * The narrowing is what keeps it quiet. A project that gitignores its build
+ * output has nothing here, because git does not make those paths visible. Only
+ * the ambiguous names are consulted (`node_modules` is never authored source
+ * however it is tracked), only authored-code extensions count (a lockfile is a
+ * SKIP_FILE, tracked on purpose, and a `test-results/.last-run.json` deadlocked
+ * settlement once already), and the answer raises the truncated-scan floor
+ * rather than adding changed paths, which is what keeps a project that commits
+ * its `dist` out of the "changed paths outside the frozen authority" deadlock.
+ *
+ * It is quiet, NOT rare, and the difference was measured. `ensureProjectGitignore`
+ * deliberately withholds build-output opinions from a repository with history
+ * (its own test: "never imposes the build-output opinions on a repository with
+ * history, whatever detectMode says"), so on an existing project this runtime
+ * declines to add the `dist/` line and then meets whatever the run's own
+ * `npm run build` leaves behind — measured on two `test:env --strict`
+ * scenarios, where a Vite build wrote an un-ignored, untracked
+ * `dist/assets/app-<hash>.js` and this function reported it, correctly.
+ *
+ * Which is why the CONSUMER decides what that costs. This function's job ends
+ * at naming the file; a caller that turns the name into a total refusal is
+ * refusing a run for something the run itself created, and
+ * `currentVerificationSourceHash` no longer does (see
+ * `SKIP_NAME_DISCLOSURE_MARKER`).
+ */
+export function nameSkippedProjectSource(projectRoot: string, limit = 3): string[] {
+  const visible = gitPaths(projectRoot, ['--cached', '--others', '--exclude-standard']);
+  if (!visible) return [];
+  const found: string[] = [];
+  for (const entry of visible) {
+    if (found.length >= limit) break;
+    if (hiddenByAmbiguousDirectoryName(entry)) found.push(entry);
+  }
+  return found;
+}
+
+function hiddenByAmbiguousDirectoryName(relativePath: string): boolean {
+  const segments = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (segments.length < 2) return false;
+  const name = segments[segments.length - 1]!;
+  if (SKIP_FILES.has(name)) return false;
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || !AUTHORED_SOURCE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())) return false;
+  const directories = segments.slice(0, -1);
+  // A dependency or cache directory settles it on its own: nothing under
+  // `node_modules` is this project's authored source, whatever git tracks.
+  if (directories.some((segment) => SKIP_DIRS.has(segment) && !AMBIGUOUS_SKIP_DIRS.has(segment))) return false;
+  return directories.some((segment) => AMBIGUOUS_SKIP_DIRS.has(segment));
 }
 
 const CONTEXT_ALIAS_PATH = 'CLAUDE.md';
@@ -397,7 +552,7 @@ function fileManifestBaseline(projectRoot: string, roots: string[]): Architectur
         throw new Error(`baseline scan exceeds ${ARCHITECTURE_SCAN_MAX_FILES} files`);
       }
       let bytes: Buffer;
-      try { bytes = fs.readFileSync(full); } catch {
+      try { bytes = readRegularBytesOrThrow(full); } catch {
         throw new Error(`baseline cannot read ${rel}`);
       }
       rows.push([rel, sha256(bytes.toString('base64'))]);
@@ -422,13 +577,18 @@ export function captureArchitectureBaseline(
   _profile: CapabilityProfileV1,
   capturedAt = new Date().toISOString(),
 ): ArchitectureBaselineV1 {
+  // Pinned on BOTH kinds: the git branch asks git with `--exclude-standard` and
+  // the file-manifest branch applies the same rules through `scanSkipPredicate`,
+  // so the authority moves under either one.
+  const ignoreRules = ignoreRuleDigest(projectRoot);
+  const pinned = ignoreRules ? { ignoreRules } : {};
   const head = gitHead(projectRoot);
-  if (head) return { kind: 'git-head', identity: `git:${head}`, capturedAt };
+  if (head) return { kind: 'git-head', identity: `git:${head}`, capturedAt, ...pinned };
   // A non-Git baseline covers the project, not only the currently detected
   // source roots. Otherwise an agent could create a new root before contract
   // compilation and have it silently treated as pre-existing debt.
   const baseline = fileManifestBaseline(projectRoot, ['.']);
-  return { ...baseline, capturedAt };
+  return { ...baseline, capturedAt, ...pinned };
 }
 
 export function architectureRunSnapshotPath(projectRoot: string, runId: string): string {
