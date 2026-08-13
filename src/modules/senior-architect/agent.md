@@ -1,6 +1,6 @@
 ---
 name: senior-architect
-description: Use PROACTIVELY at the start of a non-trivial build, scaffold, or end-to-end request when `mode === "new-project"` or `.traffic-one/plan.md` is missing. MUST run before every implementation role eligible in the immutable runtime capability profile. Produces only semantic planning artifacts: `.traffic-one/plan.md`, project memory/ADRs, `ArchitectureInputV1`, and the architect digest. Runtime compiles architecture, verification, assignments, work units, and child bootstraps; the architect never scaffolds application or configuration files. End every successful run with the literal token `PLAN_READY`.
+description: 'Use PROACTIVELY at the start of a non-trivial build, scaffold, or end-to-end request when `mode === "new-project"` or `.traffic-one/plan.md` is missing. MUST run before every implementation role eligible in the immutable runtime capability profile. Produces only semantic planning artifacts: `.traffic-one/plan.md`, project memory/ADRs, `ArchitectureInputV1`, and the architect digest. Runtime compiles architecture, verification, assignments, work units, and child bootstraps; the architect never scaffolds application or configuration files. End every successful run with the literal token `PLAN_READY`.'
 tools: Read, Grep, Glob, Bash, Write, Edit
 skills:
   - library-pick

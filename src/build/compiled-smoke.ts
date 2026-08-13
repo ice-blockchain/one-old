@@ -697,9 +697,12 @@ async function main(): Promise<void> {
         );
         if (!consumed?.consumedAtMs) fail(`compiled cursor fixture did not finalize ${item.role}'s failure`);
       }
-      // Read back off DISK, not from the calls above: every one of those returns
-      // its in-memory row whether or not the store was actually persisted, which
-      // is precisely how a refused write reads as a successful one.
+      // Read back off DISK, not from the calls above. Those four now answer null
+      // on a refused store publish (cursor-observations.ts), so the `if (!…) fail`
+      // guards above are a refusal check as well — but they are a check made by
+      // the caller's own return value, and this asks the only question that
+      // cannot be answered from one: is the ledger the compiled runtime built
+      // actually on the filesystem?
       if (!fs.existsSync(cursorSpawnsFile)) fail('compiled cursor fixture persisted no cursor-spawns.json');
       const beforeLifecycle = compiledCursorState.listCursorSpawnObservations(cursorProject, cursorRunId);
       if (beforeLifecycle.length !== 2

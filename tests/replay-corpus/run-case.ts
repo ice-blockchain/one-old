@@ -100,11 +100,28 @@ export interface ReplayOutcome {
   readonly denyTarget: string;
 }
 
-// Verbatim copy of core/pipeline.ts's private decisionKind — see that file's
-// header for why 'deny' always wins and every other event's non-deny outcome
-// is 'context'/'noop' rather than a fabricated 'allow'.
+/**
+ * Near-verbatim copy of core/pipeline.ts's private decisionKind — see that
+ * file's header for why 'deny' always wins and every other event's non-deny
+ * outcome is 'context'/'noop' rather than a fabricated 'allow'.
+ *
+ * ONE deliberate divergence, and it is the difference between this corpus
+ * characterizing behaviour and characterizing nothing. The pipeline collapses
+ * every non-deny PreToolUse outcome to 'allow' because that is the answer the
+ * HOST needs. Here it made a `context` result and a `noop` byte-identical
+ * rows — and `context` is how every advisory in the plugin reaches the agent.
+ * Confirmed by neutering `advisory()` to return `[]`: the snapshot did not
+ * move and `replay.test.ts` stayed 4/4 green, so the corpus could not tell a
+ * plugin that advises from one that says nothing at all.
+ *
+ * Testing `context` FIRST keeps the deny ordering intact and separates the two.
+ * Deliberately a token and not a content shape: `mergeResults` drops per-handler
+ * ids on context results, so there is nothing stable to key on, and the payloads
+ * carry mkdtemp roots that would re-break determinism.
+ */
 function decisionKind(event: CanonicalEvent, result: { kind: string }): ReplayOutcome['decision'] {
   if (result.kind === 'deny') return 'deny';
+  if (result.kind === 'context') return 'context';
   if (event === 'PreToolUse') return 'allow';
   return result.kind === 'noop' ? 'noop' : 'context';
 }

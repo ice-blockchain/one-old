@@ -245,5 +245,8 @@ those lines, but somebody should know why they are there.
   user approval in this turn.
 - Never modify `.traffic-one/.one.json` directly from this skill; route field
   changes through onboarding (`rules/common/onboarding.md`).
-- Never delete `.traffic-one/.gitnexus/`, `.traffic-one/backups/`, or any project file.
+- Never delete `.traffic-one/.gitnexus/`, `.traffic-one/backups/`, or any project
+  file. (`.traffic-one/backups/` is capped by the retention policy's `backupKeep`
+  on every bootstrap, so it does shrink on its own — that is the runtime's
+  policy, not an invitation for this skill to prune it.)
 - Never share the user's filesystem layout to a remote endpoint.

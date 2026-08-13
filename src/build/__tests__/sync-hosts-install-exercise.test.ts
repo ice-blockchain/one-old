@@ -1,9 +1,10 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { trackedTempDirs, withPrivateTmpdir } from '../../test-support/__tests__/temp-dirs';
 import {
   exerciseBaseEnv,
   exerciseInstalledRuntime,
@@ -15,6 +16,9 @@ import {
 import { makeStubInstall } from './fixtures/stub-install';
 
 const VERSION = '9.9.9';
+
+const dirs = trackedTempDirs('t1-sync-exercise-test-');
+after(() => { dirs.cleanup(); });
 
 function writePackageVersion(root: string, version: string): void {
   fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({ name: 'traffic-one', version })}\n`, 'utf8');
@@ -63,18 +67,26 @@ test('firstInstalledRoot picks the candidate that is really an install, and answ
 
 test('a bundle that dispatches verifies, and leaves no scratch tree and no machine state behind', () => {
   const install = makeStubInstall('dispatching bundle');
-  const canary = fs.mkdtempSync(path.join(os.tmpdir(), 't1-canary-home-'));
-  const strays = (): string[] => fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('t1-sync-exercise-'));
-  const before = strays();
+  const canary = dirs.make();
   try {
-    // A base carrying the exact ambient state a maintainer's shell would have.
-    // It must not reach the children, and nothing must land in `canary`.
-    const result = exerciseInstalledRuntime('claude', install.root, { HOME: canary, TRAFFIC_ONE_AUTH: 'off' });
-    assert.deepEqual(result, { state: 'verified' });
-    assert.deepEqual(fs.readdirSync(canary), [], 'the verification wrote into the ambient HOME');
-    assert.deepEqual(strays(), before, 'the exercise left its scratch tree behind');
+    // The scratch tree belongs to exerciseInstalledRuntime, not to this test, so
+    // the ownership record the tracker keeps for its own fixtures is not
+    // available here. What replaces it is a temp directory only this call can
+    // reach: `withPrivateTmpdir` points `os.tmpdir()` at one for the duration,
+    // so anything found in it afterwards was put there by the call. The
+    // before/after listing of the REAL temp directory that used to stand here
+    // was the racy shape this file's neighbours were migrated off — a
+    // concurrent run of this file creates a `t1-sync-exercise-` directory
+    // between the two listings and is reported as this run's leak — and it was
+    // also weaker, because it only ever looked for that one name.
+    withPrivateTmpdir(dirs, () => {
+      // A base carrying the exact ambient state a maintainer's shell would have.
+      // It must not reach the children, and nothing must land in `canary`.
+      const result = exerciseInstalledRuntime('claude', install.root, { HOME: canary, TRAFFIC_ONE_AUTH: 'off' });
+      assert.deepEqual(result, { state: 'verified' });
+      assert.deepEqual(fs.readdirSync(canary), [], 'the verification wrote into the ambient HOME');
+    });
   } finally {
-    fs.rmSync(canary, { recursive: true, force: true });
     install.cleanup();
   }
 });

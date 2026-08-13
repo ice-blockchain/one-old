@@ -47,6 +47,18 @@ export function parseScalar(value: unknown): string {
     const decoded = JSON.parse(cleaned);
     return typeof decoded === 'string' ? decoded : cleaned;
   } catch {
+    // A YAML single-quoted scalar escapes its own quote by DOUBLING it, so
+    // stripping the outer pair is only half the job: `'Traffic One''s /deploy'`
+    // has to resolve to `Traffic One's /deploy`, and stripping alone shipped the
+    // doubling into every emitted description. Found by driving the seven role
+    // docs through a conformant parser and comparing
+    // (src/test-support/__tests__/agent-frontmatter-oracle.test.ts) — the
+    // apostrophe arrived in senior-shipper's frontmatter as the correct fix for
+    // an unrelated YAML error, and this scanner then read a value no YAML
+    // consumer would agree with.
+    if (cleaned.length >= 2 && cleaned.startsWith("'") && cleaned.endsWith("'")) {
+      return cleaned.slice(1, -1).replace(/''/g, "'");
+    }
     return cleaned.replace(/^["']|["']$/g, '');
   }
 }

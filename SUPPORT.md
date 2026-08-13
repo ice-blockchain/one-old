@@ -79,6 +79,79 @@ project state points at, which is the live one.
 that no longer exists. That is a genuine wedge with a genuine fix, and the
 finding says so.
 
+**A `failed` run in the report is the other genuine wedge**, and the only one
+with no way out from inside the run itself. `failed` is terminal in the
+strictest sense the ledger has: nothing transitions out of it, not even the
+authorized resume that reopens a `blocked` run. So a project whose
+`currentRunId` still names a failed run can do nothing at all — no role binds a
+claim, no spawn starts — and the fastest way in is the command that ends a run,
+`run-status.cjs --run-id <id> --status failed`.
+
+One command gets a project out of it:
+
+```
+node ~/.traffic-one/bin/traffic-one-reset.cjs --run-id <id>
+```
+
+Like plain `doctor`, that exact spelling is admitted by the gates, so you can
+run it inside the stuck session. That is the whole point: a wedged project is
+precisely where you cannot get past a gate to fix anything.
+
+**If the gate refuses it,** the file at that path was written by a different
+installed plugin version. `~/.traffic-one/bin` is user-scoped and shared by
+every version you have installed, and the gate admits that shim only while it
+byte-matches the version that is running — so on a machine with two versions
+installed it belongs to whichever one started a session last. Either fix is
+cheap: start a new session and run it again, because session start rewrites the
+shim for the version you are running; or run it in your own terminal outside any
+agent session, where no hook fires and nothing is gated. The runner itself is
+the same either way — only the spelling's admission changes.
+
+It retires the failed run and mints a fresh planned one in a single transaction
+under the project state lock — `currentRunId` moves to the successor, the
+retired run's agent claims and per-file locks are released, and the next spawn
+starts normally. Pass the wedged run's id, the one `doctor` prints.
+
+**Nothing is deleted and nothing is rewritten.** The failed run keeps its
+`run.json` byte for byte, along with its directory, its digests and its QA
+evidence; only the pointer moves. No writer in the product reopens a terminal
+settlement, so the recovery is a retirement rather than a re-opening. That is a
+rule the code keeps rather than a property of the file — `settlementHash` is an
+unkeyed digest, so anything able to write the tree can produce a record this
+parser accepts in any status it likes. This command neither raises that floor
+nor relies on it.
+
+**It is not a way to clear a limit you have hit.** Gate state that exists to
+stop a loop travels with you: the repeat-deny ladder that tells an agent to stop
+retrying and report `BLOCKED`, the per-role exploration tallies, the models
+condemned by a rate limit, the live-agent registry behind "this reviewer may not
+be the agent that wrote the code", and a build pause that is waiting on your
+answer — all carried onto the successor run rather than left behind with the
+retired one. State that only describes the finished run — its frozen model
+policy, its bootstrap envelopes, its compiled contract — does reset, because
+keeping it would refuse the recovered project the first spawn it needs.
+
+Every reset is appended to `.traffic-one/runs/.resets.json`, and that record is
+read: **from the third reset onward the carry widens.** A role that had already
+exhausted every model it could rotate to keeps that verdict on the successor, so
+recovering again is still possible but no longer free — the way out of it is the
+same enable/retry answer the model question always asks you for, not another
+reset.
+
+It refuses anything that is not that exact situation: a run that is not the
+project's current one, a run that is `planned`, `active` or `blocked` (a blocked
+run resumes with `run-status.cjs --run-id <id> --status active --reason
+user-authorized-extra-cycle`, which costs your explicit authorization), or a run
+whose ledger cannot be read. It also refuses, by name, when
+`.traffic-one/.one.json` is itself unparseable — then your state file is what is
+broken rather than your run, and no run command repairs that.
+
+**It does not clear an override-evidence refusal.** If `doctor` reports
+`OVERRIDE_EVIDENCE_INCOMPLETE`, or settlement refuses with a reason starting
+`override-`, nothing is wedged and this is not the repair: reset will either
+refuse (the run is not `failed`) or retire the run and mint a successor that
+cannot certify either. See *nothing can settle as verified* below.
+
 ---
 
 ## Symptom: hooks are not running at all
@@ -149,8 +222,41 @@ node ~/.traffic-one/bin/doctor.cjs --unblock <gateId> --run <runId> [--ttl 30m]
 
 **It will refuse unless you are at a real terminal.** Both stdin and stdout must
 be TTYs, and it prints a six-hex-digit nonce that you type back. There is no
-`--yes`, no environment variable, and no test-only bypass. This is what stops an
-agent minting its own override, and it is not configurable.
+`--yes`, no environment variable, and no test-only bypass.
+
+Treat that as a speed bump rather than a wall: a program that allocates a
+pseudo-terminal satisfies both checks and can read the nonce back off it. What
+protects you is what a mint leaves behind — an audit line naming who minted it,
+and a run that can never settle as verified or shipped.
+
+That record is checked for completeness, so the obvious ways of unpicking it do
+not work: deleting the audit file, deleting the whole per-project folder under
+`~/.traffic-one/overrides/`, or duplicating a signed line to keep the count up
+all leave a project that can no longer certify anything. **It is not airtight,
+and the limits are worth knowing rather than guessing at.** These are measured,
+not assumed, and they are the whole list:
+
+- editing the machine-wide `~/.traffic-one/one.json` — deleting this project's
+  mint counter, corrupting the file, or restoring a copy taken before the
+  mint — still reaches a clean verdict for a mint that has already happened. What
+  it can no longer do is buy *future* free mints: a settings file that will not
+  accept a write refuses the next `--unblock` outright and `doctor` reports the
+  counter as unusable, so the freeze is loud rather than silent;
+- pointing the machine-state directory (`XDG_STATE_HOME`) at a copy of itself
+  with the override folder removed. Nothing is deleted and every witness reads an
+  empty store;
+- settling under a different **case-spelling** of the project directory. On a
+  case-insensitive filesystem `/x/Proj` and `/x/proj` are one directory with two
+  override folders, and the second is empty — no deletion, no environment
+  variable, no key. Cheaper than the two above. It depends on who supplies the
+  working directory to settlement, and whether an agent inside a session can
+  change that was probed and **not** established;
+- `rm -rf ~/.traffic-one`, key included. Afterwards there is nothing to have
+  signed anything.
+
+The audit trail is a deterrent and a record, not a vault; if you need a guarantee
+that no gate was ever relaxed, take it from a machine the person you are asking
+about does not administer.
 
 **Unlike every other `doctor` invocation, this one is not gate-exempt.** The
 grammar that lets a stuck session diagnose itself deliberately does not admit
@@ -164,6 +270,17 @@ terminal and run it there.
 - every refusal that gate made is on the never-overridable list in
   `config/deny-ids.ts`. Those cannot be lifted by any override. Fix the cause, or
   settle the run and start a new one;
+- the run has already settled `verified`. The whole cost below — that the run can
+  never settle as verified — cannot be imposed on a run that already did, so
+  minting here would file an audit record devaluing a run whose verdict this
+  command will not rewrite. Nothing is minted and the verdict is unchanged. This
+  is a refusal by this command, not a property of the file: a settlement carries
+  an integrity digest rather than a signature, so anything able to write the
+  project can produce bytes that read as verified. Do the work in a run that has
+  not certified: re-prompt the parent agent in this project so a new run is
+  minted, then run the command again with `--run <that id>`. A run that settled
+  `failed` or `blocked` still mints normally, and those are the states a wedge
+  actually leaves you in;
 - there is no run to scope it to. Every override is run-scoped so the audit can
   name exactly one run.
 
@@ -183,6 +300,66 @@ The window defaults to a bounded TTL and is capped at 24 hours. `--ttl` accepts
 **The right instinct is that you should rarely need this.** A gate refusing
 something legitimate is a bug worth reporting — see below. The override exists so
 you are never *stuck*, not so you can route around enforcement routinely.
+
+---
+
+## Symptom: nothing can settle as verified, and doctor blames the override record
+
+`doctor` reports `OVERRIDE_EVIDENCE_INCOMPLETE` and settlement refuses every run
+in the project with a reason starting `override-`. That means the operator-
+override record under `~/.traffic-one/overrides/` no longer accounts for itself:
+a pre-override snapshot no audit line names, an audit file that cannot be read
+or parsed, more snapshot files than the scan will read, or a signed mint counter
+ahead of the lines that are still there.
+
+Sometimes that is a real erasure. Sometimes it is just damage — **a single junk
+file written into that folder by anything running as you is enough**, and no
+cleanup routine touches it. Either way the way out is the same, and it is
+deliberately not a delete:
+
+```
+node ~/.traffic-one/bin/doctor.cjs --reconcile-overrides
+```
+
+**This deletes nothing.** It appends a signed statement that you, at a terminal,
+looked at exactly this state and accepted it — the same TTY and typed-nonce
+route as the mint above, and, like the mint, not gate-exempt. A command that
+removed the orphaned files or truncated the audit file would hand out precisely
+the capability the record exists to deny, so no such command exists.
+
+**What it costs, permanently:** every run the project has on disk at that moment
+can never settle as verified or shipped. An erased audit line took its run id
+with it, so there is no way to tell which run was covered up and no way to
+forgive one without forgiving all of them. It also pins this project's mint
+counter, creating one at the current count if the project has none. Work started
+after you reconcile certifies normally.
+
+**It covers that state and no other.** One more orphaned snapshot, one more
+appended junk byte, one more missing line, and the project refuses again until
+you look again. When the audit file itself is illegible the acknowledgement also
+pins the witnesses that state switches OFF — the snapshot files present and the
+mint counter's exact value — so a later mint, or a snapshot appearing or
+disappearing behind the damage, refuses again too. It refuses to run at all when
+there is nothing wrong, when the state cannot be fingerprinted at all (a file
+that cannot be READ, as opposed to one that cannot be parsed: fix the permissions,
+nothing is lost, and it will not spend your runs on an acknowledgement that could
+never match), and when the project has more runs than it can name — 256 is the
+bound on the signed list, and a project past it has to prune run directories
+before the repair is available.
+
+**What it does not cover, and cannot:** the quarantine is a list of run directory
+names, so copying a quarantined run to a new name gives you a run id the list
+does not hold. That buys nothing by itself — the copy's verification contract
+hashes its own run id and the QA report binds to that hash, so a renamed copy
+arrives with evidence that does not describe it and settlement refuses it
+(measured). What certifies a new run id is a new run's worth of evidence written
+for that id — and "written for that id" is the whole of the claim, because
+nothing here proves the evidence describes work that was really done. Evidence
+fabricated for a fresh run id certifies it, measured, in any project, with no
+override and no quarantine anywhere in the picture. That is this product's floor
+and it is not raised by anything on this page; what the override record adds is
+that the run somebody relaxed a gate for cannot be the one that certifies. An
+override taints the run, not the tree.
 
 ---
 
@@ -258,6 +435,7 @@ alone: that is your content, in your repository, and removing it is your call.
 | Machine state, API key, per-project preferences | `~/.traffic-one/` |
 | Version-stable runner shims | `~/.traffic-one/bin/` |
 | Override key, audit ledger, pre-override snapshots | `~/.traffic-one/overrides/` |
+| Mint counters and operator reconciliations | `~/.traffic-one/one.json` |
 | Third-party tools and managed runtimes | `~/.traffic-one/toolchains/` |
 
 `PRIVACY.md` says what each of these contains and what is committed.

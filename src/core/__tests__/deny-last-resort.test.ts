@@ -15,7 +15,10 @@ import assert from 'node:assert/strict';
 
 import { askUser, deny, lastResortDenyReason } from '../result';
 import { absoluteTrafficOnePathDeny } from '../../modules/agent-model/spawn-hygiene';
-import { DENY_REPEAT_ESCALATE_AT, denySignature } from '../../shared/state/deny-repeat';
+import {
+  DENY_REPEAT_ESCALATE_AT, PLUGIN_ROOT_SIGNATURE_TOKEN, denySignature, withoutInstallLocation,
+} from '../../shared/state/deny-repeat';
+import { pluginRoot } from '../../shared/paths';
 
 // ── inert on a healthy tree ──────────────────────────────────────────────────
 // The plugin root here is THIS checkout (pinned by src/build/test-preload.mjs),
@@ -45,6 +48,7 @@ test('on a healthy plugin root the notice is unreachable: the gate renders its o
 test('the notice names the gate, names doctor, refuses a retry, and ends in an action its addressee can take', () => {
   const notice = lastResortDenyReason('architecture-input-owner-gate');
   assert.match(notice, /`architecture-input-owner-gate`/);
+  assert.ok(notice.includes(`\`${pluginRoot()}\``), 'it names the install to repair, not just that one is broken');
   assert.match(notice, /Traffic One doctor/);
   assert.match(notice, /refused again/);
   assert.match(notice, /Report to the user/);
@@ -77,6 +81,36 @@ test('two different gates going empty stay two different deny-repeat signatures'
     'and the same gate on the same target must still be ONE signature, or nothing ever escalates',
   );
   assert.ok(DENY_REPEAT_ESCALATE_AT >= 2, `escalation threshold is ${DENY_REPEAT_ESCALATE_AT}`);
+});
+
+// The counterpart to the id being interpolated: the INSTALL LOCATION must not
+// be. The notice names the plugin root so a human can find the tree to repair,
+// and deny-repeat.ts folds that root out before signing precisely so the same
+// loop counts as one bucket across a version-keyed cache dir, a `plugin:sync`
+// and a second host. The fold works by splitting on `pluginRoot()` verbatim, so
+// it is defeated by ANY derived spelling — a trailing separator, a
+// posix-normalised copy — and the failure is silent: escalation quietly arrives
+// on the fifth identical refusal instead of the third. Asserted against the real
+// signing function rather than by reading the string.
+test('the notice carries the plugin root, and the deny-repeat fold still removes it', () => {
+  const notice = lastResortDenyReason('architecture-input-owner-gate');
+  assert.ok(notice.includes(pluginRoot()), 'precondition: the root is in the rendered reason');
+  assert.equal(
+    withoutInstallLocation(notice).includes(pluginRoot()), false,
+    'the root this notice interpolates is not the spelling deny-repeat.ts folds — one install location per bucket, '
+    + 'so an agent looping on one broken gate escalates late and silently',
+  );
+  // The two-install case, which one process cannot fold for itself: each
+  // process removes the root IT resolved. So the second arm renders the notice
+  // from a different install and folds THAT root, exactly as the other process
+  // would. Both must land on one signature.
+  const elsewhere = '/some/other/install';
+  const foreign = notice.split(pluginRoot()).join(elsewhere);
+  assert.equal(
+    denySignature('/proj/x.ts', [withoutInstallLocation(notice)]),
+    denySignature('/proj/x.ts', [foreign.split(elsewhere).join(PLUGIN_ROOT_SIGNATURE_TOKEN)]),
+    'two installs rendering the same broken gate must sign as ONE repeat, or nothing ever escalates',
+  );
 });
 
 // ── the BOUND, asserted rather than described ───────────────────────────────

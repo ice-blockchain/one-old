@@ -53,8 +53,8 @@ test.after(cleanupReplayTempTrees);
 //     the real handler set on purpose, so it has none.
 //
 // Everything else is fair game and the number below is the floor, not the goal.
-// Reach today: 67 of 203 declared ids (33%), which is 67 of the ~140 that are
-// reachable at all by the definition above (~48%). Every remaining group is
+// Reach today: 69 of 206 declared ids (33%), which is 69 of the ~140 that are
+// reachable at all by the definition above (~49%). Every remaining group is
 // named in the printed report's `unreached:` lines and pinned by
 // UNREACHED_DENY_IDS below.
 //
@@ -79,9 +79,9 @@ test.after(cleanupReplayTempTrees);
 //   project states -2  two fixture builders can legitimately collapse into one
 //                      parameterized builder (greenfieldMainAgent and
 //                      materializedGreenfield are already one call apart).
-const MIN_DENY_IDS_REACHED = 63; // 67 today
+const MIN_DENY_IDS_REACHED = 66; // 69 today
 const MIN_DENYING_GATES = 12; // 13 today
-const MIN_PROJECT_STATES = 32; // 34 today
+const MIN_PROJECT_STATES = 34; // 36 today
 
 // Handlers whose `run` is INVOKED at least once, out of the whole registered
 // set (all events, not just PreToolUse) — see instrumentedHandlers. A handler
@@ -125,6 +125,7 @@ const REACHED_DENY_IDS: readonly string[] = [
   'deploy-gate-security-check-stale',
   'deploy-gate-shipper-approval-required',
   'expo-route-service-files',
+  'host-role-contracts-unwritable',
   'kilo-general-agent-required',
   'library-allowlist-forbidden',
   'model-choice-stop-first',
@@ -151,6 +152,7 @@ const REACHED_DENY_IDS: readonly string[] = [
   'plan-write-struct-scan-incomplete',
   'registry-probe-gate',
   'repaired-materialization',
+  'reset-record-owner-gate',
   'run-id-mismatch',
   'runtime-assignments-owner-gate',
   'scaffold-main-agent-plan-gate',
@@ -343,6 +345,14 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'subagent-bind-cursor-role-missing',
   'subagent-bind-model-choice-pending',
   'team-confirmation',
+  // The digest-completion family named at the head of this file, and this one
+  // needs MORE than a live run: the tester's own digest for `currentRunId` PLUS a
+  // published `report-v2.json` in which a test-evidence check settled
+  // `not-applicable` for `no-command-declared`. The verdict is decided from the
+  // QA artifact rather than from anything a fixture can state, so a hand-written
+  // state would characterize a report no runner produces. Driven instead through
+  // the real gate in runners/qa-evidence/__tests__/no-test-evidence-disclosure.ts.
+  'tester-no-test-evidence-disclosure',
   'tester-planned-module-gate',
   'tester-qa-build-identity-mismatch',
   'tester-qa-build-identity-missing',

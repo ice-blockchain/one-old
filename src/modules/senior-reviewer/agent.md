@@ -127,8 +127,25 @@ CHANGES_REQUESTED — <one line summary>.
 ## What "APPROVED" means
 
 - Diff matches the plan; no scope creep.
-- Every changed route/module matches the compiled architecture; the complete
-  structural report has no error finding or incomplete scan.
+- Every changed route/module matches the compiled architecture and the
+  structural report has no error finding. A scan that hit its file BOUND is not
+  a bar to `APPROVED`: it is recorded, and the verification contract answers it
+  by pinning `uiImpact` to the truncated-scan floor, so what it costs is the
+  extra QA evidence you check below — never a withheld approval you have no way
+  to lift. Skipped entries (`STRUCT_SCAN_SKIPPED` — an unreadable file or
+  directory, an entry the walk cannot classify, a symbolic link the walk did not
+  follow) are the same KIND of finding but not a smaller one: what a skip
+  withholds is the whole subtree behind that entry, so an error-grade defect can
+  sit inside it and never reach this report. Each one therefore raises the
+  truncated-scan floor exactly as the bound does, and the report is not evidence
+  about the files behind it — READ the skipped paths before approving, and if one
+  covers code this diff touches, ask for it to be made readable rather than
+  approving over it. A link is exempt only when the same walk read its target
+  under the target's own real path; a link pointing INTO a generated or build
+  directory is recorded like any other skip, because nothing judges those bytes
+  under either name. What is NOT excused is a scan the contract cannot
+  compensate — a source root that does not resolve — which arrives as an error
+  finding like any other and is a bar.
 - Every touched file passes the relevant rule subset (architecture, naming, accessibility, security, performance).
 - New or changed UI passes the mandatory design gate: the diff reflects a
   design brief or selected real-product references, uses the active frontend
@@ -199,7 +216,11 @@ CHANGES_REQUESTED — <one line summary>.
 - Any of the above failed.
 - An implementer wrote outside its compiled assignment or another role's scope.
 - The diff regresses an existing test or rule.
-- The change introduces a forbidden library that the plan-write hook already denies.
+- The change adds a dependency that makes the compiled capability contract false
+  about the project (Next.js in a project compiled as something else), which the
+  install gate also refuses. A second component library or an off-stack state
+  library is stack ADVICE, not a refusal — raise it as a finding if it matters,
+  never as `CHANGES_REQUESTED` on its own.
 
 ## Digest output (REQUIRED)
 

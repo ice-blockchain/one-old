@@ -16,14 +16,17 @@
 // about what traffic.io's servers do with a request after it arrives.
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { shimSource } from '../src/shared/runner-shims';
+
 import { HOST_CAPABILITIES, type TrafficOneHost } from '../src/shared/host/capability-schema';
 import { UNCERTIFIED_HOST_OPT_OUT_ENV } from '../src/shared/host/tiers';
 import { NODE_FLOOR_MAJOR } from '../src/shared/node-floor';
-import { isTrafficOneDoctorCommand } from '../src/shared/tool-classify';
+import { isTrafficOneDoctorCommand, isTrafficOneResetCommand } from '../src/shared/tool-classify';
 import { AUTH_OFFLINE_GRACE_MS, AUTH_REVALIDATION_CADENCE_MS } from '../src/config/auth';
 import { GOLDEN_EXCLUDED } from '../src/build/golden-update';
 import { runtimeAsset } from '../src/config/managed-runtimes';
@@ -745,7 +748,13 @@ test('every environment variable the release documents name is one the code read
 // The exact defect readme-claims.test.ts was written for, in the document that
 // exists to be read BY someone whose session is already refusing things: a
 // recovery command the recovery gate denies.
-test('every doctor command SUPPORT.md prints is one the gate admits — except the mint, which must stay denied', () => {
+// Every OPERATOR command doctor ships — the ones that write. Both are outside
+// the exemption grammar, and the list is here rather than a `--unblock`
+// substring test because there are now two of them and a third would otherwise
+// be admitted silently by being unlisted.
+const DOCTOR_OPERATOR_FLAGS = ['--unblock', '--reconcile-overrides'] as const;
+
+test('every doctor command SUPPORT.md prints is one the gate admits — except the operator writes, which must stay denied', () => {
   const commands = [...read('SUPPORT.md').matchAll(/node [^\n`]*?doctor\.cjs[^\n`]*/g)].map((match) => match[0]);
   assert.ok(commands.length >= 3, `SUPPORT.md no longer prints doctor commands (found ${commands.length})`);
   const resolve = (documented: string): string => documented
@@ -754,38 +763,134 @@ test('every doctor command SUPPORT.md prints is one the gate admits — except t
     .replace(' [--ttl 30m]', ' --ttl 30m');
 
   let diagnostics = 0;
-  let mints = 0;
-  for (const documented of commands) {
-    const command = resolve(documented);
-    if (documented.includes('--unblock')) {
-      // The exemption grammar in shared/tool-classify.ts deliberately does not
-      // admit `--unblock`, because the exemption exists so a STUCK SESSION can
-      // diagnose itself — and minting an override is not diagnosis. An agent
-      // must not inherit "no gate has an opinion" for the one command that
-      // relaxes a gate. This asserts the security property, not a defect: the
-      // day it flips, SUPPORT.md's "run this command yourself" stops being
-      // true and this test says so.
-      mints += 1;
+  const writes = new Set<string>();
+  // The fixture HOME for the reason the reset test below states in full: every
+  // spelling in this runbook is `~/.traffic-one/bin/doctor.cjs`, and read
+  // against a real HOME this loop answered from whatever shim that machine
+  // happened to hold — red on a stale one, vacuously green on a CI box with
+  // none. The operator-write assertions are unaffected either way (they are
+  // refused on the ARGV, before any anchor is consulted), which is precisely
+  // why the diagnostic half could look healthy while testing nothing.
+  withShimHome(() => {
+    for (const documented of commands) {
+      const command = resolve(documented);
+      const operatorFlag = DOCTOR_OPERATOR_FLAGS.find((flag) => documented.includes(flag));
+      if (operatorFlag) {
+        // The exemption grammar in shared/tool-classify.ts deliberately does not
+        // admit either of these, because the exemption exists so a STUCK SESSION
+        // can diagnose itself — and neither minting an override nor reconciling
+        // its audit record is diagnosis. An agent must not inherit "no gate has
+        // an opinion" for a command that writes. This asserts the security
+        // property, not a defect: the day it flips, SUPPORT.md's "run this
+        // command yourself" stops being true and this test says so.
+        writes.add(operatorFlag);
+        assert.equal(
+          isTrafficOneDoctorCommand('Bash', { command }),
+          false,
+          `an override write became gate-exempt: ${documented}`,
+        );
+        continue;
+      }
+      diagnostics += 1;
       assert.equal(
         isTrafficOneDoctorCommand('Bash', { command }),
-        false,
-        `the override mint became gate-exempt: ${documented}`,
+        true,
+        `SUPPORT.md prints a doctor command the gate denies: ${documented}\n  (resolved to: ${command})`,
       );
-      continue;
     }
-    diagnostics += 1;
-    assert.equal(
-      isTrafficOneDoctorCommand('Bash', { command }),
-      true,
-      `SUPPORT.md prints a doctor command the gate denies: ${documented}\n  (resolved to: ${command})`,
-    );
-  }
+  });
   assert.ok(diagnostics >= 3, `expected several diagnostic commands, found ${diagnostics}`);
-  assert.equal(mints, 1, 'SUPPORT.md should print the override mint exactly once');
+  assert.deepEqual([...writes].sort(), [...DOCTOR_OPERATOR_FLAGS].sort(),
+    'SUPPORT.md should print each operator write exactly once');
   assert.ok(
     flat('SUPPORT.md').includes('is not gate-exempt'),
     'SUPPORT.md must tell the reader why the mint cannot be run from inside a session',
   );
+});
+
+/**
+ * Run `body` with HOME pointed at a throwaway directory holding the genuine
+ * shims.
+ *
+ * `documentedBinDir()` and the gate's own tilde expansion both read
+ * `process.env.HOME`, so moving it moves the anchor, the documented path and
+ * the file all together — which is what makes the comparison real rather than
+ * incidental. The bytes come from `shimSource()`, the generator the gate
+ * compares against, so this fixture asserts the SPELLING is admissible and
+ * never that some particular machine happens to be up to date.
+ */
+function withShimHome(body: () => void): void {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'one-release-docs-home-')));
+  const previous = process.env.HOME;
+  try {
+    process.env.HOME = home;
+    const bin = path.join(home, '.traffic-one', 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'traffic-one-reset.cjs'), shimSource('scripts/traffic-one-reset.cjs'), 'utf8');
+    fs.writeFileSync(path.join(bin, 'doctor.cjs'), shimSource('scripts/doctor.cjs'), 'utf8');
+    body();
+  } finally {
+    if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+// The same property for the runner that is NOT doctor, and the scan above
+// structurally cannot see it: `traffic-one-reset` has its own bounded exact-argv
+// grammar in shared/tool-classify.ts. It matters more here than for any doctor
+// invocation, because it is the escape from a run that has no other escape — a
+// spelling this runbook prints and the gate denies would leave a wedged project
+// with nothing at all, in the document its owner reads while stuck.
+test('every reset command SUPPORT.md prints is one the gate admits', () => {
+  const commands = [...read('SUPPORT.md').matchAll(/node [^\n`]*?traffic-one-reset\.cjs[^\n`]*/g)]
+    .map((match) => match[0]);
+  assert.ok(commands.length >= 1, 'SUPPORT.md no longer prints the wedged-run recovery command');
+  // AGAINST A FIXTURE HOME HOLDING THE REFERENCE BYTES, because the documented
+  // spelling is `~/.traffic-one/bin/...` and the gate resolves both the tilde
+  // and its own exemption anchor from HOME. Read against the developer's real
+  // HOME this assertion answered from whatever shim happened to be on that
+  // machine, which made it two different tests and neither of them this one: it
+  // went RED on any machine whose installed shim predates a template edit — for
+  // the whole duration of the commit that touches the template — and on CI,
+  // where no shim exists, it passed through isGeneratedShim's absence clause
+  // without ever comparing anything. Writing the reference in makes the claim
+  // ("the runbook prints a command the gate admits") the thing under test,
+  // everywhere, including CI.
+  withShimHome(() => {
+    for (const documented of commands) {
+      // `<id>` stands for a run id, bounded by DOCTOR_ID_PATTERN — substituted
+      // the way a reader with a real wedge would.
+      const resolved = documented.replace('<id>', '1785169657252');
+      assert.equal(
+        isTrafficOneResetCommand('Bash', { command: resolved }),
+        true,
+        `SUPPORT.md prints a reset command the gate denies: ${documented}\n  (resolved to: ${resolved})`,
+      );
+    }
+  });
+  // Two symptoms in this document look alike from the outside — a run that
+  // cannot progress, and a project that cannot certify — and exactly one of
+  // them is what reset repairs. Without this sentence a reader with a damaged
+  // override record runs it, watches it succeed, and is no closer to a verified
+  // run, having spent their one obvious remedy.
+  assert.ok(
+    flat('SUPPORT.md').includes('It does not clear an override-evidence refusal.'),
+    'SUPPORT.md no longer says what reset does NOT fix, next to the command that does not fix it',
+  );
+});
+
+// The repair for a wedged override record must never become the erasure it
+// exists to make expensive. Two claims, both load-bearing in the runbook: the
+// command deletes nothing, and it costs the runs that already exist.
+test('SUPPORT.md documents the override repair as append-only, not a delete', () => {
+  const text = flat('SUPPORT.md');
+  assert.ok(text.includes('--reconcile-overrides'), 'SUPPORT.md no longer names the override repair');
+  assert.ok(text.includes('This deletes nothing.'),
+    'SUPPORT.md must say the repair deletes nothing — that property is the whole design');
+  const unblock = read(path.join('src', 'runners', 'doctor', 'unblock.ts'));
+  for (const refusal of ['nothing-to-reconcile', 'too-many-runs']) {
+    assert.ok(unblock.includes(`'${refusal}'`), `unblock.ts no longer has the ${refusal} refusal`);
+  }
 });
 
 test('SUPPORT.md points at the paths the code actually writes', () => {
@@ -808,9 +913,11 @@ test('the override refusals SUPPORT.md promises are the refusals unblock.ts impl
   for (const refusal of ['not-interactive', 'gate-never-denied', 'gate-not-overridable', 'no-run', 'bad-ttl']) {
     assert.ok(unblock.includes(`'${refusal}'`), `unblock.ts no longer has the ${refusal} refusal`);
   }
-  // The TTY requirement is the one defence that holds against an agent, so a
-  // `--yes` or an env bypass appearing would falsify the document's strongest
-  // sentence.
+  // The TTY requirement is a cost, not a defence: a pty satisfies it, so an
+  // agent that wants the override can have one (see unblock.ts). Pinning it
+  // keeps the cost from being removed quietly; the two assertions below pin
+  // the parts that do hold — no scriptable bypass flag, and the permanent
+  // ineligibility SUPPORT.md promises.
   assert.match(unblock, /Boolean\(stdin\.isTTY\) && Boolean\(stdout\.isTTY\)/);
   const text = flat('SUPPORT.md');
   assert.ok(text.includes('There is no `--yes`, no environment variable, and no test-only bypass'));

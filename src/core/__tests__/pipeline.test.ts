@@ -1,9 +1,9 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { trackedTempDirs } from '../../test-support/__tests__/temp-dirs';
 import { runPipeline, selectHandlers } from '../pipeline';
 import { buildContext } from '../context';
 import { askUser, context, deny, mergeResults, noop } from '../result';
@@ -20,7 +20,8 @@ import type { Ctx, Handler, HookInput, HookResult } from '../types';
 // `input`/`host`/`cwd`/`now` (the pre-existing fixture) no longer has the
 // fsjson/paths/log members runPipeline now reads, so buildContext() (the
 // real composition root) replaces it.
-const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 't1-pipeline-test-'));
+const dirs = trackedTempDirs('t1-pipeline-test-');
+const TMP_ROOT = dirs.make();
 let dirSeq = 0;
 const savedStateHome = process.env.XDG_STATE_HOME;
 // The whole per-user machine dir is redirected under TMP_ROOT for the life of
@@ -53,9 +54,7 @@ function freshProjectDir(): string {
 after(() => {
   if (savedStateHome === undefined) delete process.env.XDG_STATE_HOME;
   else process.env.XDG_STATE_HOME = savedStateHome;
-  fs.rmSync(TMP_ROOT, { recursive: true, force: true });
-  const leaked = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('t1-pipeline-test-'));
-  assert.deepEqual(leaked, [], `this file leaked temp dirs: ${leaked.join(', ')}`);
+  dirs.cleanup();
 });
 
 function ctxFor(event: HookInput['event'], rawTool?: string, cwd: string = freshProjectDir()): Ctx {

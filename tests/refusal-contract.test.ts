@@ -1153,6 +1153,15 @@ const FSJSON_MODULE = path.join(SRC_ROOT, 'shared', 'fsjson.ts');
  */
 const FSJSON_WRITERS: readonly string[] = [
   'appendTextFile',
+  // `appendTextFile`'s durable sibling. It is here for the same reason and not
+  // for a durability-specific one: its `false` means the append was REFUSED
+  // (consent fence, planted symlink, a path escaping the state dir), exactly
+  // like its non-durable sibling's, and a caller that discards it has certified
+  // a ledger line that is not on disk. The docblock above records what a MISSING
+  // row costs — `writeJsonDurable`'s arrival silently dropped thirty call sites
+  // from the scanner — so a durable writer added without one is the same defect
+  // a second time.
+  'appendTextFileDurable',
   'createJsonExclusive',
   'ensureDir',
   'movePath',
@@ -1714,11 +1723,46 @@ function refusalScanner(tree: SourceTree) {
     return named ?? innermost;
   }
 
+  /**
+   * The title of the enclosing `test(…)`/`it(…)`/`describe(…)`, when there is
+   * one — a name for an unnamed function that survives a line shift.
+   *
+   * This is the fix for a harness defect that reddened another lane. The
+   * baselines below are keyed `<file>#<function>` and their docblocks say
+   * "never by line", but a function with no name fell through to
+   * `<anonymous>@<line>`, so for those entries the claim was not true: an
+   * unrelated edit ANYWHERE ABOVE the site renumbered its key, the old key
+   * stopped firing (a failure, "prune the baseline") and the new one was
+   * reported as a fresh violation (a failure, "you added one"). Two reds, one
+   * line moved, nothing about the refusal contract changed. Measured: a
+   * one-line temp-dir migration in src/core/__tests__/pipeline.test.ts did
+   * exactly this to `pipeline.test.ts#<anonymous>@378`.
+   *
+   * Every anonymous publisher in the baselines is a callback inside a test, and
+   * a test title is the most stable name such a site has: it is written by hand,
+   * it is what a maintainer greps for, and moving the test does not change it.
+   * Renaming the test does — deliberately. A renamed test is an edit to the
+   * thing itself, and the baseline should be re-read then.
+   */
+  function enclosingTestTitle(fn: FunctionLike): string | null {
+    for (let parent: ts.Node | undefined = fn.parent; parent; parent = parent.parent) {
+      if (!ts.isCallExpression(parent)) continue;
+      if (!/^(?:test|it|describe|suite)(?:\.\w+)*$/.test(parent.expression.getText())) continue;
+      const title = parent.arguments[0];
+      if (title && ts.isStringLiteralLike(title)) return title.text;
+    }
+    return null;
+  }
+
   function publisherName(fn: FunctionLike, line: number): string {
     if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name) return fn.name.getText();
     const parent = fn.parent;
     if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
     if (parent && ts.isPropertyAssignment(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+    const title = enclosingTestTitle(fn);
+    // The `<anonymous>` prefix is load-bearing beyond the message: owningFunction
+    // above asks whether a function is named by testing for it.
+    if (title) return `<anonymous> in test "${title}"`;
     return `<anonymous>@${line}`;
   }
 
@@ -2645,10 +2689,11 @@ const REFUSAL_BLIND_PUBLISHERS: readonly string[] = [
   'tests/replay-corpus/fixtures.ts#cursorModelChoice',
   // The gate callback in the fence's OWN test, which drops two writes on
   // purpose and then reads the decision log to check both were recorded.
-  // Line-keyed because the publisher is an anonymous arrow — the one entry here
-  // that an edit above it will churn, and the alternative (skipping anonymous
-  // publishers) would be a blind spot rather than a saving.
-  'src/core/__tests__/pipeline.test.ts#<anonymous>@378',
+  // The publisher is an anonymous arrow, so its name comes from the test around
+  // it rather than from itself. It used to come from its LINE, which made this
+  // the one entry an edit above it would churn — see publisherName.
+  'src/core/__tests__/pipeline.test.ts#<anonymous> in test '
+  + '"stateWrites carries the chokepoint\'s own writes, refusals included"',
 ];
 
 /**
@@ -2788,17 +2833,25 @@ const DIVERGENT_PAIR_FUNCTIONS: readonly string[] = [
   // The fences' own tests, each dropping a permitted write and a refused one on
   // purpose. Both assert on what reached disk (`existsSync`) rather than on the
   // return value, which is why the discard is the point rather than an
-  // oversight. Line-keyed because the enclosing `test(…)` callback is anonymous.
+  // oversight. Both enclosing `test(…)` callbacks are anonymous, so both are
+  // keyed by the TITLE of the test they sit in.
   //
-  // A line key ROTATES when anything is inserted above it, so adding a test to
-  // one of these files reddens the ratchet twice over — the site appears as NEW
-  // at its moved line and the old key reads as stale — with no defect anywhere.
-  // Re-point the line; do not go looking for a dropped write. (Measured: the
-  // normalize entry moved 228 -> 309 when the prompt-privacy migration tests
-  // landed above it.) The alternative, keying on the enclosing test's NAME,
-  // trades this for silence when a test is renamed, which is the worse failure.
-  'src/core/__tests__/pipeline.test.ts#<anonymous>@378',
-  'src/shared/state/__tests__/normalize.test.ts#<anonymous>@309',
+  // These two entries were line-keyed, and a line key ROTATES when anything is
+  // inserted above it: adding a test to one of these files reddened the ratchet
+  // twice over — the site appeared as NEW at its moved line and the old key read
+  // as stale — with no defect anywhere. Measured twice: the normalize entry moved
+  // 228 -> 309 when the prompt-privacy tests landed above it, and the pipeline
+  // entry moved again this week under a one-line temp-dir migration.
+  //
+  // The objection recorded here against title-keying was that a RENAME would go
+  // silent. It does not: `ratchet` asserts on `stale` as well as on `added`, so a
+  // renamed test fails with "this baseline entry no longer fires" and the new key
+  // fails as an addition — the same two reds a line shift used to produce, now
+  // only when someone edits the test itself.
+  'src/core/__tests__/pipeline.test.ts#<anonymous> in test '
+  + '"stateWrites carries the chokepoint\'s own writes, refusals included"',
+  'src/shared/state/__tests__/normalize.test.ts#<anonymous> in test '
+  + '"writeState refuses to CREATE state in a directory that belongs to an enclosing project"',
 ];
 
 /**
@@ -3998,6 +4051,19 @@ const ONE_SETTINGS_MODULE = path.join(SRC_ROOT, 'shared', 'one-settings.ts');
 /** Exported names that reach NO raw-fs mutation, by the widened reach. */
 const ONE_SETTINGS_NON_MUTATORS: readonly string[] = [
   'oneSettingsPath',          // pure: path arithmetic
+  // Pure: the schema predicate `updateOneSettings` throws on, asked off a read
+  // the caller already has. Refusal-SHAPED (a reason string, or null when the
+  // envelope would accept a write) and reaching no `fs` at all, which is the
+  // point of it — override/mint-counter.ts asks whether its own bookkeeping
+  // write can land instead of discovering the answer by failing.
+  'oneSettingsSchemaError',
+  // Pure: classifies an error VALUE the caller already caught, by comparing its
+  // `code` to this module's lock-timeout sentinel. It sits on the READING side
+  // of the errno channel the paragraph above leaves open — the discriminator a
+  // caller uses to recognise the refusal `withMachineFileLock` threw, rather
+  // than a refusal of its own that a caller could drop — so it reaches no `fs`
+  // by construction: there is no path in it to reach one with.
+  'isOneSettingsLockTimeout',
   'readCanonicalOneSettings', // read + validate
   'readOneSettings',          // read
 ];
@@ -4010,6 +4076,15 @@ const ONE_SETTINGS_NON_MUTATORS: readonly string[] = [
 const ONE_SETTINGS_THROWING_MUTATORS: readonly string[] = [
   'updateOneSettings', // the single low-level mutator; throws on lock/schema failure
   'writeOneSection',   // forwards updateOneSettings
+  // The lock protocol, lent to a caller whose file is not one.json — today the
+  // override audit ledger, which needs the mint's append and its take-back
+  // serialised against each other. It reaches a mutation (the lock's own
+  // `mkdir`, through the same module-local descent `deleteOneSection` needs),
+  // returns whatever its body returns, and catches NOTHING: a lock it cannot
+  // take throws at the deadline, exactly like every other write here, and
+  // override/token.ts converts that into a refused mint rather than dropping
+  // it. There is no refusal boolean for a caller to discard.
+  'withMachineFileLock',
 ];
 
 test('every raw-fs mutation one-settings.ts exports is admitted, excused as a read, or thrown', () => {

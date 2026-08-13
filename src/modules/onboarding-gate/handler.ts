@@ -24,7 +24,12 @@ import {
   techClassifyRequiredReason,
 } from '../../shared/onboarding-server/tech-classify-setup';
 import { isOnboardedProjectRoot } from '../../shared/hook/paths';
-import { materializeProjectIfNeeded } from '../../shared/materialize';
+import {
+  materializeProjectIfNeeded,
+  relativeToProject,
+  roleContractDirectoryRefusal,
+  roleContractShortfallSentence,
+} from '../../shared/materialize';
 import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { maintenanceTriageFallbackDirective } from '../session/triage-directive';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
@@ -54,9 +59,9 @@ import { agentOnboardingUrls } from '../../config/dashboard';
 import { emittedWithin, stampEmitMarker } from '../../shared/once';
 import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId, hookSessionIdentity, isNewProjectMode, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyWritePatch, isStateFilePath, isTrafficOneDoctorCommand, parsedToolInput } from '../../shared/tool-classify';
+import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyWritePatch, isStateFilePath, isTrafficOneDoctorCommand, isTrafficOneResetCommand, parsedToolInput } from '../../shared/tool-classify';
 import { browserOpenDeniedReason } from '../../shared/onboarding-server/browser-open';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
@@ -175,6 +180,16 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // `node <this runtime's own doctor.cjs> [one recognized flag]`
   // (tool-classify.ts), so this cannot widen to any other command.
   if (isTrafficOneDoctorCommand(toolName, toolInput)) return noop();
+  // The reset runner is hoisted for the same reason and to the same place: it
+  // is the recovery command for a project wedged on a terminal `failed` run,
+  // and a gate that can deny it is a gate that can make the wedge permanent.
+  // Same bounded exact-argv grammar (`node <this runtime's own
+  // traffic-one-reset.cjs> --run-id <id>`, four words, no options), so this
+  // cannot widen to any other command — and the same meaning: no opinion, not
+  // an elevated capability. Unlike doctor this runner WRITES, which is why it
+  // re-derives every precondition itself from disk under the project state
+  // lock; see the reset row in hooks/fail-closed.ts for the full argument.
+  if (isTrafficOneResetCommand(toolName, toolInput)) return noop();
   const cwd = ctx.cwd;
 
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
@@ -609,7 +624,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // see). Idempotent (reuses an existing id); the spawn gate would otherwise mint it
   // only on the first spawn, AFTER the orchestrator has already built the prompt.
   const subagentsMode = obj(effectiveState.team)?.mode === 'subagents';
-  const buildRunId = (mode === 'new-project' || subagentsMode) ? ensureCurrentRunId(root, effectiveState) : '';
+  const buildRunId = (isNewProjectMode({ mode }) || subagentsMode) ? ensureCurrentRunId(root, effectiveState) : '';
   if (buildRunId && subagentsMode) {
     const policy = ensureRunModelPolicy(
       root,
@@ -677,6 +692,51 @@ export function onboardingGate(ctx: Ctx): HookResult {
   }
 
   const materialized = materializeProjectIfNeeded(root, { trigger: 'generic pre-tool convergence' });
+  /**
+   * THE HOST'S ROLE CONTRACTS CANNOT BE WRITTEN → no file-changing tool runs.
+   *
+   * Asked of DISK, and asked AFTER the convergence above, which are the two
+   * things that make it a rule rather than an anecdote. After, because that
+   * convergence is also the repair: the hook following a cleared path writes the
+   * contracts and this goes quiet in the same call. Of disk, because the
+   * convergence RESULT is null in the steady state — `materializeProjectIfNeeded`
+   * short-circuits an already-materialized project, and a refused directory
+   * outlives by months the single run that discovered it. A deny keyed on the
+   * result would fire once, on the one call that happened to converge, and never
+   * again; the condition it describes would still be true.
+   *
+   * MUTATING ONLY, which is the whole ruling. The contracts are what a host loads
+   * to know what `senior-architect` IS: without them a spawned role runs as a
+   * generic worker against the project's real files, and that is a write nobody
+   * can distinguish afterwards from one made under the contract. Reading, greping
+   * and running tests are unaffected, and the deny says so — the user whose
+   * install is short still needs to be able to look at their own code, and the
+   * REPAIR is theirs: `rm`, `mv`, `chmod`, `chown` and `ln` are all mutating
+   * (shared/tool-classify.ts), so every command the agent could use to clear the
+   * path is itself refused here. The prose therefore prescribes no retry and
+   * hands the fact to the user, which is also what keeps the deny's own remedy
+   * from tripping the repeat escalation it is deliberately subject to.
+   *
+   * Its own denyId, never `materialization-not-converged`: that one's cause is a
+   * broken plugin root and its diagnosis sends an operator to re-check `rules/`
+   * and `skills-catalog/`, which are healthy here (see config/deny-ids.ts).
+   */
+  const roleContracts = roleContractDirectoryRefusal(root);
+  if (roleContracts && isMutatingPreToolUse(toolName, toolInput)) {
+    const failed = roleContracts.failures[0];
+    const where = relativeToProject(root, failed?.path || '');
+    return deny(
+      'traffic-one — this tool use was denied because this host\'s Traffic One per-role contracts could not be '
+      + `written, and a file-changing tool must not run without them. ${roleContractShortfallSentence(root, roleContracts)}\n`
+      + `The filesystem refused \`${where}\` with ${failed?.errno || 'unknown'}: something that is not a writable `
+      + 'directory is at that path — a file, a symlink, a directory this user cannot write, or a read-only checkout.\n'
+      + 'Do NOT retry this call and do NOT try to repair the path yourself: every command that could (`rm`, `mv`, '
+      + '`chmod`, `chown`, `ln`) is a file-changing tool and draws this same refusal. REPORT IT TO THE USER in the '
+      + `terms above — they need to clear \`${where}\` — and carry on with work that changes no files, which is not `
+      + 'affected. The next tool call after the path is clear rewrites the contracts on its own.',
+      { denyId: 'host-role-contracts-unwritable', denyTarget: where },
+    );
+  }
   if (materialized) {
     // Discriminate on STATUS, not on non-nullness. materializeProjectIfNeeded
     // returns an outcome for seven statuses (shared/materialize/converge.ts) and

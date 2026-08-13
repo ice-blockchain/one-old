@@ -24,6 +24,9 @@
 
 import type { TestContext } from 'node:test';
 import { performance } from 'node:perf_hooks';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 export type LatencyVerdict = 'pass' | 'fail' | 'inconclusive';
 
@@ -78,6 +81,11 @@ export interface LatencyStats {
    * actually delivered during this measurement window. 1.0 = never descheduled.
    */
   readonly delivered: number;
+  /**
+   * The same fraction for a fixed FILESYSTEM reference workload — see
+   * IO_REFERENCE_BYTES. 1.0 = every syscall it made returned without waiting.
+   */
+  readonly ioDelivered: number;
   readonly attempts: number;
   readonly elapsedMs: number;
 }
@@ -100,6 +108,10 @@ export interface LatencyOutcome {
  *
  * The threshold is deliberately LENIENT (it calls marginal machines "quiet",
  * which biases toward FAIL) because a muted budget is worse than a flaky one.
+ *
+ * It is applied to the WORSE of the two reference workloads — see `Reference`.
+ * A floor on the arithmetic reference alone was a floor on one of the two ways
+ * a machine can hold this process up.
  */
 const DELIVERY_FLOOR = 0.8;
 
@@ -122,8 +134,140 @@ const RETRY_IF_ATTEMPT_UNDER_MS = 15_000;
  * instead of failing. This is the same prefix the repo's other test-visible
  * switches use (T1_OC_ABANDON_MS, T1_OC_STATUS_WAIT_MAX_MS, …) for the same
  * reason.
+ *
+ * EXPORTED because a CI step now sets it, and the spelling in that step has to
+ * be tied to this constant by something. Measured before it was: this name
+ * appeared in the whole repository exactly three times — its own definition,
+ * the branch that reads it, and one line of prose — so the escalation it offers
+ * could not happen on any runner, and every claim resting on "strict mode still
+ * makes this a hard failure" was resting on a switch nobody flips. A
+ * hand-retyped spelling in a workflow is the same hatch one rename away, so
+ * latency-budget-ci.test.ts asserts the step's `env:` key against this value.
  */
-const STRICT_ENV = 'T1_LATENCY_BUDGET_STRICT';
+export const STRICT_ENV = 'T1_LATENCY_BUDGET_STRICT';
+
+/**
+ * Is strict mode on? The ONE read of the switch, shared by everything that
+ * escalates on it.
+ *
+ * A function rather than two `process.env[STRICT_ENV] === '1'` expressions
+ * because both of the ones it replaces were unreachable-in-practice and
+ * untested, and the guard on one of them was a `source.includes(...)` on this
+ * file's own text — a check that passes on a branch whose body has been
+ * deleted. Reading the switch through a named export gives the tests something
+ * to EXECUTE: latency-budget-ci.test.ts drives this and `settle` directly, with
+ * the variable set and unset, which is a check the string search could not be.
+ */
+export function strictModeEngaged(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[STRICT_ENV] === '1';
+}
+
+/**
+ * The label, ceiling and diagnostic marker of the instrument's live self-check.
+ *
+ * HERE, IN THE INSTRUMENT, rather than in the row that uses them, because three
+ * files have to agree about these strings and one of them must not import the
+ * other two. The row lives in latency-budget.test.ts; the CI report step in
+ * generate-check.yml greps for the label and the marker; latency-budget-ci.test.ts
+ * checks that the grep patterns match what the row emits. Importing the row's
+ * module from the CI test would register the row — ten seconds of live
+ * measurement inside a structural test — so the CI test used to re-type the
+ * three strings and assert the workflow contained them, which couples the check
+ * to a copy rather than to the value. A constant is the only thing all three can
+ * share.
+ */
+export const SELF_CHECK_LABEL = 'live filesystem reference (starved)';
+
+/**
+ * The corridor ceiling, and it is calibrated against the GC/JIT term rather
+ * than against the section.
+ *
+ * The corridor exists so the row's verdict is reached by rule 3 (a breach the
+ * filesystem explains): the ceiling must sit ABOVE the CPU this section burns,
+ * or rule 2 fires first and returns a hard FAIL, and BELOW its injected wall
+ * clock, or rule 1 returns pass.
+ *
+ * WHAT THE PREVIOUS NUMBER WAS CALIBRATED AGAINST, AND WHY THAT WAS THE WRONG
+ * TERM. It was 12 ms, defended as covering "every cpu p95 either of us has
+ * drawn" — 2.15 ms idle, 9.19 ms under 20 spinners and 5 fsync workers. Those
+ * are draws of the SECTION. The term that actually threatens rule 2 is the one
+ * this file's own `deliveredFraction` docblock records: process-wide GC and JIT
+ * landing inside a 0.13 ms section, measured at 9 samples in 250, UP TO 11.7
+ * MS. A 12 ms ceiling is 1.03x that, i.e. no margin at all against the term
+ * most likely to breach it, and the 9.19 ms "worst loaded draw" is that same
+ * signature rather than an independent one. Re-measured here on the patched
+ * section (.tmp/harness6/corridor-probe.ts, 10 cores, Node 26, 60 samples per
+ * run, 8 idle + 6 loaded runs): a single sample of 12.28 ms CPU appeared idle
+ * and one of 65.18 ms under load — both ABOVE the old ceiling.
+ *
+ * So the ceiling is calibrated against 11.7 ms, and the wall side is moved with
+ * it (the wait doubles to 12 ms, three waits per 12-read sample, ~36 ms of
+ * injected off-CPU waiting) so widening the corridor upward does not close it
+ * from below. Margins, arithmetic rather than adjective, over 14 runs:
+ *
+ *   CPU side   24 ms against the 11.70 ms GC/JIT term            2.05x
+ *              24 ms against the worst cpu p95 drawn (2.61)      9.19x
+ *   wall side  the lowest wall p95 drawn (52.58 ms) over 24 ms   2.19x
+ *
+ * The rule reads p95 and not max deliberately, and that is what keeps a single
+ * 12.28 ms or 65.18 ms GC sample out of the decision: at n=60 the p95 is
+ * `sorted[Math.floor(60 × 0.95)]` = `sorted[57]`, so it takes 60 − 57 = THREE
+ * samples at or above the ceiling to move it, and none of the 14 runs produced
+ * more than one. (This said "four" for a round — off by one, in the reassuring
+ * direction. The conclusion is unchanged and does not depend on the count: the
+ * 11.7 ms GC/JIT class cannot breach a 24 ms ceiling however often it fires,
+ * and events at or above 24 ms were drawn once in 840 samples.)
+ */
+export const SELF_CHECK_BUDGET_MS = 24;
+
+/** The off-CPU wait injected into every fourth read of the starved section. */
+export const SELF_CHECK_WAIT_MS = 12;
+
+/** The prefix the CI report step greps for to prove the row MEASURED. */
+export const SELF_CHECK_MEASUREMENT_MARKER = 'LIVE STARVED MEASUREMENT · ';
+
+/**
+ * The phrase every strict escalation carries, wherever it is raised.
+ *
+ * The report step needs it because the two states it has to tell apart leave
+ * almost the same log. `settle` emits the INCONCLUSIVE verdict line BEFORE it
+ * consults the switch, so that line is present whether the run then skipped
+ * (switch off — the arrangement is broken) or threw (switch on — the runner
+ * left the corridor). The step used to treat the diagnostic alone as proof of
+ * the first, and therefore annotated every genuine strict failure with "the
+ * switch did not engage" on a run that had just demonstrated it engaging. Both
+ * are red; only one of them is a bug in the wiring, and a maintainer reading
+ * the annotation has to be told which.
+ *
+ * ITS VALUE IS THE TEXT `settle` ALREADY THREW, and that is the fix for the
+ * arrangement this replaces. There used to be two escalations — `settle`'s,
+ * reached by no CI step, and a hand-rolled one in the self-check row, reached
+ * by the only step that sets the switch — and this marker belonged to the
+ * second. One escalation now raises every strict failure and composes this
+ * constant into its message, so the phrase cannot be present without the
+ * escalation having happened, and cannot be renamed away from the report step
+ * that greps it (latency-budget-ci.test.ts asserts the workflow carries it).
+ */
+export const STRICT_FAILURE_MARKER = `INCONCLUSIVE under ${STRICT_ENV}=1`;
+
+/**
+ * Why the machine is outside the corridor, or '' when it is inside.
+ *
+ * Exported for the same reason `strictModeEngaged` is: the CI test can drive
+ * both sides of this decision with recorded numbers, in-process, instead of
+ * searching the row's source text for the shape of a branch.
+ */
+export function selfCheckCorridorMiss(stats: LatencyStats, budgetMs = SELF_CHECK_BUDGET_MS): string {
+  if (stats.cpuP95 >= budgetMs) {
+    return `this machine burned ${stats.cpuP95.toFixed(2)} ms of CPU on a section whose unpatched cost is a`
+      + ' ~0.15 ms median, so rule 2 decides this measurement and the filesystem discount is never reached';
+  }
+  if (stats.wallP95 < budgetMs) {
+    return `the injected waiting did not put this section over its ${budgetMs} ms budget, so there is no breach`
+      + ' for the references to explain';
+  }
+  return '';
+}
 
 let spinSink = 0;
 
@@ -178,6 +322,7 @@ interface Attempt {
   readonly wall: number[];
   readonly cpu: number[];
   readonly delivered: number;
+  readonly ioDelivered: number;
   readonly elapsedMs: number;
 }
 
@@ -206,6 +351,155 @@ function deliveredFraction(referenceCpu: number, referenceWall: number): number 
   return referenceWall > 0 ? Math.min(1, referenceCpu / referenceWall) : 1;
 }
 
+/**
+ * Size of the file the filesystem reference reads. Small and page-cache
+ * resident on purpose: the quantity being detected is time this process spent
+ * WAITING on the filesystem while other processes hammered it, not the speed
+ * of the underlying device.
+ */
+const IO_REFERENCE_BYTES = 4096;
+
+/**
+ * The second reference workload, and the reason this instrument stopped
+ * reporting other people's test suites as regressions.
+ *
+ * The arithmetic reference above answers exactly one question — "was this
+ * process descheduled?" — and `spin` was written to make it answer only that
+ * (no syscalls, no allocation). So a section whose cost is a `readFileSync`
+ * can be starved for its whole budget by a filesystem twenty other processes
+ * are queueing on while the spin, which never touches the filesystem, reports
+ * a perfectly healthy machine. That is not a corner case, it is the ordinary
+ * state of this repo's own parallel suite.
+ *
+ * MEASURED (.tmp/harness/io-delivery-probe.mjs, 10-core macOS, a
+ * readFileSync-dominated section, against twelve real test files running as
+ * peer processes — the shape `npm test` produces):
+ *
+ *   idle, 5 runs            cpu delivered 1.00      io delivered 1.00
+ *   12 peer processes       cpu delivered 1.00 x6   io delivered 0.75-1.00
+ *   24 peer processes       cpu delivered 1.00 x5   io delivered 0.27-1.00
+ *
+ * The CPU detector reported a perfect machine in eleven of sixteen loaded
+ * runs. The filesystem detector saw the contention in both bands and still
+ * reported 1.00, five times out of five, on an idle machine — which is the
+ * property that matters, because a detector that reads low when nothing is
+ * wrong mutes the budget instead of qualifying it.
+ *
+ * WHY READS AND NOT WRITES. A read+write reference was measured beside this
+ * one and rejected: it reported 0.26-0.49 under the LIGHT 12-peer load and
+ * 0.09-0.25 under the heavy one, i.e. it would push every measurement taken
+ * next to any concurrency at all into INCONCLUSIVE. That is a mute wearing a
+ * detector's clothes.
+ *
+ * KNOWN LIMITATION — the delivery figures are window-wide, the assertion is a
+ * tail. Read this before treating a surprising verdict as a bug.
+ *
+ * Each `delivered()` is one scalar for the whole measurement: a ratio of sums
+ * over the ~21 bursts REFERENCE_BURSTS spreads through the run, whatever the
+ * sample count. The p95 it qualifies is a single sample near the top of that
+ * run (the 13th-worst of 250), and NOTHING ties the bursts that were starved
+ * to the samples that formed it. A section can be slow in a stretch of the
+ * window where no burst happened to land, or be starved during a burst while
+ * the samples around it were fine.
+ *
+ * Measured (.tmp/harness/tail-vs-mean-probe.mjs — replicates burst() exactly
+ * but records each burst separately; readFileSync section, 24 peer processes,
+ * six runs):
+ *
+ *   per-burst MEDIAN delivery      cpu 1.00, io 1.00 — in all six runs
+ *   worst single burst             cpu 0.01-1.00, io 0.02-0.25
+ *   what this code reports         cpu 0.11-1.00, io 0.10-0.50
+ *   the section's own wall         p95/p50 ratio 3.3-30.1x, max 2.1-14.7 ms
+ *
+ * So the typical burst sees a perfect machine and the aggregate does not,
+ * because summing wall and CPU separately weights each burst by its own wall
+ * clock and the starved bursts are precisely the long ones. That weighting is
+ * why this is usable at all, and it also fixes the DIRECTION of the error: the
+ * aggregate is pulled toward under-reporting delivery, and rule 1 of
+ * classifyLatency returns `pass` on an under-budget wall clock before delivery
+ * is consulted at all. An inaccurate figure can therefore
+ * only turn a fail into an INCONCLUSIVE — it can never manufacture a red, and
+ * it can never turn a breach into a pass. The exposure is under-enforcement in
+ * a window where one unlucky burst was starved, not a false accusation.
+ *
+ * NEXT REFINEMENT, if that under-enforcement ever bites: tail-matched delivery.
+ * Keep the per-burst deliveries instead of the running sums, attribute each
+ * sample to the burst nearest it in time, and discount the p95 by the delivery
+ * of the bursts bracketing the samples that actually formed it. The probe above
+ * already collects the per-burst series; what is missing is the attribution and
+ * a decision on how few bursts is too few to bracket a tail (21 per 250 samples
+ * is roughly one burst per 12 samples, so the p95 sample is within ~6 samples
+ * of a burst, which may well be close enough — measure before rebuilding).
+ */
+export interface Reference {
+  /** Run one burst of both workloads, outside the caller's timed window. */
+  burst(): void;
+  delivered(): number;
+  ioDelivered(): number;
+  dispose(): void;
+}
+
+function calibrateIoReads(file: string, targetCpuMs: number): number {
+  let reads = 8;
+  for (let doubling = 0; doubling < 20; doubling += 1) {
+    const before = process.cpuUsage();
+    for (let i = 0; i < reads; i += 1) spinSink += fs.readFileSync(file).length;
+    if (cpuMs(process.cpuUsage(before)) >= targetCpuMs) return reads;
+    reads *= 2;
+  }
+  return reads;
+}
+
+/**
+ * Both reference workloads behind one seam, sized once from the same probe.
+ * The sync and async measurement loops share this for the reason they already
+ * shared referenceUnitsFor: two loops whose starvation detectors disagreed
+ * would be two instruments wearing one name.
+ *
+ * Exported for one reason: two references BURST ALTERNATELY inside a single
+ * window is the only construction that can show the filesystem leg responding
+ * to filesystem waiting while the arithmetic leg does not, without resting on
+ * two separate windows having found the machine in the same state. The
+ * A/B that did rest on that was this repo's one measured flake — see
+ * latency-budget.test.ts.
+ */
+export function makeReference(probeCpu: readonly number[]): Reference {
+  const units = referenceUnitsFor(probeCpu);
+  const sorted = [...probeCpu].sort((a, b) => a - b);
+  const target = Math.min(quantile(sorted, 0.5) || 1, REFERENCE_TARGET_CAP_MS);
+
+  // os.tmpdir() rather than the project: this runs under the test runner, and
+  // the section being measured is frequently a project-directory read whose
+  // contention we would otherwise be adding to ourselves.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-latency-ref-'));
+  const file = path.join(dir, 'reference.bin');
+  fs.writeFileSync(file, Buffer.alloc(IO_REFERENCE_BYTES, 7));
+  const reads = calibrateIoReads(file, target);
+
+  let cpuWall = 0;
+  let cpuBurned = 0;
+  let ioWall = 0;
+  let ioBurned = 0;
+  return {
+    burst(): void {
+      let usage = process.cpuUsage();
+      let started = performance.now();
+      spin(units);
+      cpuWall += performance.now() - started;
+      cpuBurned += cpuMs(process.cpuUsage(usage));
+
+      usage = process.cpuUsage();
+      started = performance.now();
+      for (let i = 0; i < reads; i += 1) spinSink += fs.readFileSync(file).length;
+      ioWall += performance.now() - started;
+      ioBurned += cpuMs(process.cpuUsage(usage));
+    },
+    delivered: () => deliveredFraction(cpuBurned, cpuWall),
+    ioDelivered: () => deliveredFraction(ioBurned, ioWall),
+    dispose: () => { fs.rmSync(dir, { recursive: true, force: true }); },
+  };
+}
+
 function measureOnce(run: () => void, samples: number, warmup: number): Attempt {
   for (let i = 0; i < warmup; i += 1) run();
 
@@ -217,35 +511,32 @@ function measureOnce(run: () => void, samples: number, warmup: number): Attempt 
     run();
     probe.push(cpuMs(process.cpuUsage(before)));
   }
-  const units = referenceUnitsFor(probe);
+  const reference = makeReference(probe);
   const burstEvery = burstIntervalFor(samples);
 
   const wall: number[] = [];
   const cpu: number[] = [];
-  let referenceWall = 0;
-  let referenceCpu = 0;
   const startedAt = performance.now();
-  for (let sample = 0; sample < samples; sample += 1) {
-    const cpuBefore = process.cpuUsage();
-    const wallBefore = performance.now();
-    run();
-    wall.push(performance.now() - wallBefore);
-    cpu.push(cpuMs(process.cpuUsage(cpuBefore)));
+  try {
+    for (let sample = 0; sample < samples; sample += 1) {
+      const cpuBefore = process.cpuUsage();
+      const wallBefore = performance.now();
+      run();
+      wall.push(performance.now() - wallBefore);
+      cpu.push(cpuMs(process.cpuUsage(cpuBefore)));
 
-    if (sample % burstEvery === 0) {
-      const refCpuBefore = process.cpuUsage();
-      const refWallBefore = performance.now();
-      spin(units);
-      referenceWall += performance.now() - refWallBefore;
-      referenceCpu += cpuMs(process.cpuUsage(refCpuBefore));
+      if (sample % burstEvery === 0) reference.burst();
     }
+    return {
+      wall,
+      cpu,
+      delivered: reference.delivered(),
+      ioDelivered: reference.ioDelivered(),
+      elapsedMs: performance.now() - startedAt,
+    };
+  } finally {
+    reference.dispose();
   }
-  return {
-    wall,
-    cpu,
-    delivered: deliveredFraction(referenceCpu, referenceWall),
-    elapsedMs: performance.now() - startedAt,
-  };
 }
 
 /**
@@ -279,36 +570,33 @@ async function measureOnceAsync(
     await run();
     probe.push(cpuMs(process.cpuUsage(before)));
   }
-  const units = referenceUnitsFor(probe);
+  const reference = makeReference(probe);
   const burstEvery = burstIntervalFor(samples);
 
   const wall: number[] = [];
   const cpu: number[] = [];
-  let referenceWall = 0;
-  let referenceCpu = 0;
   const startedAt = performance.now();
-  for (let sample = 0; sample < samples; sample += 1) {
-    if (setup) await setup();
-    const cpuBefore = process.cpuUsage();
-    const wallBefore = performance.now();
-    await run();
-    wall.push(performance.now() - wallBefore);
-    cpu.push(cpuMs(process.cpuUsage(cpuBefore)));
+  try {
+    for (let sample = 0; sample < samples; sample += 1) {
+      if (setup) await setup();
+      const cpuBefore = process.cpuUsage();
+      const wallBefore = performance.now();
+      await run();
+      wall.push(performance.now() - wallBefore);
+      cpu.push(cpuMs(process.cpuUsage(cpuBefore)));
 
-    if (sample % burstEvery === 0) {
-      const refCpuBefore = process.cpuUsage();
-      const refWallBefore = performance.now();
-      spin(units);
-      referenceWall += performance.now() - refWallBefore;
-      referenceCpu += cpuMs(process.cpuUsage(refCpuBefore));
+      if (sample % burstEvery === 0) reference.burst();
     }
+    return {
+      wall,
+      cpu,
+      delivered: reference.delivered(),
+      ioDelivered: reference.ioDelivered(),
+      elapsedMs: performance.now() - startedAt,
+    };
+  } finally {
+    reference.dispose();
   }
-  return {
-    wall,
-    cpu,
-    delivered: deliveredFraction(referenceCpu, referenceWall),
-    elapsedMs: performance.now() - startedAt,
-  };
 }
 
 export interface LatencySamples {
@@ -318,6 +606,13 @@ export interface LatencySamples {
   readonly cpu: readonly number[];
   /** Fraction of requested CPU the machine delivered to a reference workload. */
   readonly delivered: number;
+  /**
+   * The same fraction for the filesystem reference. OPTIONAL, and absent means
+   * 1 — i.e. "the filesystem was not measured, so it cannot be blamed" — which
+   * is what keeps every recording taken before this detector existed reading
+   * exactly as it did. A live measurement always supplies it.
+   */
+  readonly ioDelivered?: number;
 }
 
 /**
@@ -334,6 +629,15 @@ export function classifyLatency(
   const cpu = [...attempt.cpu].sort((a, b) => a - b);
   const wallP95 = quantile(wall, 0.95);
   const cpuP95 = quantile(cpu, 0.95);
+  // The machine gets ONE delivery figure, and it is the worse of the two
+  // references. The discount below is an inflation BOUND, and a section is a
+  // mix of CPU and syscalls in unknown proportion, so the only bound the data
+  // supports is the one set by whichever resource the machine was worst at
+  // handing over. Taking the CPU figure alone is what let a filesystem the
+  // whole test suite was queueing on be reported as a code regression.
+  const ioDelivered = attempt.ioDelivered ?? 1;
+  const delivered = Math.min(attempt.delivered, ioDelivered);
+  const starved = ioDelivered < attempt.delivered ? 'filesystem' : 'CPU';
 
   // 1. A contended measurement can only ever be an OVER-estimate, so an
   //    under-budget wall clock is sound whatever the machine was doing. This
@@ -359,8 +663,9 @@ export function classifyLatency(
 
   // 3. The breach is in off-CPU time. That is either the machine starving this
   //    process or the path itself having started to block — indistinguishable
-  //    from the timings alone, which is why a reference workload was run in the
-  //    same window. It did no I/O, so any CPU it was denied is starvation and
+  //    from the timings alone, which is why reference workloads were run in the
+  //    same window. Neither of them can block on anything the measured section
+  //    is not also exposed to, so time they were denied is starvation and
   //    nothing else.
   //
   //    The delivery test is necessary but NOT sufficient, and this rule used to
@@ -374,21 +679,34 @@ export function classifyLatency(
   //    own sentence said the machine could have inflated it by 1.10x. Rule 2
   //    already catches the case this discount could otherwise mute: a path that
   //    burns the budget in CPU never reaches here.
-  if (attempt.delivered >= DELIVERY_FLOOR && wallP95 * attempt.delivered >= budgetMs) {
+  //
+  //    `delivered` is now the worse of the two references, so "off-CPU" here
+  //    means off BOTH: neither descheduled nor queued behind somebody else's
+  //    filesystem traffic. The reading that forced the second reference:
+  //    session-updates-surface's 15 ms marker-write budget measured wall p95
+  //    22.86 ms at 81% CPU delivery — over the floor, so a FAIL — while burning
+  //    3 ms of CPU on a path whose idle p95 is 0.54 ms. A 40x inflation with no
+  //    code change is a busy filesystem, and the arithmetic reference could not
+  //    see one.
+  if (delivered >= DELIVERY_FLOOR && wallP95 * delivered >= budgetMs) {
     return {
       verdict: 'fail',
       reason: `wall p95 ${wallP95.toFixed(2)} ms >= ${budgetMs} ms on a machine that delivered `
-        + `${(attempt.delivered * 100).toFixed(0)}% of requested CPU (>= ${(DELIVERY_FLOOR * 100).toFixed(0)}%), `
-        + `so it could inflate this by at most ${(1 / attempt.delivered).toFixed(2)}x — `
-        + `${(wallP95 * attempt.delivered).toFixed(2)} ms even after that discount. The breach is not contention.`,
+        + `${(attempt.delivered * 100).toFixed(0)}% of requested CPU and `
+        + `${(ioDelivered * 100).toFixed(0)}% of requested filesystem throughput `
+        + `(both >= ${(DELIVERY_FLOOR * 100).toFixed(0)}%), `
+        + `so it could inflate this by at most ${(1 / delivered).toFixed(2)}x — `
+        + `${(wallP95 * delivered).toFixed(2)} ms even after that discount. The breach is not contention.`,
     };
   }
 
   return {
     verdict: 'inconclusive',
     reason: `wall p95 ${wallP95.toFixed(2)} ms >= ${budgetMs} ms, but the machine delivered only `
-      + `${(attempt.delivered * 100).toFixed(0)}% of requested CPU and the path burned just `
-      + `${cpuP95.toFixed(2)} ms of it. Both a passing and a failing truth are consistent with this data.`,
+      + `${(delivered * 100).toFixed(0)}% of the ${starved} a reference workload asked for `
+      + `(cpu ${(attempt.delivered * 100).toFixed(0)}%, filesystem ${(ioDelivered * 100).toFixed(0)}%) `
+      + `and the path burned just ${cpuP95.toFixed(2)} ms of CPU. `
+      + 'Both a passing and a failing truth are consistent with this data.',
   };
 }
 
@@ -404,6 +722,7 @@ function statsFrom(attempt: Attempt, samples: number, attempts: number, elapsedM
     cpuP95: quantile(cpu, 0.95),
     cpuMax: cpu[cpu.length - 1] ?? 0,
     delivered: attempt.delivered,
+    ioDelivered: attempt.ioDelivered,
     attempts,
     elapsedMs,
   };
@@ -459,8 +778,30 @@ export function latencyStatsLine(label: string, stats: LatencyStats): string {
     `n=${String(stats.n).padStart(4)}`,
     `wall p50/p95/max ${stats.wallP50.toFixed(2)}/${stats.wallP95.toFixed(2)}/${stats.wallMax.toFixed(2)} ms`,
     `cpu p95 ${stats.cpuP95.toFixed(2)} ms`,
-    `delivered ${(stats.delivered * 100).toFixed(0)}%`,
+    `delivered cpu ${(stats.delivered * 100).toFixed(0)}% / fs ${(stats.ioDelivered * 100).toFixed(0)}%`,
   ].join('  ');
+}
+
+/**
+ * The single verdict line four CI report steps grep for, rendered in one place.
+ *
+ * Exported, and used by `settle` below rather than duplicated there, because
+ * the coupling is the point. The `LATENCY BUDGET PASS ·` / `LATENCY BUDGET
+ * INCONCLUSIVE ·` prefix is what
+ * .github/workflows/generate-check.yml keys on, and it used to be assembled at
+ * the call site while the test that claims to hold CI to it re-typed the prefix
+ * by hand. Changing the prefix therefore broke nothing locally and would have
+ * reddened every report step on the next push. With one renderer, the fixture
+ * in latency-budget-ci.test.ts is built from the same function the instrument
+ * prints from, so a prefix or column change is red HERE first.
+ *
+ * A FAIL has no line: it throws, and the exception is the report.
+ */
+export function latencyVerdictLine(label: string, budgetMs: number, outcome: LatencyOutcome): string {
+  if (outcome.verdict === 'inconclusive') {
+    return `LATENCY BUDGET INCONCLUSIVE · ${label} · ${outcome.reason}`;
+  }
+  return `LATENCY BUDGET PASS · ${latencyStatsLine(label, outcome.stats)}  budget ${budgetMs.toFixed(2)} ms`;
 }
 
 function banner(label: string, budgetMs: number, outcome: LatencyOutcome): string {
@@ -474,7 +815,8 @@ function banner(label: string, budgetMs: number, outcome: LatencyOutcome): strin
     `  budget              ${budgetMs.toFixed(2)} ms  (p95, wall clock, n=${s.n}, attempts=${s.attempts})`,
     `  wall p50/p95/max    ${s.wallP50.toFixed(2)} / ${s.wallP95.toFixed(2)} / ${s.wallMax.toFixed(2)} ms`,
     `  cpu  p50/p95/max    ${s.cpuP50.toFixed(2)} / ${s.cpuP95.toFixed(2)} / ${s.cpuMax.toFixed(2)} ms   <- contention cannot inflate this`,
-    `  CPU delivered       ${(s.delivered * 100).toFixed(0)}% of a fixed reference workload's request`,
+    `  CPU delivered       ${(s.delivered * 100).toFixed(0)}% of a fixed arithmetic reference workload's request`,
+    `  filesystem deliv.   ${(s.ioDelivered * 100).toFixed(0)}% of a fixed read reference workload's request`,
     '',
     `  ${outcome.reason}`,
     '',
@@ -502,18 +844,37 @@ function banner(label: string, budgetMs: number, outcome: LatencyOutcome): strin
  * allowlisted names, so a switch spelled that way is erased before any test
  * reads it and silently does nothing. Any future test-visible switch has the
  * same trap.
+ *
+ * EXPORTED, and only so it can be EXECUTED. The strict branch below is the
+ * escalation every "an inconclusive row is still a hard failure under the
+ * switch" sentence in this repo rests on, and it is now the ONLY one: the CI
+ * step that sets the switch runs latency-budget.test.ts, whose self-check row
+ * reaches this branch through `settleSelfCheck` below. It used to hand-roll a
+ * second escalation of its own, which meant the branch CI executed and the
+ * branch the tests drove were different branches — a mutation disabling the
+ * reachable one survived both suites with the switch set, guarded by nothing
+ * but a substring search for its shape in the row's own source. One escalation
+ * is what makes driving this function evidence about production. Driving
+ * `assertLatencyBudget` instead would mean taking a real measurement to reach
+ * one line; this seam takes a recorded outcome.
+ *
+ * THE VERDICT LINE IS EMITTED BEFORE THE SWITCH IS READ, deliberately: it
+ * carries the numbers, and the report step in generate-check.yml reads it on
+ * both sides of the switch to tell "this runner left the corridor" (the marker
+ * is there too) from "the escalation did not happen" (it is not). Throwing
+ * first would leave the engaging run with no verdict line at all, i.e. with the
+ * arm of that step that names the machine unreachable.
  */
-function settle(t: TestContext, label: string, budgetMs: number, outcome: LatencyOutcome): LatencyOutcome {
+export function settle(t: TestContext, label: string, budgetMs: number, outcome: LatencyOutcome): LatencyOutcome {
   if (outcome.verdict === 'fail') {
     throw new Error(`${label}: ${outcome.reason}`);
   }
   if (outcome.verdict === 'inconclusive') {
-    const text = banner(label, budgetMs, outcome);
-    if (process.env[STRICT_ENV] === '1') {
-      throw new Error(`${label}: INCONCLUSIVE under ${STRICT_ENV}=1 — ${outcome.reason}`);
+    t.diagnostic(latencyVerdictLine(label, budgetMs, outcome));
+    if (strictModeEngaged()) {
+      throw new Error(`${label}: ${STRICT_FAILURE_MARKER} — ${outcome.reason}`);
     }
-    process.stderr.write(text);
-    t.diagnostic(`LATENCY BUDGET INCONCLUSIVE · ${label} · ${outcome.reason}`);
+    process.stderr.write(banner(label, budgetMs, outcome));
     t.skip(`INCONCLUSIVE (budget NOT checked) · ${label} · ${outcome.reason}`);
     return outcome;
   }
@@ -521,12 +882,50 @@ function settle(t: TestContext, label: string, budgetMs: number, outcome: Latenc
   // with 20x of headroom apart from one that cleared by a millisecond, and the
   // second is a budget about to start flaking with no warning anywhere in the
   // log. Every node:test reporter prints diagnostics inline.
-  t.diagnostic(`LATENCY BUDGET PASS · ${latencyStatsLine(label, outcome.stats)}  budget ${budgetMs.toFixed(2)} ms`);
+  t.diagnostic(latencyVerdictLine(label, budgetMs, outcome));
   return outcome;
 }
 
 export function assertLatencyBudget(t: TestContext, options: LatencyBudgetOptions): LatencyOutcome {
   return settle(t, options.label, options.budgetMs, measureLatencyBudget(options));
+}
+
+/**
+ * The self-check row's corridor exit, settled the way every other unanswerable
+ * measurement in this repo is. Returns true when the machine left the corridor
+ * and the caller has nothing left to assert.
+ *
+ * HERE RATHER THAN IN THE ROW, and that placement is the whole point. The row
+ * used to hold this decision itself — `if (strictModeEngaged()) assert.fail(…)`
+ * beside a `t.skip(…)` — which put the escalation CI actually reaches inside a
+ * test file that cannot be imported without registering ten seconds of live
+ * measurement. So it was never executed by anything: instrumented across both
+ * suites with the switch set, that branch was entered ZERO times, and replacing
+ * its condition with `strictModeEngaged() && false` left 111/111 and 16/16
+ * green. Its only guard was a regex over the row's source text, which is the
+ * construction this instrument's own docblocks denounce, applied to the one
+ * branch production depends on.
+ *
+ * With the decision here it is an ordinary seam: latency-budget-ci.test.ts
+ * drives all three corridor outcomes against both switch states with recorded
+ * statistics, in-process, in milliseconds. What is left in the row is the CALL,
+ * and a call is the one thing a source-text check can honestly assert — the
+ * body it names is executed elsewhere.
+ */
+export function settleSelfCheck(t: TestContext, outcome: LatencyOutcome, numbers: string): boolean {
+  const outside = selfCheckCorridorMiss(outcome.stats);
+  if (!outside) return false;
+  // A MISS IS THREE-VALUED, not red, and that is this instrument's contract
+  // applied to itself: leaving the corridor is the statement "this machine
+  // cannot host this measurement", which is what `classifyLatency` returns
+  // INCONCLUSIVE for. On the serial runner the strict switch turns it into the
+  // hard failure it should be there, and `settle` is what does that.
+  settle(t, `${SELF_CHECK_LABEL} · corridor not reachable`, SELF_CHECK_BUDGET_MS, {
+    verdict: 'inconclusive',
+    reason: `${outside} — ${numbers}`,
+    stats: outcome.stats,
+  });
+  return true;
 }
 
 /** The async twin of assertLatencyBudget — same three-valued contract. */

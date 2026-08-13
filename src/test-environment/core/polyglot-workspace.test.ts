@@ -300,7 +300,11 @@ test('polyglot workspace: a container `workspaces` glob that matches NO member c
  * resolution leniency and loses its deletion authority. Failing in opposite
  * directions for the two consumers is the point — a hook that guesses wrong
  * about resolution mints a stray `.traffic-one` the next sweep heals, and a
- * sweep that guesses wrong destroys durable project memory that nothing heals.
+ * sweep that guesses wrong reclaims a real member's run history and its
+ * `.one.json`, neither of which anything regenerates. The member's durable
+ * documents outlive that much — retention.ts carves them out of the heal by
+ * name — so what a wrong guess costs is the project's identity and its record
+ * of what it built, not its product.md.
  */
 test('polyglot workspace: an UNPARSEABLE container declaration still anchors resolution and still grants no deletion', () => {
   withWorkspace(ONBOARDED_MEMBERS, (workspace) => {

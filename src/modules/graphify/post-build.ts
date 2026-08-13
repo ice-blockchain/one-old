@@ -20,7 +20,7 @@ import { resolveProjectRoot } from '../../shared/hook/paths';
 import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
 import { bootstrap as graphifyBootstrapImpl, graphifyGraphIsEmpty } from '../../runners/graphify';
 import { authSatisfied } from '../../shared/auth';
-import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
+import { isNewProjectMode, mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { nowIso } from '../../shared/text';
 
@@ -62,7 +62,7 @@ export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
   if (!BUILD_COMMAND_RE.test(command)) return noop();
 
   const state = readEffectiveState(cwd);
-  if (state.mode !== 'new-project' || state.onboardingComplete !== true) return noop();
+  if (!isNewProjectMode(state) || state.onboardingComplete !== true) return noop();
 
   // Dispatch by codeGraphProvider. Without a provider, the post-write
   // incomplete-onboarding warning already nags; this hook stays silent rather

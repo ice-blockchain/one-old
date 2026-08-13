@@ -11,6 +11,11 @@
 // thin shim that spawns the shipped scripts/opencode-runner.cjs — all delegation
 // logic (worktree isolation, digests, attempt markers) stays in that one runner.
 
+import {
+  EMITTED_BOUNDED_READ_FN,
+  emittedBoundedReadSource,
+} from '../shared/emitted-bounded-read';
+
 // Registry key in `.mcp.json` AND the serverInfo.name reported on `initialize`.
 export const OPENCODE_MCP_SERVER_KEY = 'opencode-worker';
 
@@ -71,7 +76,17 @@ export function openCodeMcpServerEntry(pluginRootEnvKeys: readonly string[]): Mc
     `const envRoot=[${rootKeys}].map(k=>e[k]).find(Boolean);`,
     'const root=envRoot?p.resolve(envRoot):\'\';',
     `const candidate=root?p.join(root,'${OPENCODE_MCP_SHIM_PATH}'):'';`,
-    "const isPlugin=(r)=>{try{return JSON.parse(fs.readFileSync(p.join(r,'package.json'),'utf8')).name==='traffic-one';}catch{return false;}};",
+    // The identity read is BOUNDED INLINE, from the one emitted copy of the
+    // leaf's rule (shared/emitted-bounded-read.ts): O_NONBLOCK so a FIFO opens
+    // instead of waiting, then fstat on the DESCRIPTOR. A COST CLASS BELOW the
+    // wrappers' and stated so it is not re-litigated: `root` here is a
+    // HOST-PROVIDED plugin root (*_PLUGIN_ROOT), i.e. an install directory, so
+    // the pull-request delivery route that made the wrappers a blocker does not
+    // reach it — planting a shape at `<root>/package.json` needs a local process
+    // or a hostile host config. Bounded anyway: the guard is one interpolation
+    // and the alternative is a fourth hand-written copy of the same argument.
+    emittedBoundedReadSource('fs'),
+    `const isPlugin=(r)=>{try{return JSON.parse(${EMITTED_BOUNDED_READ_FN}(p.join(r,'package.json'))??'null').name==='traffic-one';}catch{return false;}};`,
     "const direct=candidate&&fs.existsSync(candidate)&&isPlugin(root)?candidate:'';",
     // One of the TWO copies of globalTrafficOneDir() (shared/state-root.ts) that
     // cannot import it; the other is the launcher in shared/windsurf-hook-command

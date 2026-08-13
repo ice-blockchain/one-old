@@ -17,6 +17,7 @@
 // does with an API key), which this repository cannot observe.
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -24,8 +25,8 @@ import { test } from 'node:test';
 import { HOST_CAPABILITIES, type TrafficOneHost } from '../src/shared/host/capability-schema';
 import { UNCERTIFIED_HOST_OPT_OUT_ENV } from '../src/shared/host/tiers';
 import { selfRelativePluginRoot } from '../src/shared/doctor-command';
-import { isTrafficOneDoctorCommand } from '../src/shared/tool-classify';
-import { RUNNER_SHIMS } from '../src/shared/runner-shims';
+import { isTrafficOneDoctorCommand, isTrafficOneResetCommand } from '../src/shared/tool-classify';
+import { RUNNER_SHIMS, shimSource } from '../src/shared/runner-shims';
 import { agentOnboardingUrls } from '../src/config/dashboard';
 import { ONE_SETTINGS_VERSION } from '../src/config/one-settings';
 import {
@@ -210,6 +211,45 @@ test('every doctor command the README prints is one the gate admits', () => {
       true,
       `README prints a doctor command the gate denies: ${documented}\n  (resolved to: ${command})`,
     );
+  }
+});
+
+// The same property for the other recovery command, and it matters more here:
+// reset is the escape from a run that has no other escape, so a spelling the
+// README prints and the gate denies would leave a wedged project with nothing
+// at all. `<id>` stands for a run id, which the grammar bounds to
+// DOCTOR_ID_PATTERN (doctor-command.ts) — substituted the way a reader would.
+test('every reset command the README prints is one the gate admits', () => {
+  const commands = [...README.matchAll(/node [^\n`]*?traffic-one-reset\.cjs[^\n`]*/g)].map((match) => match[0]);
+  assert.ok(commands.length >= 1, 'README no longer prints the wedged-run recovery command');
+  // The sibling doctor test above substitutes the self-relative plugin root and
+  // is immune to what is on the machine; this one is not, because the README's
+  // reset spelling is the `~/.traffic-one/bin` shim, whose admission is decided
+  // by a byte-comparison against the running template. So HOME is pointed at a
+  // fixture holding the reference bytes: the property under test is that the
+  // documented SPELLING is admissible, not that this machine's install is
+  // current. Without it the test was red on any machine whose shim predated a
+  // template edit and vacuously green wherever no shim exists at all.
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'one-readme-home-')));
+  const previous = process.env.HOME;
+  try {
+    process.env.HOME = home;
+    const bin = path.join(home, '.traffic-one', 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'traffic-one-reset.cjs'), shimSource('scripts/traffic-one-reset.cjs'), 'utf8');
+    for (const documented of commands) {
+      const command = documented
+        .replace('/absolute/path/to/traffic-one/dist', selfRelativePluginRoot())
+        .replace('<id>', '1785169657252');
+      assert.equal(
+        isTrafficOneResetCommand('Bash', { command }),
+        true,
+        `README prints a reset command the gate denies: ${documented}\n  (resolved to: ${command})`,
+      );
+    }
+  } finally {
+    if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

@@ -12,6 +12,7 @@
 
 import type { CaseSpec } from '../run-case';
 import {
+  cursorReady,
   declinedProject,
   existingCodebaseUndetectable,
   freshProject,
@@ -19,6 +20,7 @@ import {
   FIXTURE_SESSION_ID,
   materializedGreenfield,
   onboardedNotMaterialized,
+  roleContractsUnwritable,
   undecidedProject,
 } from '../fixtures';
 import { onboardingWaitCommand } from '../../../src/shared/onboarding-server/wait-command';
@@ -255,5 +257,40 @@ export const ONBOARDING_CASES: CaseSpec[] = [
       filePath: '.traffic-one/.one.json',
       content: '{"onboardingComplete":true,"team":{"mode":"main-agent","approved":true}}\n',
     },
+  },
+  // ── the role-contract ruling, all three rows ──────────────────────────────
+  // A host whose per-role contracts cannot be written blocks FILE-CHANGING work
+  // and nothing else. The three rows together are the ruling: without the read
+  // row it reads as "the session is blocked", and without the healthy row it
+  // reads as a predicate that fires on everything. They also cost one gate
+  // outcome each, which is the only place this can be characterized — the
+  // shortfall was reported into a return value for a whole round before anyone
+  // noticed four of five callers discard it.
+  {
+    id: 'onboarding.role-contracts-unwritable-write',
+    notes: 'A mutating write on a materialized Cursor project whose `.cursor/agents` is a plain file -> host-role-contracts-unwritable. The contracts are what constrain a spawned role, so a build proceeding here runs every role unconstrained while every artifact insists materialization succeeded. Asked of DISK on each call rather than of a materialization result, which is why it still fires in this steady state where convergence short-circuits',
+    host: 'cursor',
+    event: 'PreToolUse',
+    project: roleContractsUnwritable,
+    expectGate: 'onboarding-gate',
+    tool: { class: 'file-write', rawName: 'Write', filePath: 'apps/web/src/components/Widget.tsx', content: 'export default function Widget() { return null; }\n' },
+  },
+  {
+    id: 'onboarding.role-contracts-unwritable-read-allowed',
+    notes: 'Same broken project, a READ -> not denied. This is the half of the ruling that keeps it proportionate: an agent can still look at the codebase, and the user can still be told what to repair. A future widening that costs the whole session reds here rather than at a user',
+    host: 'cursor',
+    event: 'PreToolUse',
+    project: roleContractsUnwritable,
+    expectGate: null,
+    tool: { class: 'file-read', rawName: 'Read', filePath: 'apps/web/src/components/Widget.tsx' },
+  },
+  {
+    id: 'onboarding.role-contracts-healthy-write-not-denied',
+    notes: 'The discriminating control: the SAME write on a healthy Cursor project passes the role-contract check and goes on to be judged by the plan gate (plan-guard.write/plan-gate — this fixture has no plan). If the refusal ever stops depending on the planted file, this row moves to onboarding-gate and names it',
+    host: 'cursor',
+    event: 'PreToolUse',
+    project: cursorReady,
+    expectGate: 'plan-guard.write',
+    tool: { class: 'file-write', rawName: 'Write', filePath: 'apps/web/src/components/Widget.tsx', content: 'export default function Widget() { return null; }\n' },
   },
 ];

@@ -11,13 +11,21 @@ name: Generate check
 # platforms, yet until now nothing in CI ever generated or hashed the tree
 # anywhere but ubuntu-latest.
 #
-# `latency-budget` is the QUIET path: two test files, alone, on a runner that has
-# done nothing else. It exists because the measurements in this repo whose
-# subject is wall-clock time cannot be taken on a machine running 291 test files
-# at once, and a budget that is never evaluated anywhere is a budget that has
-# stopped being enforced. It carries the Write pre-tool p95 budget (the older,
-# single-event claim) and tests/hook-timing (per-event dispatch cost for all
-# seven canonical events, plus the OS-process leg that only runs here).
+# `latency-budget` is the QUIET path: FIVE test files, each alone, on a runner
+# that has done nothing else. It exists because the measurements in this repo
+# whose subject is wall-clock time cannot be taken on a machine running 291 test
+# files at once, and a budget that is never evaluated anywhere is a budget that
+# has stopped being enforced. It carries the Write pre-tool p95 budget (the
+# older, single-event claim), the three session-start budgets, the hot
+# structural-analysis budget, tests/hook-timing (per-event dispatch cost for
+# all seven canonical events, plus the OS-process leg that only runs here), and
+# the instrument's own live self-check, which is the one file here that is run
+# under T1_LATENCY_BUDGET_STRICT=1 -- see that step for why a three-valued row
+# needs one home where its third value is fatal.
+# src/test-support/__tests__/latency-budget-ci.test.ts fails the suite if a file
+# asserting a wall-clock budget is not measured by a step of this job, and
+# src/test-support/__tests__/budget-census.ts is what finds those files by SHAPE
+# rather than by what they import.
 #
 # `test-env-strict` is the SLOW path: `npm run test:env -- --strict`, the only
 # thing that exercises how the gates, the architecture compiler, the QA runner
@@ -143,6 +151,77 @@ jobs:
           set -o pipefail
           npm test 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
 
+      # THE SUITE RAN. Everything above this line — every rule in
+      # src/test-support/__tests__/ci-workflow.ts, every budget, every gate —
+      # is evaluated by tests that this one step runs, and the cheapest way to
+      # switch all of it off is not to delete anything but to FILTER it:
+      # `--test-name-pattern`, `--test-only`, a narrowed glob. Measured on Node
+      # 26.5.0 against a file containing one FAILING test, `npm test --
+      # --test-only` and `npm test -- --test-name-pattern='zzzz-no-such-test'`
+      # each exit 0 and print `tests 1 / pass 1 / fail 0`: the command
+      # succeeds, the log reads green, and nothing ran. (This runner pins Node
+      # 22; that version was not measured, and the check below does not depend
+      # on which of the two is right.)
+      #
+      # The audit refuses a filter written into the `run:` line above. It
+      # cannot see one arriving from the `test` script in package.json, from
+      # NODE_OPTIONS, or from an .npmrc — no rule about this file can. The
+      # runner's own summary can, because a suite of thousands reporting a few
+      # hundred passes did not run, and that makes this the one member of the
+      # residual that is closable rather than merely stated.
+      #
+      # THE FLOOR IS DELIBERATELY SLACK, AND IT IS SET FROM WHAT WAS VERIFIED
+      # RATHER THAN FROM THE SUITE'S SIZE. The largest count actually measured
+      # for this line is 1,682 passing tests: a full local run reached that and
+      # then hung in an unrelated wizard-server test, twice, at the same place,
+      # so no local run has produced a total. Other comments in this file cite
+      # 3,409 and 3,145 from maintainer runs; those are not re-measured here and
+      # the floor does not rest on them. 1500 is under a verified count and two
+      # orders of magnitude over what a filter leaves behind — the two measured
+      # above leave ONE — so it catches the failure mode without reddening on a
+      # suite that grows or shrinks. Pinning the exact count would make every
+      # added test a red, which is how a check earns its deletion; this is not a
+      # coverage gate and does not pretend to be one. Raise it once a completing
+      # run is on record.
+      #
+      # `if: always()` so a red suite is still counted: a filter that also
+      # breaks something would otherwise skip this step and take its own
+      # evidence with it. A missing log means the step above never produced
+      # one, which is its own red; the audit separately refuses a suite step
+      # that tees nowhere, so deleting the pipe is not a way past this.
+      - name: "Refuse a suite that ran (almost) nothing"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/npm-test.log"
+          floor=1500
+          [ -f "$log" ] || exit 0
+          # tap prints `# pass <n>`, spec prints `ℹ pass <n>`; Node 22 and
+          # Node 26 default to different reporters and both spellings are
+          # correct output. Last match wins: the summary is the final one.
+          #
+          # Assigned inside an `if`, which is exempt from errexit, for the same
+          # reason the hook-timing row count below is: `grep` exits 1 when it
+          # matches nothing, and this step runs under `bash --noprofile --norc
+          # -eo pipefail {0}`. Written bare it was MEASURED dying right here on
+          # the one log the branch below exists for — a log with no summary in
+          # it — leaving a red with no annotation attached, which is how a
+          # maintainer concludes a check is noise. Not `|| true`, which reads as
+          # a swallowed failure to the audit and to a reader.
+          if ! passed=$(grep -Eo '^[[:space:]]*(#|ℹ)[[:space:]]*pass[[:space:]]+[0-9]+' "$log" \
+            | grep -Eo '[0-9]+$' | tail -n 1); then
+            passed=''
+          fi
+          if [ -z "$passed" ]; then
+            echo "::error title=The suite reported no count::no 'pass <n>' summary line appeared in the output, so nothing here can tell a full run from a run that executed nothing"
+            exit 1
+          fi
+          if [ "$passed" -lt "$floor" ]; then
+            echo "::error title=The suite did not run::it reported $passed passing tests against a floor of $floor, which is the shape a runner-level filter leaves behind — a green log for a suite that executed almost nothing"
+            exit 1
+          fi
+          echo "Suite reported $passed passing tests (floor $floor)." >> "$GITHUB_STEP_SUMMARY"
+
       # The Write pre-tool latency budget (src/test-support/__tests__/latency-budget.ts)
       # is three-valued: PASS, FAIL, or "this machine could not answer". node:test
       # has no third state, so INCONCLUSIVE is encoded as a SKIP -- and one skip
@@ -158,6 +237,15 @@ jobs:
       # 0.8 floor, i.e. inside the inconclusive region by construction. Strict mode
       # here would be red on most pushes for a reason no code change can fix,
       # reinstating the flake the three-valued instrument was built to remove.
+      #
+      # So the warning stays, and what makes it honest rather than a self-mute is
+      # that EVERY budget in the repo is also measured serially in the
+      # `latency-budget` job below, where a verdict is possible.
+      # src/test-support/__tests__/latency-budget-ci.test.ts fails the suite if a
+      # file asserting a budget is not named by that job -- which is how the
+      # session-start budgets came to be listed there, having previously been
+      # measured only on this parallel path, i.e. warned about and never enforced
+      # anywhere.
       #
       # The ENFORCING measurement is the `latency-budget` job below.
       - name: "Latency budget: surface an unanswerable measurement"
@@ -184,7 +272,38 @@ jobs:
             echo '```'
             echo
             echo "This is not a pass: the budget was not evaluated on this run."
-            echo "The enforcing measurement is the **Latency budget (serial)** job."
+            echo "The enforcing measurement is the **Latency budget (serial)** job, which runs"
+            echo "every file that asserts a budget -- see the coverage test named above."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Same three-piece shape as the budget step above, for a different gate that
+      # can stand itself down: the project-state-lock clock row gates one assertion
+      # on runner speed and counts the times it gave up. The count was a
+      # `t.diagnostic` line in a log deleted with the runner, so "off on two runs in
+      # three" and "off on every run forever" read identically. This step is the
+      # second piece; src/shared/state/__tests__/lock-disarm-ci.test.ts is the third
+      # and reds if this step stops naming the marker.
+      - name: "Lock clock: surface a disarmed timing assertion"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/npm-test.log"
+          [ -f "$log" ] || exit 0
+          grep -q 'T1 LOCK CLOCK DISARM' "$log" || exit 0
+          reason=$(grep -o 'T1 LOCK CLOCK DISARM.*' "$log" \
+            | awk '{ if (length($0) > length(best)) best = $0 } END { print best }')
+          case "$reason" in *"disarms=0"*) exit 0 ;; esac
+          echo "::warning title=Lock timing assertion disarmed (${{ matrix.os }})::${reason//%/%25}"
+          {
+            echo "### Project-state-lock clock row — a timing assertion stood itself down"
+            echo
+            echo '```'
+            echo "$reason"
+            echo '```'
+            echo
+            echo "Not a failure: the gated half asserts a lower bound on runner SPEED and load"
+            echo "removes speed. What it is is a rate — if this appears on most runs, the gated"
+            echo "half is buying nothing and the counted-sleep row is carrying the property alone."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compiled-runtime smoke (bare-node dispatch)
@@ -226,8 +345,23 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        id: install
         run: npm ci
 
+      # Every measurement below carries the SAME condition, and it is the reason
+      # a breach in one no longer hides the other two. A step with no `if:`
+      # defaults to `success()`, so the first budget that fails skips the rest
+      # and the job reports one failure having taken one of three measurements —
+      # on a runner whose whole purpose was to be idle for all three. `!cancelled()`
+      # lifts that; `steps.install.outcome == 'success'` puts back the only part
+      # of `success()` worth keeping here, so a failed checkout or `npm ci` still
+      # skips the measurements instead of reporting three unrelated reds.
+      #
+      # None of this can turn a red green: `if:` decides whether a step RUNS, not
+      # what its exit code means, and src/test-support/__tests__/latency-budget-ci.test.ts
+      # requires the condition on every measurement step and rejects
+      # `continue-on-error` and `|| true` anywhere in this job.
+      #
       # No `gen`/`build` on purpose. src/build/test-preload.mjs pins the plugin
       # root at this checkout and this file's prose resolves from `src/`, so the
       # generated tree is never read -- verified by running this exact command
@@ -239,6 +373,7 @@ jobs:
       # calling it: that script takes globs, so there is no way to ask `npm test`
       # for one file. If its preload or loader changes, this line must follow.
       - name: "Write pre-tool p95 budget (one file, alone, nothing else running)"
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         shell: bash
         run: |
           set -o pipefail
@@ -250,24 +385,102 @@ jobs:
       # switch: classifyLatency returns FAIL, not INCONCLUSIVE, whenever the CPU
       # alone is over budget or the wall clock is over budget on a machine proven
       # to be delivering its CPU. So this job enforces the budget in every case
-      # the measurement can answer. What is left are the two ways its green tick
-      # could be hollow, and this step closes both.
+      # the measurement can answer. What is left are the ways its green tick
+      # could be hollow, and this step closes them.
+      #
+      # NAMES ARE NOT EVIDENCE, AND THIS STEP USED TO ASK FOR NOTHING ELSE. Every
+      # guard here was a `grep -qF '<test title>'`, and a title is a string the
+      # measurement step itself can print: an `echo` in place of the measurement,
+      # naming the file on its `run:` line and piping three test titles into the
+      # log, kept this step exiting 0 while nothing was measured. So the title
+      # check stays, because a rename deserves its own precise message, and the
+      # ENFORCING question is now asked of the instrument's own verdict line WITH
+      # ITS NUMBERS -- `LATENCY BUDGET PASS · <label>  n= <count>  wall
+      # p50/p95/max <p50>/<p95>/<max> ms`, or the INCONCLUSIVE line carrying
+      # `wall p95 <x> ms >= <budget> ms`. Those are printed by
+      # src/test-support/__tests__/latency-budget.ts out of measured data, from
+      # one renderer (`latencyVerdictLine`) that the coverage test's own fixture
+      # also calls, so the column order below cannot drift away from the
+      # instrument without a local red.
+      #
+      # WHAT THIS GREP DOES AND DOES NOT PROVE, because the comment here used to
+      # overclaim. These numbers are NOT unforgeable: their format is documented
+      # four lines up and printed verbatim in this file, so a step written to
+      # emit `LATENCY BUDGET PASS · <label>  n= 250  wall p50/p95/max
+      # 0.48/0.81/2.04 ms` satisfies this check having measured nothing. The
+      # layering is what holds:
+      #
+      #   - the STATIC half refuses the step that would print such a log --
+      #     src/test-support/__tests__/ci-workflow.ts detects an INVOCATION (a
+      #     reachable test runner with the file as a positional argument), so
+      #     there is no way to put an `echo` where the measurement is and still
+      #     be merged;
+      #   - this RUNTIME half catches the cases the static half cannot see --
+      #     the test renamed, filtered out, deleted, or reaching a verdict for a
+      #     different label than the one this job is credited with.
+      #
+      # What the numeric requirement did buy is the difference between copying
+      # three titles out of a test file and copying a format string out of the
+      # file you are editing. That is a real step up and it is not a categorical
+      # one. The patterns are ANCHORED for the same reason: unanchored, the
+      # label sitting inside a shell comment or a sentence of prose in the log
+      # counted as a verdict, which is a shape no adversary is needed to
+      # produce.
+      #
+      # Matched on the DIAGNOSTIC rather than on node:test's per-test result line
+      # on purpose: the default reporter is `tap` on Node 22 and `spec` on Node
+      # 26, so `ok 17 - <name>` and `✔ <name> (23.8ms)` are both correct output
+      # and neither is portable. The diagnostic text is identical under both.
       - name: "Report the verdict (and refuse a hollow green)"
         if: always()
         shell: bash
         run: |
           log="$RUNNER_TEMP/latency-budget.log"
           name='complete Write pre-tool path remains below the 150 ms p95 budget'
+          label='complete Write pre-tool path'
           # No log means an earlier step already failed this job; it does not
           # need a second, less informative red on top.
           [ -f "$log" ] || exit 0
+          # Did the INSTRUMENT report on this label, with the numbers a
+          # measurement produces and an echoed title does not? Both verdicts it
+          # can reach are accepted here; INCONCLUSIVE is handled further down.
+          # ANCHORED, and to the two prefixes a reporter actually emits: `# `
+          # under tap and `ℹ ` under spec, optionally indented. It used to be
+          # `[^A-Za-z]*`, which stops a WORD from preceding the verdict and
+          # nothing else — measured as accepted: a quote marker, a pasted
+          # bullet, an indented failure-YAML line, and a DIFF-REMOVAL line, so a
+          # log showing this verdict being deleted read as the verdict being
+          # present. What is left is a limit rather than a defect: a tap
+          # diagnostic marker is a `#` and so is a shell comment, and no pattern
+          # can separate them. Two labels carry `+`, `(`, `)` and
+          # `.`, so the label is escaped into the pattern rather than matched
+          # with -F. One grep, not a `grep -F | grep -q` pair: the downstream
+          # `-q` exits on its first match and SIGPIPEs the upstream, which under
+          # this job's pipefail turns a log with many matching lines into a
+          # failure.
+          ere() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+          measured() {
+            local pattern
+            pattern=$(ere "$1")
+            grep -Eq "^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?LATENCY BUDGET PASS · ${pattern}[[:space:]]+n=[[:space:]]*[1-9][0-9]*  wall p50/p95/max [0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2} ms" "$log" && return 0
+            grep -Eq "^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?LATENCY BUDGET INCONCLUSIVE · ${pattern} · wall p95 [0-9]+\.[0-9]{2} ms >= [0-9.]+ ms" "$log" && return 0
+            return 1
+          }
+          fail=0
           # 1. This job is ONE test. If it did not run -- renamed, filtered out,
           #    deleted -- a green job certifies nothing whatsoever.
           if ! grep -qF "$name" "$log"; then
             echo "::error title=Latency budget test did not run::nothing matching '$name' appeared in the output, and running exactly that test is this job's only purpose"
-            exit 1
+            fail=1
           fi
-          # 2. It ran and could not answer. That is not a pass, and it is the one
+          # 2. And it MEASURED. A log that names the test but carries no verdict
+          #    line for its label was not produced by this measurement.
+          if ! measured "$label"; then
+            echo "::error title=Latency budget was never measured::no 'LATENCY BUDGET PASS/INCONCLUSIVE · $label' line with its numbers appeared in the output, so whatever produced this log did not run the instrument"
+            fail=1
+          fi
+          [ "$fail" = 0 ] || exit 1
+          # 3. It ran and could not answer. That is not a pass, and it is the one
           #    outcome that is otherwise a silent skip.
           if grep -q 'LATENCY BUDGET INCONCLUSIVE' "$log"; then
             # Longest match: the phrase is on the banner title AND on the
@@ -293,9 +506,297 @@ jobs:
           fi
           echo "### Latency budget — measured, answered, and within budget" >> "$GITHUB_STEP_SUMMARY"
 
-      # Second measurement, same idle runner, deliberately AFTER the one above.
-      # The Write pre-tool budget is the older claim and gets the quietest slot;
-      # this one measures every OTHER hook event, which had no budget at all.
+      # The session-start budgets, which until now were enforced NOWHERE. They
+      # assert the same three-valued contract as the step above, but the only
+      # place they ran was inside `npm test` -- i.e. on the parallel path, where
+      # an INCONCLUSIVE is a warning by design. A budget whose only home is a
+      # step that cannot fail is not a budget, and this is the step that ends
+      # that. Same one-file-alone shape as above, and for the same reason: this
+      # path's cost is a readFileSync, so it is the one most sensitive to a
+      # neighbour's filesystem traffic (measured: wall p95 0.54 ms alone,
+      # 10.69 ms beside twelve peer test files, against a 15 ms budget).
+      - name: "Session-start p95 budgets (one file, alone, nothing else running)"
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -o pipefail
+          node --import ./src/build/test-preload.mjs --import tsx --test \
+            src/modules/session/__tests__/session-updates-surface.test.ts 2>&1 \
+            | tee "$RUNNER_TEMP/session-latency.log"
+
+      # Same "refuse a hollow green" contract as every other report step here,
+      # including the numeric one -- see the first report step above for why a
+      # test TITLE is not evidence that a measurement happened.
+      - name: "Report the session-start verdicts (and refuse a hollow green)"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/session-latency.log"
+          [ -f "$log" ] || exit 0
+          # ANCHORED, and to the two prefixes a reporter actually emits: `# `
+          # under tap and `ℹ ` under spec, optionally indented. It used to be
+          # `[^A-Za-z]*`, which stops a WORD from preceding the verdict and
+          # nothing else — measured as accepted: a quote marker, a pasted
+          # bullet, an indented failure-YAML line, and a DIFF-REMOVAL line, so a
+          # log showing this verdict being deleted read as the verdict being
+          # present. What is left is a limit rather than a defect: a tap
+          # diagnostic marker is a `#` and so is a shell comment, and no pattern
+          # can separate them. Two labels carry `+`, `(`, `)` and
+          # `.`, so the label is escaped into the pattern rather than matched
+          # with -F. One grep, not a `grep -F | grep -q` pair: the downstream
+          # `-q` exits on its first match and SIGPIPEs the upstream, which under
+          # this job's pipefail turns a log with many matching lines into a
+          # failure.
+          ere() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+          measured() {
+            local pattern
+            pattern=$(ere "$1")
+            grep -Eq "^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?LATENCY BUDGET PASS · ${pattern}[[:space:]]+n=[[:space:]]*[1-9][0-9]*  wall p50/p95/max [0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2} ms" "$log" && return 0
+            grep -Eq "^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?LATENCY BUDGET INCONCLUSIVE · ${pattern} · wall p95 [0-9]+\.[0-9]{2} ms >= [0-9.]+ ms" "$log" && return 0
+            return 1
+          }
+          # The three budgets are split across three tests on purpose (one
+          # INCONCLUSIVE leg would otherwise skip the whole function), so all
+          # three names have to appear or this job under-measured.
+          fail=0
+          for name in \
+            'latency · the repeated SessionStart read stays a local read' \
+            'latency · the empty feed, which is what every session on every machine pays' \
+            'latency · the full first-session path, including the once-marker write'; do
+            if ! grep -qF "$name" "$log"; then
+              echo "::error title=Session-start budget did not run::nothing matching '$name' appeared in the output"
+              fail=1
+            fi
+          done
+          # And the same three, by the LABEL each one hands the instrument, with
+          # the numbers only a measurement prints.
+          for label in \
+            'session-start · unseen updates read + frame (8 items)' \
+            'session-start · unseen updates read, empty feed' \
+            'session-start · unseen updates, full first-session path incl. marker write'; do
+            if ! measured "$label"; then
+              echo "::error title=Session-start budget was never measured::no 'LATENCY BUDGET PASS/INCONCLUSIVE · $label' line with its numbers appeared in the output"
+              fail=1
+            fi
+          done
+          [ "$fail" = 0 ] || exit 1
+          if grep -q 'LATENCY BUDGET INCONCLUSIVE' "$log"; then
+            reason=$(grep -o 'LATENCY BUDGET INCONCLUSIVE.*' "$log" \
+              | awk '{ if (length($0) > length(best)) best = $0 } END { print best }')
+            echo "::warning title=Session-start budget UNENFORCED on this run::${reason//%/%25}"
+            {
+              echo "### Session-start latency — INCONCLUSIVE, budget NOT enforced"
+              echo
+              echo '```'
+              echo "$reason"
+              echo '```'
+              echo
+              echo "Measured alone on an idle runner this path clears its budget by more than 18x,"
+              echo "so an inconclusive here means the runner was not idle. Recurrence means the"
+              echo "hosted runner cannot host this budget, not that the budget is wrong."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "### Session-start latency — measured, answered, and within budget" >> "$GITHUB_STEP_SUMMARY"
+
+      # The hot structural-analysis budget, which until now was enforced NOWHERE
+      # for a reason no coverage check could see: it asserted `p95 < 150` by hand
+      # over its own `performance.now()` loop instead of going through the
+      # instrument, so it imported nothing, appeared in no coverage set, and ran
+      # only on the parallel path -- where a wall-clock verdict is not evidence in
+      # either direction. Same threshold, same 250 samples, same warmup and same
+      # percentile index as the Write pre-tool budget above. It is now measured
+      # through assertLatencyBudget (see the test) and here, alone, where a
+      # verdict is possible. The census that finds this shape -- a clock
+      # difference plus a numeric threshold, whatever it imports -- lives in
+      # src/test-support/__tests__/budget-census.ts.
+      - name: "Hot structural analysis p95 budget (one file, alone, nothing else running)"
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -o pipefail
+          node --import ./src/build/test-preload.mjs --import tsx --test \
+            src/modules/plan-guard/__tests__/react-structure.test.ts 2>&1 \
+            | tee "$RUNNER_TEMP/react-structure.log"
+
+      # Same "refuse a hollow green" contract as every other report step here.
+      - name: "Report the structural analysis verdict (and refuse a hollow green)"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/react-structure.log"
+          [ -f "$log" ] || exit 0
+          # ANCHORED, and to the two prefixes a reporter actually emits: `# `
+          # under tap and `ℹ ` under spec, optionally indented. It used to be
+          # `[^A-Za-z]*`, which stops a WORD from preceding the verdict and
+          # nothing else — measured as accepted: a quote marker, a pasted
+          # bullet, an indented failure-YAML line, and a DIFF-REMOVAL line, so a
+          # log showing this verdict being deleted read as the verdict being
+          # present. What is left is a limit rather than a defect: a tap
+          # diagnostic marker is a `#` and so is a shell comment, and no pattern
+          # can separate them. Two labels carry `+`, `(`, `)` and
+          # `.`, so the label is escaped into the pattern rather than matched
+          # with -F. One grep, not a `grep -F | grep -q` pair: the downstream
+          # `-q` exits on its first match and SIGPIPEs the upstream, which under
+          # this job's pipefail turns a log with many matching lines into a
+          # failure.
+          ere() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+          measured() {
+            local pattern
+            pattern=$(ere "$1")
+            grep -Eq "^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?LATENCY BUDGET PASS · ${pattern}[[:space:]]+n=[[:space:]]*[1-9][0-9]*  wall p50/p95/max [0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2} ms" "$log" && return 0
+            grep -Eq "^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?LATENCY BUDGET INCONCLUSIVE · ${pattern} · wall p95 [0-9]+\.[0-9]{2} ms >= [0-9.]+ ms" "$log" && return 0
+            return 1
+          }
+          fail=0
+          name='hot single-file structural analysis remains below the 150 ms p95 budget'
+          if ! grep -qF "$name" "$log"; then
+            echo "::error title=Structural analysis budget did not run::nothing matching '$name' appeared in the output"
+            fail=1
+          fi
+          if ! measured 'hot single-file structural analysis'; then
+            echo "::error title=Structural analysis budget was never measured::no 'LATENCY BUDGET PASS/INCONCLUSIVE · hot single-file structural analysis' line with its numbers appeared in the output"
+            fail=1
+          fi
+          [ "$fail" = 0 ] || exit 1
+          if grep -q 'LATENCY BUDGET INCONCLUSIVE' "$log"; then
+            reason=$(grep -o 'LATENCY BUDGET INCONCLUSIVE.*' "$log" \
+              | awk '{ if (length($0) > length(best)) best = $0 } END { print best }')
+            echo "::warning title=Structural analysis budget UNENFORCED on this run::${reason//%/%25}"
+            exit 0
+          fi
+          echo "### Hot structural analysis — measured, answered, and within budget" >> "$GITHUB_STEP_SUMMARY"
+
+      # The instrument measuring ITSELF against a filesystem made to wait, and
+      # the only step in this file that sets the strict switch.
+      #
+      # WHY IT IS HERE AT ALL. The row this runs
+      # ("the live instrument reaches an INCONCLUSIVE verdict when the
+      # filesystem is starved") is the only thing in the repo that drives the
+      # three-valued decision procedure over a REAL measurement rather than over
+      # a recorded distribution -- delete the filesystem reference and every
+      # other row in that file still passes, because every other row supplies
+      # its own delivery figure. It binds no asserting entry point, so the
+      # import-shaped coverage rule cannot see it, and until now its only CI home
+      # was the 291-file parallel suite: the most contended job in this
+      # repository, and the one place its verdict cannot mean anything.
+      #
+      # AND WHY STRICT. That row brackets its measurement with a corridor and
+      # SKIPS when the machine leaves it. Measured under ordinary contention,
+      # one run in three left the corridor and the departing run's underlying
+      # verdict was a `fail` -- i.e. the skip converted the run that would have
+      # been red into a run that said nothing, and said it where nothing greps.
+      # T1_LATENCY_BUDGET_STRICT=1 turns that exit into a hard failure, and this
+      # idle runner is where that is the right answer: the corridor was measured
+      # containing every draw taken so far, loaded or idle, so leaving it here
+      # is a statement about the runner and it should stop the job. Off this
+      # step the row stays three-valued, and its skip now prints the
+      # instrument's own `LATENCY BUDGET INCONCLUSIVE` line, which is the phrase
+      # the parallel job's surfacing step already greps for.
+      #
+      # The switch is spelled `T1_`, not `TRAFFIC_ONE_`, and that is not
+      # cosmetic: src/build/test-preload.mjs wipes the whole `TRAFFIC_ONE_`
+      # namespace before any test file loads. The name below is asserted against
+      # the instrument's own exported constant by
+      # src/test-support/__tests__/latency-budget-ci.test.ts, so a rename cannot
+      # leave this step setting a variable nothing reads.
+      - name: "Latency instrument self-check (one file, alone, corridor enforced)"
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: bash
+        env:
+          T1_LATENCY_BUDGET_STRICT: '1'
+        run: |
+          set -o pipefail
+          node --import ./src/build/test-preload.mjs --import tsx --test \
+            src/test-support/__tests__/latency-budget.test.ts 2>&1 \
+            | tee "$RUNNER_TEMP/latency-instrument.log"
+
+      # Same "refuse a hollow green" contract as every other report step here,
+      # with one difference that is the whole point of the step above: an
+      # unanswerable run is a RED here rather than a warning. Everywhere else in
+      # this job an INCONCLUSIVE verdict is the honest third value and warns;
+      # this step is the one place the third value is supposed to be impossible,
+      # because the strict switch above converts it into a test failure.
+      #
+      # AND THAT IS WHY RULE 3 BELOW HAS TWO ARMS. It used to have one, reading
+      # "a corridor-exit line in this log means the switch did not engage", and
+      # that inference is invalid on precisely the runs where the switch DOES
+      # engage: the row prints its corridor diagnostic BEFORE it consults the
+      # switch, so the line is in the log either way. The step therefore
+      # annotated every genuine strict failure with "skipped instead of
+      # measuring" -- blaming a broken switch on a run that had just proved the
+      # switch works, and pointing the maintainer at the wiring instead of at
+      # the runner. Both arms are red, and both should be; only one of them is a
+      # bug in this arrangement rather than a fact about the machine, and the
+      # annotation is the only thing that says which. The two are told apart by
+      # the marker every strict escalation carries, exported from the instrument
+      # as STRICT_FAILURE_MARKER and asserted against this file by
+      # src/test-support/__tests__/latency-budget-ci.test.ts. The row raises no
+      # escalation of its own any more: its corridor exit goes through `settle`,
+      # the one place in the repo that reads the switch, so the branch this
+      # step's two arms are about is the branch that file's tests execute.
+      - name: "Report the latency instrument self-check (and refuse a hollow green)"
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/latency-instrument.log"
+          [ -f "$log" ] || exit 0
+          # ANCHORED, and NARROWER than `[^A-Za-z]*`: the only prefixes a
+          # reporter puts in front of a diagnostic are tap's `# ` and spec's
+          # `ℹ `, optionally indented. The wide form admitted every punctuation
+          # prefix there is, including a diff-removal line -- so a log showing
+          # this verdict being DELETED read as the verdict being present. What
+          # remains is a limit rather than a defect: a tap diagnostic marker
+          # cannot be told from a shell comment even in principle, so `# LATENCY
+          # BUDGET ...` in a log is still accepted.
+          ere() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+          prefix='^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?'
+          fail=0
+          # 1. The row ran at all.
+          name='the live instrument reaches an INCONCLUSIVE verdict when the filesystem is starved'
+          if ! grep -qF "$name" "$log"; then
+            echo "::error title=Latency instrument self-check did not run::nothing matching '$name' appeared in the output, and running exactly that row under the strict switch is this step's only purpose"
+            fail=1
+          fi
+          # 2. And it MEASURED: the instrument's own column renderer, with the
+          #    numbers only a live measurement produces.
+          starved=$(ere 'live filesystem reference (starved)')
+          if ! grep -Eq "${prefix}LIVE STARVED MEASUREMENT · ${starved}[[:space:]]+n=[[:space:]]*[1-9][0-9]*  wall p50/p95/max [0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2} ms" "$log"; then
+            echo "::error title=Latency instrument self-check was never measured::no 'LIVE STARVED MEASUREMENT · live filesystem reference (starved)' line with its numbers appeared in the output, so whatever produced this log did not run the instrument"
+            fail=1
+          fi
+          # 3. And it did not leave the corridor. Under
+          #    T1_LATENCY_BUDGET_STRICT=1 that exit is a test failure, so this
+          #    step reds either way -- but the two ways are different problems
+          #    and the diagnostic line alone cannot tell them apart, because the
+          #    row prints it before it reads the switch.
+          if grep -Eq "${prefix}LATENCY BUDGET INCONCLUSIVE · ${starved} · corridor not reachable" "$log"; then
+            reason=$(grep -o 'LATENCY BUDGET INCONCLUSIVE · live filesystem reference (starved).*' "$log" \
+              | awk '{ if (length($0) > length(best)) best = $0 } END { print best }')
+            if grep -qF 'INCONCLUSIVE under T1_LATENCY_BUDGET_STRICT=1' "$log"; then
+              # The switch engaged and the row failed: the arrangement worked
+              # and THIS RUNNER is the finding. Nothing here is broken except
+              # the premise that this job runs on an idle machine.
+              echo "::error title=Latency instrument self-check left its corridor on this runner (the strict switch engaged and failed the row)::${reason//%/%25}"
+            else
+              # The line is here and the row did not fail, so the escalation did
+              # not happen: the switch stopped being set or stopped being read,
+              # and the measurement degraded to a skip nobody greps. This is the
+              # self-mute the step exists for.
+              echo "::error title=Latency instrument self-check skipped instead of measuring (the strict switch did not engage)::${reason//%/%25}"
+            fi
+            fail=1
+          fi
+          [ "$fail" = 0 ] || exit 1
+          echo "### Latency instrument self-check — measured on an idle runner, corridor enforced" >> "$GITHUB_STEP_SUMMARY"
+
+      # LAST measurement, same idle runner, and last deliberately. The Write
+      # pre-tool budget is the older claim and gets the quietest slot; the
+      # session-start budgets go next because they are the cheapest (one file,
+      # under a second) and the most contention-sensitive; the structural budget
+      # follows; this one measures every OTHER hook event, which had no budget at
+      # all, and goes last because its process leg below is the heaviest thing
+      # this job runs and load decays slowly.
       #
       # T1_HOOK_TIMING_PROCESS=1 is what makes this job different from `npm
       # test`. The OS-process leg compiles the runtime and spawns ~60 bare-node
@@ -305,15 +806,31 @@ jobs:
       # fails if its table does not appear, so "off everywhere" is not a state
       # this repo can drift into silently.
       - name: "Per-event hook timing (one file, alone, process leg enabled)"
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         shell: bash
         env:
           T1_HOOK_TIMING_PROCESS: '1'
           # This job is the ONLY place the per-event budget is enforced rather
           # than merely measured: inside `npm test`'s 291-file parallel suite the
-          # same session-start row reads 45 ms alone and 152-243 ms under load,
-          # and the instrument's starvation detector cannot see the difference
-          # because its reference workload does no I/O. The report step below
-          # fails if the ENFORCED marker is missing.
+          # same session-start row reads 45.31 ms alone (100% CPU delivered) and
+          # 152.40 ms (91%) and 242.86 ms (81%) under load, against 150 ms.
+          #
+          # Do not credit the new filesystem reference for those two loaded
+          # readings without checking which one you mean; re-derived by driving
+          # classifyLatency with both models (.tmp/harness/):
+          #   152.40 @ 91%  inconclusive ALREADY, arithmetic reference alone
+          #                 (152.40 x 0.91 = 138.7 ms, under budget after the
+          #                 discount), and inconclusive at every filesystem
+          #                 delivery from 1.00 down to 0.50 — unchanged.
+          #   242.86 @ 81%  fail under the arithmetic reference alone, and still
+          #                 fail with the filesystem one at >= 0.80; it turns
+          #                 inconclusive only at <= 0.79, and that run's
+          #                 filesystem delivery was never recorded.
+          # So the second reference is why a reading like this CAN come out
+          # inconclusive, not a demonstration that both did. Either way an
+          # inconclusive verdict enforces nothing, so the measurement that
+          # decides still has to happen here, alone. The report step below fails
+          # if the ENFORCED marker is missing.
           T1_HOOK_TIMING_BUDGET: '1'
         run: |
           set -o pipefail
@@ -355,6 +872,37 @@ jobs:
           #    only here, so this job going quiet is the budget going away.
           if ! grep -qF 'HOOK TIMING · BUDGET ENFORCED' "$log"; then
             echo "::error title=Hook timing budget was measured but not enforced::T1_HOOK_TIMING_BUDGET=1 is set on this step precisely so the rows are asserted, not just printed; the ENFORCED marker is missing from the output"
+            fail=1
+          fi
+          # 5. NUMBERS, not markers. Everything above is a string this step could
+          #    have echoed into its own log; see the first report step in this job
+          #    for the shape that did exactly that. The instrument prints a
+          #    verdict line per measured row out of measured data, and the
+          #    dispatch table prints one `wall p50/p95/max` row per invocation --
+          #    at least one per canonical event, and the coverage gate above is
+          #    what keeps that floor honest as events are added.
+          if ! grep -Eq "^[[:space:]]*(#[[:space:]]*|ℹ[[:space:]]*)?LATENCY BUDGET (PASS|INCONCLUSIVE) · .*(n=[[:space:]]*[1-9][0-9]*  wall p50/p95/max [0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2} ms|wall p95 [0-9]+\.[0-9]{2} ms >= [0-9.]+ ms)" "$log"; then
+            echo "::error title=Per-event hook budget printed no verdict::the log carries the markers but no 'LATENCY BUDGET PASS/INCONCLUSIVE · <row>' line with its numbers, so whatever produced it did not run the instrument"
+            fail=1
+          fi
+          # `grep -c` prints 0 and exits 1 when nothing matches. This step runs
+          # under `bash --noprofile --norc -eo pipefail {0}`, which is how
+          # GitHub invokes `shell: bash` -- so that non-zero status KILLS the
+          # step. On the one log this count exists for (every marker present,
+          # zero measured rows) the result was a bare red with no annotation
+          # attached, which this file's own prose calls the way a maintainer
+          # concludes a check is noise and deletes it. The comment here used to
+          # say the step "runs without `set -e`", which was the entire
+          # justification for reading the count bare, and it was false. An `if`
+          # condition is exempt from errexit, so the miss is handled without a
+          # `|| true` that would read as a swallowed failure to the checker and
+          # to a reader. Every row this counts comes from latencyStatsLine, so
+          # the two-decimal form is the instrument's, not a guess.
+          if ! rows=$(grep -cE 'wall p50/p95/max [0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2}/[0-9]+\.[0-9]{2} ms' "$log"); then
+            rows=0
+          fi
+          if [ "${rows:-0}" -lt 7 ]; then
+            echo "::error title=Per-event hook timing measured too few rows::found $rows measured rows, expected at least one per canonical event (7); the harness measured fewer invocations than the dispatcher handles"
             fail=1
           fi
           [ "$fail" = 0 ] || exit 1
@@ -465,3 +1013,47 @@ jobs:
       # false for an all-PASS run, so this cannot silently regress.
       - name: "Full test-environment composition proof (--strict)"
         run: npm run test:env -- --strict --host=claude,codex
+
+  # The containment fences in src/shared/fsjson.ts and
+  # src/shared/materialize/plan-migration.ts require a project-root prefix to
+  # match EXACTLY rather than case-insensitively, because a folded prefix
+  # resolves into a SIBLING CHECKOUT: a project `Proj` whose `.traffic-one`
+  # links to a distinct `proj` next to it, whose state file is then overwritten
+  # and whose architecture document is folded into this project's plan and
+  # deleted. That escape cannot be built on a case-folding filesystem, so on
+  # macOS every row that would catch a regression is either vacuous or a check
+  # on source text -- measured: with the volume predicate answering false, as it
+  # does here, deleting the exact compare outright passed the whole fence.
+  #
+  # ubuntu-latest is case-sensitive, so this job is the only place the fences
+  # are exercised on the filesystem the defect class exists on. It deliberately
+  # runs just those suites rather than `npm test`: a full run here would buy
+  # coverage the matrix job above already has, and the point is a fast red on
+  # the one axis the other platforms cannot see.
+  fence-linux:
+    name: "Containment fences on a case-sensitive filesystem"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A GLOB for the plan-migration set rather than four names, so a suite
+      # added to that fence later cannot be silently absent from the one job
+      # that runs it on a case-sensitive filesystem. It is not a filter flag:
+      # a glob matching nothing makes node exit non-zero rather than reporting
+      # a clean pass over no files.
+      - name: Containment fence suites
+        run: >-
+          node --import ./src/build/test-preload.mjs --import tsx --test
+          src/shared/__tests__/fsjson-symlink-fence.test.ts
+          src/shared/materialize/__tests__/plan-migration-*.test.ts

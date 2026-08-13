@@ -84,12 +84,29 @@ export const DENY_IDS = [
   // the patch envelope) no matter which gate needed to inspect it first.
   'apply-patch-payload-invalid',
   // NOT the same cause: the envelope parsed, then reconstruction against the
-  // on-disk baseDir failed (plan-write/index.ts's second parseApplyPatch) —
-  // the patch's context drifted from the file, so the remedy is "re-read the
-  // file and rebuild the hunks", not "fix the patch syntax". Split out so a
-  // budget can bound a drifting agent without spending the malformed-envelope
-  // bucket, and so the two are distinguishable in the decision log (they
-  // render the same sentence with a different embedded parser error).
+  // on-disk baseDir failed (plan-write/index.ts's second parseApplyPatch), so
+  // the remedy is about the FILE rather than about the patch syntax. Split out
+  // so a budget can bound a drifting agent without spending the
+  // malformed-envelope bucket, and so the two are distinguishable in the
+  // decision log (they render the same sentence with a different embedded
+  // parser error).
+  //
+  // TWO REMEDIES UNDER ONE ID, and this used to name only the first. It read
+  // "the remedy is 're-read the file and rebuild the hunks'", which is right
+  // for the case it was written about — the patch's context drifted from the
+  // file — and is the ONE INSTRUCTION THAT CANNOT HELP for the other:
+  //   drift            the hunks no longer match the bytes. Re-read and rebuild.
+  //   non-regular      `cannot reconstruct a non-regular file: <abs>` (see
+  //                    shared/apply-patch.ts readCurrent). A FIFO or a device
+  //                    node at the target has no bytes to rebuild hunks
+  //                    against, and re-reading it is what the bounded read in
+  //                    that function exists to stop the runtime doing. The only
+  //                    action is to REMOVE or replace the object at that path.
+  // The agent-facing strings still name the shape without naming the action, at
+  // three addresses (apply-patch.ts's reconstruction error and
+  // plan-guard/plan-write/targets.ts's two `target is not a regular file`
+  // returns). That is one product decision across three places rather than
+  // three, and it is not made here.
   'apply-patch-reconstruction-failed',
 
   // ── modules/one-mcp-tool-gate/index.ts ───────────────────────────────────
@@ -312,6 +329,16 @@ export const DENY_IDS = [
   // ── modules/plan-guard/plan-readiness/index.ts (via block()) ─────────────
   'runtime-assignments-owner-gate',
   'runtime-sidecar-owner-gate',
+  // The project-level reset record (`runs/.resets.json`). NOT folded into
+  // `runtime-sidecar-owner-gate`, on this file's own one-id-per-CAUSE rule: that
+  // gate refuses a write to a run's own atomically-published artifact and offers
+  // a remedy (change the semantic input, invoke the owning transition); this one
+  // refuses a write to a file that belongs to no run and has no remedy at all,
+  // because no agent write to it is ever correct. They are also different
+  // budgets: an agent looping on a digest it does not own must not spend the
+  // bucket that would otherwise bound one deleting the record that prices its
+  // resets.
+  'reset-record-owner-gate',
   'run-artifact-work-unit-gate',
   'architect-planning-allowlist-gate',
   'architecture-input-owner-gate',
@@ -367,6 +394,7 @@ export const DENY_IDS = [
   'verification-contract-refresh-gate-approved',
   'tester-planned-module-gate',
   'tester-qa-v2-gate',
+  'tester-no-test-evidence-disclosure',
   'tester-stale-qa-gate',
   'tester-qa-build-identity-missing',
   'tester-qa-build-identity-mismatch',
@@ -473,6 +501,26 @@ export const DENY_IDS = [
   // a cause the agent cannot reach. Its prose prescribes no retry, so its own
   // remedy can never be what trips the counter.
   'materialization-not-converged',
+  // A THIRD id at the same call site, and the naming rule above is what forces
+  // it rather than a third render of one of the two: the CAUSE is a host role
+  // contract directory that cannot be written (a plain file or a symlink planted
+  // at `.cursor/agents`, a directory this user cannot write, a read-only
+  // checkout) and the OWNER is a human with a shell. Neither half matches
+  // `materialization-not-converged`, whose cause is a broken plugin root or an
+  // unwritable `.traffic-one/.one.json` and whose diagnosis sends an operator to
+  // re-check `rules/` and `skills-catalog/` — a tree that is perfectly healthy
+  // here. Merging them would repeat the exact defect this file records having
+  // already fixed once: five non-converged statuses refused with a false cause
+  // and a remedy that could not work.
+  //
+  // ESCALATABLE (absent from NEVER_ESCALATED_DENY_IDS, the default), for the
+  // same reason as its neighbour: it repeats byte-identically until a human
+  // clears the path, and every repair the agent could attempt is itself a
+  // mutating call this deny refuses (`MUTATING_SHELL_COMMAND` in
+  // shared/tool-classify.ts lists `rm`, `chmod`, `chown`, `mv` and `ln`). "Report
+  // BLOCKED" at three is therefore the correct terminal instruction, and its
+  // prose prescribes NO retry, so its own remedy can never trip the counter.
+  'host-role-contracts-unwritable',
 
   // ── modules/onboarding-gate/stop.ts ──────────────────────────────────────
   'onboarding-stop-links-shown',
@@ -511,10 +559,21 @@ export function isDenyId(value: unknown): value is DenyId {
 // needs it lifted is "fix the cause, or settle the run".
 //
 // A gate NOT listed here is overridable. That is the deliberate default: the
-// 168 remaining ids are ordinary process/sequencing refusals whose worst case
-// is a lower-quality run, and that run is already marked ineligible for
-// `verified`/`shipped` the moment a token is minted for it
-// (run-settlement/io.ts).
+// 170 remaining ids (206 declared, less the 36 below) are ordinary
+// process/sequencing refusals whose worst case is a lower-quality run, and that
+// run is already marked ineligible for `verified`/`shipped` the moment a token is
+// minted for it (run-settlement/io.ts).
+//
+// THE WORDING IS LOAD BEARING, not decorative:
+// state/__tests__/deny-signature-plugin-root.test.ts ("the overridable-remainder
+// figures deny-ids.ts records are the derived ones") recomputes all three numbers
+// from `DENY_IDS` and the array below and matches this sentence with
+// /(\d+) remaining ids \((\d+) declared, less the (\d+) below\)/. Rewording past
+// that regex fails the pin rather than silently unpinning it — measured while
+// adding `host-role-contracts-unwritable`, whose arrival moved 205/169 to
+// 206/170 and whose first rewrite of this paragraph broke the match. An earlier
+// version of this sentence said 168 and had been wrong since the id before last,
+// because nothing was checking; that is what the pin is for.
 export const NEVER_OVERRIDABLE_DENY_IDS = [
   // The fail-closed crash deny. It fires precisely when the runtime could not
   // decide, so "lift it" means "run the tool call with NO gate evaluated" —
@@ -631,6 +690,30 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   'run-team-runtime-allowlist-gap',
   'run-team-fallback-taken',
 
+  // The reset record (`runs/.resets.json`). An erased record is byte-identical
+  // to a project that never reset: the count returns to zero, the widening the
+  // ladder had reached is gone, and nothing anywhere else carries the history to
+  // contradict it. That is the bar, exactly.
+  //
+  // Its closest sibling `runtime-sidecar-owner-gate` is deliberately NOT here,
+  // and the difference is the distinguishability rather than the severity: a
+  // run's sidecar belongs to one run, so erasing it leaves that run's own
+  // artifacts visibly short, while this file is the only record of a sequence of
+  // runs and no later reader can tell it was reduced.
+  //
+  // The exclusion rule that keeps `materialization-not-converged` and the
+  // `onboarding-server-start-*` family overridable — the user whose install is
+  // broken is the one who may legitimately need to keep working — has no
+  // population here. Nothing about this record blocks work: `readResetRecord`
+  // re-validates every field and a malformed record reads as count 0 with no
+  // obligation rather than throwing, so no operator ever needs it deleted to
+  // unblock the product; and the one bound it does enforce is discharged by the
+  // user's own enable/retry answer in `model-choice.json`, which is a JOIN
+  // against a record that already exists rather than an edit to this one. So the
+  // honest answer to an operator who wants it lifted is that they have an
+  // ungated shell — the hook mediates agent tool calls, not the user's terminal.
+  'reset-record-owner-gate',
+
   // Deliberately NOT here: `agent-reuse-scope-regrant` and
   // `-scope-regrant-refused`, checked against the bar rather than inherited from
   // their sibling. Lifting either admits a SECOND live agent for the role, which
@@ -672,6 +755,18 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   // who may legitimately need to keep working while they repair it. Its sibling
   // `repaired-materialization` is unlisted too, so listing only the complement
   // would be the stranger of the two choices.
+  //
+  // Deliberately NOT here: `host-role-contracts-unwritable`, on that same
+  // recorded ground and against the bar rather than by inheritance. Lifting it
+  // admits file-changing work on a project whose spawned roles would run without
+  // their contracts — a lower-quality run, not an indistinguishable one: the
+  // contracts are absent from disk for anyone who looks, `manifest.json` records
+  // no role-contract count for the host, and the token itself marks the run
+  // ineligible for `verified`/`shipped`. The population is the strongest case in
+  // the file for an escape hatch, too — the agent cannot clear the path, because
+  // every command that would is denied by this same refusal, so without an
+  // override a user with a stray `.cursor/agents` file has no way to keep working
+  // while they fix their install.
 ] as const satisfies readonly DenyId[];
 
 export const NEVER_OVERRIDABLE_DENY_ID_SET: ReadonlySet<string> = new Set(NEVER_OVERRIDABLE_DENY_IDS);
@@ -729,7 +824,7 @@ void _codexChildFamilyIsNeverOverridable;
 // severe it is, and severity is what makes the escalation worth reading.
 //
 // An id NOT listed here escalates from the third byte-identical attempt. That
-// is the deliberate default: the remaining 174 ids are refusals with an
+// is the deliberate default: the remaining 177 ids are refusals with an
 // in-session remedy the deny text already names, which is the whole 17cl
 // failure (seven identical refusals, 25 minutes, the fix in the text).
 export const NEVER_ESCALATED_DENY_IDS = [

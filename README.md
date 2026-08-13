@@ -230,6 +230,70 @@ same argument order, same spaces. `tests/readme-wait-command.test.ts` puts every
 waiter command printed above through the same grammar the gate uses, so this
 section cannot document a command the product then refuses.
 
+### Recovering a wedged run
+
+A run that settles `failed` is terminal in the strictest sense the run ledger
+has: there is no transition out of it, not even the user-authorized resume that
+reopens a `blocked` run. No role can bind a claim in it, so a project whose
+`currentRunId` still names one can do nothing at all — and the fastest way into
+that state is the command that ends a run,
+`run-status.cjs --run-id <id> --status failed`.
+
+One command gets a project out of it:
+
+```
+node ~/.traffic-one/bin/traffic-one-reset.cjs --run-id <id>
+```
+
+It retires the failed run and mints a fresh planned one in a single transaction
+under the project state lock: `currentRunId` moves to the successor, the retired
+run's agent claims and per-file locks are released, and the next spawn starts
+normally. Pass the run id that is currently wedged — the one `.one.json` names
+and Doctor prints.
+
+That spelling is gate-exempt, so it runs inside the stuck session. If it is
+refused, the shim at that path came from a different installed plugin version —
+`~/.traffic-one/bin` is user-scoped and shared across versions, and the gate
+admits the shim only while it byte-matches the version that is running. Start a
+new session and re-run it (session start rewrites the shim), or run it in your
+own terminal, where no hook fires at all.
+
+**Nothing is deleted and nothing is rewritten.** The failed run keeps its ledger
+byte for byte, along with its directory, digests and QA evidence; only the
+pointer moves. That is deliberate rather than incidental: no writer in the
+product reopens a terminal settlement, so the recovery is a retirement rather
+than a re-opening. That is a rule the code keeps, not a property of the file —
+`settlementHash` is an unkeyed digest, so anything able to write the tree can
+produce a record this parser accepts in any status it likes. This command
+neither raises that floor nor relies on it.
+
+**It is not a way to clear a limit.** Gate state that exists to stop a loop is
+carried onto the successor — the repeat-deny ladder behind the "stop retrying
+and report `BLOCKED`" instruction, the per-role exploration tallies, the models
+a rate limit condemned, the live-agent registry that keeps a verifier from being
+the agent it verifies, and a build pause waiting on a user reply — so reaching a
+terminal state and resetting out of it buys nothing. State that only describes
+the finished run resets with it (its frozen model policy, its bootstrap
+envelopes, its compiled contract), because keeping it would deny the recovered
+project its first spawn. Each reset is appended to
+`.traffic-one/runs/.resets.json`, and that record is read rather than merely
+written: from the third reset onward the carry widens, so recovery stays
+available but stops being free.
+
+The command refuses anything that is not this exact situation — a run that is
+not the project's current one, a run that is `planned`, `active` or `blocked`
+(a blocked run resumes with `run-status.cjs --run-id <id> --status active
+--reason user-authorized-extra-cycle`, which needs the user's explicit
+authorization), or a run whose ledger cannot be read. If the pointer write is
+refused the whole reset is abandoned with the project untouched, so a failed
+attempt never leaves it worse wedged than it was.
+
+Inside a Traffic One session this is admitted by matching the *whole* argument
+list — `node`, the plugin's own runner or the `~/.traffic-one/bin/` shim, then
+`--run-id <id>` and nothing else. Add a flag, a second command, a redirect or a
+substitution and it is gated like any other command. `--json` and `--help` work
+only in a plain shell, where no hook fires.
+
 ### Codex Desktop hook-trust activation
 
 On the first Traffic One installation, activate its hook fixture before starting

@@ -16,18 +16,46 @@ import {
   existingCodebase,
   greenfieldNoPlan,
   greenfieldMainAgent,
+  resetRecordedMainAgent,
   scaffoldedGreenfield,
   scaffoldedMainAgent,
 } from '../fixtures';
 
 export const PLAN_GUARD_CASES: CaseSpec[] = [
   {
-    id: 'plan-guard.library-allowlist-forbidden-mobx',
-    notes: 'npm add mobx conflicts with the seeded web stack -> library-allowlist-forbidden',
+    id: 'plan-guard.reset-record-erased-by-shell',
+    notes: 'rm -f on the project\'s reset record -> reset-record-owner-gate. The record prices the next reset and carries the per-successor terminal-role obligation, so erasing it rolls the ladder back to free and admits a spawn whose model is exhausted; it has ONE writer and it is the runner, never an agent. The fixture must have really reset (the fence returns early unless the record exists), which is why this is the only case on resetRecordedMainAgent. Paired with the read below deliberately: this gate is the one shell scan in plan-write whose polarity is INVERTED — it refuses every verb that is not a known read — so a corpus row proving the refusal is worth little without one proving reads still work',
+    host: 'claude',
+    event: 'PreToolUse',
+    project: resetRecordedMainAgent,
+    expectGate: 'plan-guard.write',
+    tool: { class: 'shell', rawName: 'Bash', command: 'rm -f .traffic-one/runs/.resets.json' },
+  },
+  {
+    id: 'plan-guard.reset-record-read-allowed',
+    notes: 'Control case, and the one that makes the fail-closed polarity above affordable: an agent may LOOK at the record. Same fixture, same path, a read verb -> allow. If a future narrowing of the read allowlist starts refusing plain `cat`, this row reds instead of the cost landing on a user who only wanted to see why their reset was priced',
+    host: 'claude',
+    event: 'PreToolUse',
+    project: resetRecordedMainAgent,
+    expectGate: null,
+    tool: { class: 'shell', rawName: 'Bash', command: 'cat .traffic-one/runs/.resets.json' },
+  },
+  {
+    id: 'plan-guard.library-allowlist-forbidden-next',
+    notes: 'npm add next flips what the framework detector reports about this project, while the run\'s compiled architecture and verification contracts stay frozen against react-vite -> library-allowlist-forbidden. This row moved off `npm add mobx`: the table split into a BLOCKING half (installs that make the frozen contracts false) and an ADVISORY half (installs that merely diverge from the prescribed stack), and mobx is now the second — see the -mobx row below, which pins the advice. Only the blocking half can characterize a deny id, so this is the row that keeps library-allowlist-forbidden reachable',
     host: 'claude',
     event: 'PreToolUse',
     project: greenfieldNoPlan,
     expectGate: 'plan-guard.library',
+    tool: { class: 'shell', rawName: 'Bash', command: 'npm add next' },
+  },
+  {
+    id: 'plan-guard.library-allowlist-advised-mobx',
+    notes: 'The advisory half, and the reason the row above had to move. `npm add mobx` conflicts with the seeded web stack but breaks nothing the run compiled, so the install PROCEEDS and the advice rides along on the same command -> `allow`, no deny id (a PreToolUse gate that only attaches context is an allow decision here; the context itself is pinned by plan-guard.test.ts). Seeded: mark the mobx row `blocking` in forbidden.ts and this row becomes deny plan-guard.library/library-allowlist-forbidden',
+    host: 'claude',
+    event: 'PreToolUse',
+    project: greenfieldNoPlan,
+    expectGate: null,
     tool: { class: 'shell', rawName: 'Bash', command: 'npm add mobx' },
   },
   {

@@ -41,7 +41,19 @@ description: >
 - Run the focused tests plus every check required by
   `VerificationContractV2`.
 - Run the structural analyzer; a refactor cannot use an exception to bypass
-  entrypoint, multi-page, route-module, allowlist, or incomplete-scan blockers.
+  entrypoint, multi-page, route-module, or allowlist blockers. A scan that hit
+  its file BOUND is not one of them — it is recorded rather than refused, and
+  pins `uiImpact` to the truncated-scan floor, so it costs the refactor more
+  browser evidence instead of a deny. An unreadable file or directory, an entry
+  the walk cannot classify, or an unfollowed symbolic link is recorded the same
+  way and costs the same extra evidence — and it costs the refactor something
+  else too: the subtree behind that entry was not read, so nothing in this
+  report says whether the behaviour you are preserving still holds there. A link
+  is free only when the same walk read its target under the target's own real
+  path; one pointing into a generated or build directory is recorded, because no
+  report judges those bytes under either name. Treat a skipped path over code you
+  touched as unverified, not as clean. A source root that does not resolve is an
+  error and does block, and no exception lifts it.
 - Use Playwright/screenshots only when the derived web `uiImpact` requires
   them; use native QA for native UI; use no browser for API/CLI/worker/data-only
   work.

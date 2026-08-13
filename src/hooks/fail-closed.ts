@@ -4,7 +4,7 @@
 // never become an empty success merely because the plugin runtime is damaged.
 
 import { codexHookEvidenceMarker } from '../shared/codex-hook-evidence';
-import { isShellToolName, isTrafficOneDoctorCommand } from '../shared/tool-classify';
+import { isExemptShellToolName, isTrafficOneDoctorCommand, isTrafficOneResetCommand } from '../shared/tool-classify';
 
 // Shared remediation sentence — interpolated into every fail-closed deny,
 // including generated host wrappers (kilo-host), so the prose can't drift.
@@ -271,23 +271,50 @@ function parseArgsRecord(value: unknown): HookRecord {
 // member of a batch is not a shell call. A LIST, not a string, because Copilot
 // can carry several `tool_calls` in one payload: the exemption below has to
 // clear all of them, not the first one that happens to be doctor.
+//
+// `isExemptShellToolName`, never `isShellToolName`: the latter reads the last
+// dot-segment, so `mcp__evil.Bash` (or `someserver.Bash`, or a qualified
+// `exec_command`) was shell HERE, and a `command` field beside it carried the
+// whole payload over the boundary while the fields the server actually executes
+// went unread. See that predicate's docblock for what was measured before
+// narrowing, and the SECURITY block below for the claim this corrects.
+//
+// The tool NAME is only half of it, and the smaller half. A server may call its
+// tool `Bash` with no qualifier at all, and no predicate over a name can tell
+// that apart from a host's own shell tool. What can is the SUBCOMMAND: two
+// surfaces route MCP calls to a dedicated one, and on those a shell command is
+// not merely unlikely, it is a shape the host does not produce. Cursor sends
+// shell on `before-shell-execution`; Windsurf sends it on `pre_run_command`;
+// `before-mcp-execution` and `pre_mcp_tool_use` are MCP-only, and this file's
+// own payload validation already requires an mcp server+tool pair on them. So
+// they deliver no exemption regardless of what the tool is called.
+//
+// TWO of the five surfaces, and the other three have no second end: `nested`,
+// `wrapper` and `copilot` carry no subcommand, so on those the name test is the
+// only test and its strength is the host's naming CONVENTION (MCP tools arrive
+// qualified). No hostile shape got through either way — that is measured — but
+// a convention and a fence are different claims and the SECURITY block below
+// says which is which.
+const MCP_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(['before-mcp-execution', 'pre_mcp_tool_use']);
+
 function shellCommandBatchForSurface(
   data: HookRecord,
   subcommand: string,
   surface: PreToolPayloadSurface,
 ): string[] | null {
+  if (MCP_ONLY_SUBCOMMANDS.has(subcommand)) return null;
   if (surface === 'cursor') {
     return subcommand === 'before-shell-execution'
       ? [cursorShellCommand(data)]
-      : (isShellToolName(genericToolName(data)) ? [wrapperShellCommand(data)] : null);
+      : (isExemptShellToolName(genericToolName(data)) ? [wrapperShellCommand(data)] : null);
   }
   if (surface === 'windsurf') {
     return subcommand === 'pre_run_command'
       ? [windsurfShellCommand(data)]
-      : (isShellToolName(genericToolName(data)) ? [wrapperShellCommand(data)] : null);
+      : (isExemptShellToolName(genericToolName(data)) ? [wrapperShellCommand(data)] : null);
   }
   if (surface === 'nested') {
-    return isShellToolName(firstText(data.tool_name, data.toolName)) ? [nestedShellCommand(data)] : null;
+    return isExemptShellToolName(firstText(data.tool_name, data.toolName)) ? [nestedShellCommand(data)] : null;
   }
   if (surface === 'copilot') {
     const calls = data.tool_calls ?? data.toolCalls;
@@ -296,16 +323,16 @@ function shellCommandBatchForSurface(
       const commands: string[] = [];
       for (const value of calls) {
         const call = record(value);
-        if (!isShellToolName(firstText(call.name, call.tool_name, call.toolName))) return null;
+        if (!isExemptShellToolName(firstText(call.name, call.tool_name, call.toolName))) return null;
         const args = parseArgsRecord(call.args ?? call.arguments ?? call.toolArgs ?? call.tool_args ?? call.input);
         commands.push(firstText(args.command, args.cmd));
       }
       return commands;
     }
-    return isShellToolName(genericToolName(data)) ? [copilotFlatShellCommand(data)] : null;
+    return isExemptShellToolName(genericToolName(data)) ? [copilotFlatShellCommand(data)] : null;
   }
   // 'wrapper' (Kilo/OpenCode).
-  return isShellToolName(genericToolName(data)) ? [wrapperShellCommand(data)] : null;
+  return isExemptShellToolName(genericToolName(data)) ? [wrapperShellCommand(data)] : null;
 }
 
 // ── The recovery allowlist ───────────────────────────────────────────────────
@@ -316,21 +343,30 @@ function shellCommandBatchForSurface(
 // complete answer to "what can bypass the fail-closed boundary?" is the length
 // of this array.
 //
-// THE RULE FOR ADDING A ROW, and it is not negotiable: the runner must be
-// READ-ONLY. The whole exemption is sound only because it can produce a NOOP
-// and nothing else (see the SECURITY block below) — a runner that MUTATES,
-// reached through a boundary that exists precisely because the machinery which
-// would have judged that mutation is broken, is not an exemption, it is an
-// unguarded write.
+// THE RULE FOR ADDING A ROW, and it is not negotiable: a row must not be able
+// to buy its caller a DECISION the gates would have withheld. This boundary is
+// reached precisely because the machinery that would have judged the call is
+// broken, so whatever a row admits is admitted UNJUDGED — and the exemption is
+// sound only because what it admits, judged or not, is the same thing either
+// way (see the SECURITY block below).
+//
+// For doctor that holds the short way: it is read-only, so there is no decision
+// to buy. A MUTATING runner can only qualify the long way, by carrying every
+// precondition the gates would have applied INSIDE itself, evaluated from disk
+// under the project's own lock — so that reaching it unjudged and reaching it
+// judged produce the identical outcome. `reset` is the only runner that has
+// ever cleared that bar, and the five properties it clears it with are stated
+// on its row. Read them as the test, not as a description.
 //
 // Worked example, because this one WILL come up: `run-status --status failed`
 // is the standard way to unwedge a stuck run, and it belongs on no allowlist.
-// It rewrites the run ledger, and a wedged run is exactly the state in which
-// an agent would most like to declare the run over — the gates that stop it
-// doing so are the point. An operator with a genuinely wedged run runs it from
-// their own terminal, where no hook fires at all; that is what the escape hatch
-// IS. (Same reasoning forbids a blanket "no gate may deny anything inside the
-// plugin root" rule, which would un-gate it by the back door.)
+// It rewrites the run ledger, it takes the verdict from ARGV rather than from
+// disk, and a wedged run is exactly the state in which an agent would most like
+// to declare the run over — the gates that stop it doing so are the point. An
+// operator with a genuinely wedged run runs it from their own terminal, where
+// no hook fires at all; that is what the escape hatch IS. (Same reasoning
+// forbids a blanket "no gate may deny anything inside the plugin root" rule,
+// which would un-gate it by the back door.)
 //
 // `doctor --unblock <gateId>` is likewise absent, from tool-classify.ts's
 // grammar and therefore from here: it is the one doctor invocation that writes,
@@ -341,8 +377,176 @@ interface RecoveryRunner {
   readonly matches: (command: string) => boolean;
 }
 
-const RECOVERY_RUNNERS: readonly RecoveryRunner[] = [
+// EXPORTED for one reason: the rule above is prose, and prose is not an
+// invariant — the next author can satisfy it by believing they satisfy it.
+// __tests__/recovery-runners.test.ts pins this table's exact membership and
+// restates the rule at the failure site, so a new row cannot appear without a
+// deliberate test edit that puts the rule in front of whoever adds it, and
+// mechanically asserts the five properties the `reset` row claims below — plus,
+// since a citation is itself a claim, that every test its rule block NAMES
+// exists.
+export const RECOVERY_RUNNERS: readonly RecoveryRunner[] = [
   { id: 'doctor', matches: (command) => isTrafficOneDoctorCommand('Bash', { command }) },
+  // `traffic-one-reset --run-id <id>`: the one recovery edge out of a terminal
+  // `failed` run, and the only mutating row this table has. It clears the bar
+  // above on five properties, each of which is enforced in code and pinned by a
+  // test, not asserted here (__tests__/recovery-runners.test.ts names the exact
+  // test for each):
+  //   1. Its precondition comes from DISK, never from argv. It refuses unless
+  //      <id> IS the project's `currentRunId` and that run's ledger legibly
+  //      reads terminal `failed` (through effectiveLegacyRunStatus, so a V2 run
+  //      behind the rollback barrier is not mistaken for one). Argv selects
+  //      WHICH run is checked; it can never state the verdict.
+  //   2. Nothing an agent may run DECLARES `failed`. The verb is the property:
+  //      `run-status --status failed` states the verdict from argv, and it is
+  //      gated and on no allowlist, so the two exemptions cannot compose
+  //      DIRECTLY into "declare the run over, then reset out of it". Terminal
+  //      `failed` is nonetheless REACHABLE by an agent — an OpenCode delegation
+  //      that fails terminally with paid fallback disallowed writes it, and the
+  //      settlement reconciler adopts it at the next prompt boundary — measured
+  //      through a maintenance path with no status command anywhere. This row
+  //      used to claim the stronger, false thing and lean on it. What prices the
+  //      composition it cannot rule out is property 5's widening: reaching
+  //      `failed` and resetting carries the bounds with you, and at WIDEN_AT
+  //      resets the successor inherits more, so the loop stops being free ON
+  //      CURSOR. That qualifier was missing and it is not hedging: the widening
+  //      is priced at exactly one deny, `correlatedCursorFailureGate`, which
+  //      returns null on `ctx.host !== 'cursor'`. The reader's other two call
+  //      sites (cursor-failure-select.ts:211, cursor-failure-persist.ts:152)
+  //      only skip a redundant store write, so on Claude and Codex the
+  //      inherited marker gates nothing at any deny and this lean has no price
+  //      behind it. What holds on every host is the CARRY — the bounds keyed by
+  //      the run id follow the pointer regardless — so the composition is
+  //      conserved everywhere and REFUSED only on Cursor.
+  //      THAT LEAN IS ONLY AS GOOD AS THE PRICE, and for one round it was not
+  //      good at all: the widening was implemented as an extra carry INTO
+  //      `exhausted-models.json`, so the single capability that drops that bound
+  //      — holding its lease — also suppressed the price. Measured over six
+  //      cycles against a successor whose lease was held: nothing widened, ever,
+  //      while the control widened from cycle 3. The price now lands in
+  //      `.resets.json` (one writer, no lease, written by the same call that
+  //      counts the reset), and the same six cycles now widen from 3 with the
+  //      lease still held. THAT "ONE WRITER" IS LOAD-BEARING FOR THIS ROW AND
+  //      WAS BRIEFLY FALSE: the discharge half was a second lease-free
+  //      read-modify-write reached from a hook, and every increment it clobbers
+  //      rolls the ladder back toward the free resets this row leans on it to
+  //      price. Measured at 58-72 lost per 300 with two real processes when the
+  //      writer was live; re-derived on a reconstruction of it at 104-143 lost
+  //      per 300 over three trials, against a control that loses none. The loss
+  //      rate is load- and shape-dependent and is not a constant — what the row
+  //      leans on is that it is not zero.
+  //      The discharge is a fold in `resetObligationFor` now, not a write. What
+  //      pins that is a behavioural table — every product entrypoint that could
+  //      acquire a write, driven, with the record byte-compared across it, and
+  //      the reset command in the table as the positive control. It replaces a
+  //      source scan for the path's spellings, which an adversarial review beat
+  //      in one character (a template literal) with a real second writer live on
+  //      the hook path and the whole surface green; that scan is kept only as a
+  //      tripwire for the naive spelling.
+  //      THE RESIDUAL THIS ROW NAMED FOR ONE ROUND DESCRIBED THE WRONG
+  //      ADVERSARY, and the correction is recorded rather than swapped in
+  //      silently. It said: "an actor with UNMEDIATED writes into
+  //      `.traffic-one/` can delete that record — and EVERY OTHER BOUND WITH IT
+  //      — but nothing on this row grants that capability, and an actor who
+  //      already has it does not need a reset." Both emphasised clauses were
+  //      false, and false in the direction the row leaned. The actor needed no
+  //      unmediated write: `rm -f .traffic-one/runs/.resets.json` as an ordinary
+  //      Bash tool call, straight through the hook, and measured through the
+  //      real `planWriteGate` on a materialized fixture — 7 of 27 erasure
+  //      channels PERMITTED with a run pointer live, and all 27 permitted with
+  //      `currentRunId` absent, because the only thing refusing the path was
+  //      `strayRunIdInText` misreading the filename as a fabricated run id and
+  //      that guard stands down when nothing is minted. Nor did it take every
+  //      bound with it: the other two sit inside `runs/<id>/` and are refused by
+  //      `runtime-sidecar-owner-gate`, so the mediated actor deleted the ONE
+  //      bound this row's price depends on and nothing else. The record's price
+  //      was therefore the least defended of the three, not the best.
+  //      WHAT HOLDS NOW is a fence of the record's own:
+  //      `reset-record-owner-gate` (modules/plan-guard/plan-readiness/index.ts,
+  //      with plan-write/reset-record-shell.ts reading the shell shapes) refuses
+  //      every channel the gate can see — Write/Edit/apply_patch, a named shell
+  //      write under any verb that is not a recognised read, and destruction of
+  //      a directory containing the record. It reads no run pointer, so the
+  //      `currentRunId`-absent variant is closed too, and the same 27 channels
+  //      now measure 0 escapes across all four pointer variants. The misparse
+  //      that used to stand there is deliberately gone (shared/run-id-paths.ts
+  //      skips dot-prefixed segments), so this row leans on a fence rather than
+  //      on an accident, and both halves are pinned at the gate in
+  //      modules/plan-guard/__tests__/reset-record-fence.test.ts.
+  //      THE REMAINING RESIDUAL is narrower and is genuinely unmediated: a write
+  //      that never passes the hook (a spawned process, an editor outside the
+  //      session) still reaches the record, as it reaches everything else in the
+  //      project. THE MEDIATED HALF OF THAT SENTENCE LISTED FOUR MEMBERS AND
+  //      THREE OF THEM ARE NOW REFUSED, so the false version is recorded rather
+  //      than swapped out. It said: "What survives inside the mediated channel
+  //      is a shell line that hides the path from static reading — assembled
+  //      through `cd`, a variable, `$(…)`, or joined inside interpreter code —
+  //      which is a breach of this fence rather than a route it grants, and is
+  //      the same residue every path-based gate in this tree carries."
+  //      Re-measured at the gate on a materialized fixture, with real bash run
+  //      on a parallel fixture to say whether the line erases anything at all,
+  //      in each state this fence is reached in — a live run, a finished one,
+  //      and after a reset: `cd` into `runs/` and then naming the record, the
+  //      runs directory held in a variable and expanded, and an interpreter
+  //      join whose pieces still leave a whole `.traffic-one` OR a whole
+  //      `.resets.json` are refused in every one of them. WHICH fence refuses
+  //      is worth naming, because leaning on the wrong one is the mistake this
+  //      row already made once, and it is not uniformly this one: while a run
+  //      directory exists, MOST of these are answered first by the run's own
+  //      `runtime-assignments-owner-gate`, and only once it is gone — the state
+  //      where the record is the only thing left in `runs/` to destroy — does
+  //      this record's fence answer them. So what is measured is that the write
+  //      is refused in every one of those states, NOT that this row's own fence
+  //      is the thing refusing it in every one.
+  //      WHAT ACTUALLY SURVIVES is three mechanisms, not four spellings:
+  //        - what a substitution PRINTS. The gate reads a substitution's own
+  //          body as a statement, so a destructive body is refused there; a
+  //          body that only reads (`cat` of a file that holds the path) is a
+  //          legal read, and the operand it yields exists only at run time.
+  //          Survives in every state.
+  //        - a substitution or an `eval` whose body spells the runs directory
+  //          itself, once no run directory exists. While one does, the sidecar
+  //          pair refuses it.
+  //        - an interpreter join that splits BOTH names through the middle, so
+  //          no fragment spells either `.traffic-one` or the record's filename.
+  //          Survives in every state.
+  //      All three are lines built so that no reader of the text can see which
+  //      file they name, which is why each is a breach of this fence rather
+  //      than a route it grants.
+  //      THE CLOSING GENERALISATION IS WITHDRAWN, not restated. "The same
+  //      residue every path-based gate in this tree carries" is a claim about a
+  //      population nobody enumerated — the shape this tree has had falsified
+  //      twice — and the two fences that were actually measured against each
+  //      other disagree: the `$(…)`/`eval` member is refused by the run-scoped
+  //      sidecar pair while a run directory exists and reaches noop at this
+  //      fence once it is gone. So the residue is a property of the gate AND of
+  //      the project state rather than a floor every gate shares. What the two
+  //      measured fences do share is the substitution's printed operand and the
+  //      fully-split join. No third gate was measured, and nothing here says
+  //      what one would show.
+  //   3. It cannot fabricate progress. It writes no terminal outcome, mints no
+  //      override, and never touches the failed run's ledger — the successor is
+  //      `planned`, which is where a run starts anyway.
+  //   4. It destroys nothing. The retired run's dir, digests and evidence stay
+  //      on disk; only `currentRunId` moves.
+  //   5. It does not LAUNDER what the pointer keys. Properties 3 and 4 are about
+  //      what it writes; this one is about what a pointer move DISCARDS, and it
+  //      is what makes property 2's residual survivable: every `runs/<id>/` entry
+  //      is classified, the bounds are carried to the successor
+  //      (runners/traffic-one-reset/obligations.ts), every reset is recorded, and
+  //      at WIDEN_AT the successor inherits the terminal exhaustion its
+  //      predecessor reached — recorded in `.resets.json` rather than carried
+  //      into the store it applies to, so the price is not defeatable by the
+  //      capability that defeats the bound (see property 2). WHAT ENFORCES IT
+  //      is named because it is not obvious and was read wrongly once: the
+  //      inheritance is a deny at the Cursor spawn gate
+  //      (correlatedCursorFailureGate → `cursor-api-limit-terminal`), not a
+  //      record something might one day consult. The reader's other two call
+  //      sites merely skip a redundant write, so an audit that stops at them
+  //      concludes this row leans on nothing.
+  // So an agent that reaches this unjudged gets exactly what it would have got
+  // judged: on a wedged project, the recovery; on any other project, a refusal.
+  { id: 'reset', matches: (command) => isTrafficOneResetCommand('Bash', { command }) },
 ];
 
 function isRecoveryCommand(command: string): boolean {
@@ -365,8 +569,27 @@ function isRecoveryCommand(command: string): boolean {
 //    never a deny, an elevated tool, or a state mutation — a bug here can at
 //    worst UNDER-exempt (doctor stays blocked), never grant a new capability;
 //  - it fires only when the raw payload parses as an object AND is shaped as
-//    a Bash/exec_command invocation (never Write/Edit/apply_patch/MCP — the
-//    exemption cannot be reached through any other tool class);
+//    a Bash/exec_command invocation (never Write/Edit/apply_patch). "Never
+//    MCP" was ASSERTED here and was false: shell-ness was decided from the
+//    last dot-segment of the tool name, so `mcp__evil.Bash` carrying a
+//    `command` field cleared this boundary — and for a real MCP tool that
+//    field is not what executes, so every other argument in the call rode
+//    along unjudged. The byte-match that protects the sibling row does not
+//    reach it, because the string being matched is not the string the server
+//    runs. Now narrowed at both ends WHERE A SECOND END EXISTS, which is not
+//    everywhere and the earlier "closed at both ends" overstated it: an
+//    exemption always requires an UNQUALIFIED shell tool name
+//    (isExemptShellToolName), and on the two surfaces that route MCP to a
+//    dedicated subcommand — `cursor` and `windsurf` — a subcommand a host
+//    reserves for MCP yields no exemption at all (MCP_ONLY_SUBCOMMANDS). On
+//    `nested`, `wrapper` and `copilot` there is no subcommand to consult, so
+//    the residual rests entirely on the host NAMING CONVENTION: those surfaces
+//    qualify MCP tool names (`mcp__server.Tool`, `server.tool`), and an
+//    unqualified `Bash` from a server that declines to qualify would be
+//    indistinguishable from the host's own shell tool. That is a convention,
+//    not a fence, and it is the honest boundary of this claim. Both ends are
+//    measured against every adapter fixture and the replay corpus, and nothing
+//    hostile got through; see those two for what was checked;
 //  - on a multi-call payload (Copilot's `tool_calls`) EVERY call must be a
 //    shell call AND must satisfy a grammar. Requiring only one to match
 //    exempted the whole payload off a single doctor entry, so

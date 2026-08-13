@@ -983,8 +983,14 @@ test('the population tallies in deny-ids.ts prose match the arrays they describe
   const declared = new Set(DENY_IDS).size;
   const tallies: { label: string; stated: RegExp; remaining: number }[] = [
     {
+      // This sentence is pinned in TWO places, and they must be rewritten
+      // together: state/__tests__/deny-signature-plugin-root.test.ts recomputes
+      // all three of its numbers against the same regex. Rewording it for that
+      // pin alone is what reddened this one — the paragraph gained its
+      // parenthetical while adding `host-role-contracts-unwritable`, and only
+      // the sibling was updated.
       label: 'NEVER_OVERRIDABLE_DENY_IDS',
-      stated: /the (\d+) remaining ids are ordinary process\/sequencing refusals/,
+      stated: /(\d+) remaining ids \((\d+) declared, less the (\d+) below\)/,
       remaining: declared - new Set(NEVER_OVERRIDABLE_DENY_IDS).size,
     },
     {

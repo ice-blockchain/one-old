@@ -127,12 +127,12 @@ export const CONSENT_FENCE_CASES: CaseSpec[] = [
   },
   {
     id: 'consent.declined-project-library-gate-stands-down',
-    notes: 'plan-guard/handler.ts\'s stand-down (the forbidden-library gate). Same `npm add mobx` as plan-guard.library-allowlist-forbidden-mobx, on a project whose owner declined: which dependencies a declined project installs is its own business. Last of the plan-guard gates at priority 30, so it is also the row that shows the decline surviving the whole ladder rather than only its front. Seeded: drop the pluginUseDeclined stand-down from plan-guard/handler.ts and this row becomes deny plan-guard.library/library-allowlist-forbidden',
+    notes: 'plan-guard/handler.ts\'s stand-down (the forbidden-library gate). Same `npm add next` as plan-guard.library-allowlist-forbidden-next, on a project whose owner declined: which dependencies a declined project installs is its own business. The command is `next` rather than `mobx` because only the BLOCKING half of that table denies — mobx is advice now — and a stand-down row has to be seeded from a row that would otherwise refuse. Last of the plan-guard gates at priority 30, so it is also the row that shows the decline surviving the whole ladder rather than only its front. Seeded: drop the pluginUseDeclined stand-down from plan-guard/handler.ts and this row becomes deny plan-guard.library/library-allowlist-forbidden',
     host: 'claude',
     event: 'PreToolUse',
     project: declinedScaffolded,
     expectGate: null,
-    tool: { class: 'shell', rawName: 'Bash', command: 'npm add mobx' },
+    tool: { class: 'shell', rawName: 'Bash', command: 'npm add next' },
   },
   {
     id: 'consent.declined-onboarded-session-start-silent',

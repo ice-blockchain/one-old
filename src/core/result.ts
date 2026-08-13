@@ -2,10 +2,30 @@
 // Builders + merge for the canonical HookResult (now carrying optional
 // systemMessage / promptRequest). Handlers never assemble host-shaped output.
 
+import { pluginRoot } from '../shared/paths';
+
 import type { HookResult, ResultMeta } from './types';
 
 export const noop = (): HookResult => ({ kind: 'noop' });
 
+// An empty `context` is a NOOP, and unlike an empty `deny` it gets no
+// substituted notice. That asymmetry is deliberate, and it is safe for a reason
+// that lives elsewhere rather than here.
+//
+// A deny that renders empty still REFUSED, so the agent is owed an explanation
+// and something has to say so. A context that renders empty is the absence of
+// advice: injecting "Traffic One could not load a directive" into every turn of
+// a broken install would put a notice in front of the user on paths where
+// nothing was blocked and nothing is owed, and there is no addressee obliged to
+// act on it. So the hole was closed at the SOURCE instead. Six sites used to
+// build a `context()` from a block with no fallback and vanish silently on a
+// torn install (agent-model/choice-reply.ts, agent-model/model-denies.ts ×2,
+// session/prompt-submit.ts, and the two maintenance directives in
+// session/triage-directive.ts, which return a string that becomes session
+// context upstream); all six now resolve through the generated fallback table,
+// and shared/__tests__/skill-block-coverage.test.ts asserts — for all 179 call
+// sites, denies and contexts alike — that no rendered block can come back
+// empty. A guard here would have nothing left to fire on.
 export function context(text: string, meta: ResultMeta = {}): HookResult {
   const hasText = Boolean(text && text.trim());
   if (!hasText
@@ -31,15 +51,20 @@ export function followup(message: string): HookResult {
 // What a refusal says when its own wording could not be loaded.
 //
 // A gate's `reason` is normally assembled by shared/skill-block.ts, which reads
-// a named `T1BLOCK` out of `modules/<id>/skill/SKILL.md` and falls back to a
-// verbatim TS string the call site passes. 36 of the 174 block call sites pass
-// no fallback (pinned by name in shared/__tests__/skill-block-coverage.test.ts),
-// and 28 of those build a refusal — so on an installation whose plugin root has
-// no skill trees (a torn install, a partial rsync, a plugin sync mid-way through
-// replacing a version-keyed cache dir) those denies render `reason: ''`: the
-// agent is refused and told NOTHING. This is the substitute
-// shared/skill-filters/index.ts's header anticipates ("the later
-// deny()-empty-guard work item … naming the deny id").
+// a named `T1BLOCK` out of `modules/<id>/skill/SKILL.md`, then consults the
+// GENERATED fallback table beside it (shared/skill-fallbacks.generated.ts, the
+// same bodies compiled into the runtime and reached without pluginRoot()), then
+// the call site's own argument. Since that table landed, an installation whose
+// plugin root has no skill trees — a torn install, a partial rsync, a plugin
+// sync mid-way through replacing a version-keyed cache dir — still renders the
+// shipped paragraph, so this notice no longer stands in for an unreadable FILE.
+//
+// What it still covers is prose that exists NOWHERE: a block name no SKILL.md
+// declares, whose call site passes no fallback either. That population is
+// asserted to be empty, from a parse, by
+// shared/__tests__/skill-block-coverage.test.ts ('every block a call site can
+// render resolves to prose with no filesystem read'), and this is the guard
+// that keeps the failure legible if it ever stops being empty.
 //
 // The denyId is INTERPOLATED, and that is load-bearing rather than decorative.
 // shared/state/deny-repeat.ts signs a refusal as `denyTarget` plus the WHOLE
@@ -48,19 +73,35 @@ export function followup(message: string): HookResult {
 // telling an agent that is hitting three DIFFERENT broken gates to stop
 // retrying. With the id in the text each gate keeps its own count.
 //
-// Doctor is named in PROSE, with no command line, deliberately. The gate
-// grammar admits only the absolute spellings doctor-command.ts prints
-// (gateExemptDoctorScriptPaths) and denies a relative one, so the choice is
-// between `doctorCommand()` and no command at all — and `doctorCommand()`
-// resolves `<pluginRoot>/scripts/doctor.cjs`, a SIBLING of the very skill trees
-// this notice fires because they are missing. A partial tree that lost
+// The plugin root IS named, and the doctor COMMAND is not — which is not an
+// inconsistency, the two components fail differently.
+//
+// The root is what makes the notice actionable by the human who has to repair
+// the install: "incomplete" without a location sends them looking through as
+// many plugin caches as they have hosts, and the version-keyed cache dir this
+// most often fires from is not a path anyone can guess. It is interpolated as
+// `pluginRoot()` VERBATIM, with nothing appended inside the string, because
+// shared/state/deny-repeat.ts's withoutInstallLocation folds a refusal's signing
+// key by splitting on exactly that value — a derived spelling (posix-normalised,
+// trailing separator, relative) would slip through the fold and re-open the
+// defect it exists for: the deny-repeat loop splits into one key per install
+// location and escalation arrives on the fifth identical refusal instead of the
+// third.
+//
+// Doctor stays in PROSE with no command line. The gate grammar admits only the
+// absolute spellings doctor-command.ts prints (gateExemptDoctorScriptPaths) and
+// denies a relative one, so the choice is between `doctorCommand()` and no
+// command at all — and `doctorCommand()` resolves
+// `<pluginRoot>/scripts/doctor.cjs`, a SIBLING of the very skill trees this
+// notice fires because they are missing. A partial tree that lost
 // `modules/**/skill/SKILL.md` may equally have lost `scripts/doctor.cjs`, and
 // printing a path to a file that is not there is the one thing a message about
-// a broken install must not do. Same shape as kilo-entry.ts's prose-only
-// "Run Traffic One doctor, then restart …".
+// a broken install must not do. Naming the DIRECTORY makes no such promise.
+// Same shape as kilo-entry.ts's prose-only "Run Traffic One doctor, then
+// restart …".
 export function lastResortDenyReason(denyId?: string): string {
   const gate = denyId ? `\`${denyId}\`` : 'the gate that refused it';
-  return `Traffic One refused this action, and the explanation for it could not be loaded: ${gate} reads its wording from a \`skill/SKILL.md\` block that is missing from this installation, so the reason rendered empty. The refusal itself is unaffected — the gate decided on its own evidence, so re-issuing the same action will be refused again with this same message. Do not retry it and do not work around it. Report to the user that this Traffic One install is incomplete: ask them to run Traffic One doctor and then reinstall or repair the plugin. The gate will state its real reason once that file is readable.`;
+  return `Traffic One refused this action, and the explanation for it could not be loaded: ${gate} reads its wording from a \`skill/SKILL.md\` block that is missing from the Traffic One install at \`${pluginRoot()}\`, so the reason rendered empty. The refusal itself is unaffected — the gate decided on its own evidence, so re-issuing the same action will be refused again with this same message. Do not retry it and do not work around it. Report to the user that this Traffic One install is incomplete: ask them to run Traffic One doctor and then reinstall or repair the plugin. The gate will state its real reason once that file is readable.`;
 }
 
 // `opts.denyId` should be a literal from config/deny-ids.ts (see DenyId) — pass

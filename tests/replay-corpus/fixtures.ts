@@ -26,6 +26,8 @@ import { detectHostPlan } from '../../src/shared/host/plan';
 import { ensureRunModelPolicy } from '../../src/shared/run-model-policy';
 import { writeModelChoice } from '../../src/modules/agent-model/model-choice';
 import { firstEmitThisSession } from '../../src/shared/once';
+import { recordReset } from '../../src/runners/traffic-one-reset/resets';
+import { CURSOR_AGENTS_REL } from '../../src/shared/materialize/cursor-agent-model';
 import { cleanupIsolatedHome } from './env';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 't1-replay-fixtures-'));
@@ -412,6 +414,45 @@ export function scaffoldedMainAgent(host: HostId, seedOverrides: Partial<PreSeed
   return dir;
 }
 
+/** scaffoldedMainAgent that has RESET at least once, so
+ * `.traffic-one/runs/.resets.json` exists on disk.
+ *
+ * That file is the sole precondition of the reset-record fence: it returns
+ * early unless the record is really there, so every other fixture leaves the
+ * gate at its first stat and no case built on one can reach the deny. Written
+ * through recordReset — the record's one production writer — rather than as
+ * literal JSON, because the fence's read side and readResetRecord both re-derive
+ * `count` and the per-successor obligation, and a hand-rolled shape that drifts
+ * from what the runner writes would characterize a record no reset produces.
+ *
+ * The obligation is carried deliberately: it is what gives the record its price
+ * (modelExhaustionTerminalForRole reads it, and erasing the file admits a spawn
+ * that should be denied), so a fixture without one would make the pair below
+ * look like bookkeeping. */
+export function resetRecordedMainAgent(host: HostId): string {
+  const dir = scaffoldedMainAgent(host);
+  // The record's own writer answers whether it landed, and a refusal here is the
+  // worst shape the funnels above describe: the deny case would characterize the
+  // fence's early return instead of its refusal, and the ALLOW control beside it
+  // would still allow — for the wrong reason, silently, which is the one
+  // direction a green row cannot report.
+  const recorded = recordReset(
+    dir,
+    {
+      at: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+      from: '20260101-000000-aaaaaa',
+      to: '20260101-010000-bbbbbb',
+      status: 'failed',
+      carried: ['senior-frontend'],
+    },
+    { terminalRoles: ['senior-frontend'] },
+  );
+  if (!recorded) {
+    throw new Error(`resetRecordedMainAgent: the write fence refused ${dir}/.traffic-one/runs/.resets.json, so this fixture has not reset and the reset-record fence returns early on every case built on it`);
+  }
+  return dir;
+}
+
 /** scaffoldedMainAgent AFTER the user declined — a project Traffic One really
  * did onboard, whose owner has since said "don't use Traffic One here". The
  * decline runs through the real writer, so removeDeclinedProjectArtifacts also
@@ -559,6 +600,29 @@ export function cursorReady(host: HostId): string {
   materializeFixtureProject(dir);
   captureCursorModels(dir, ['composer-2.5-fast'], detectHostPlan('cursor'));
   ensureRunModelPolicy(dir, runId, 'cursor', readEffectiveState(dir), { ...process.env, TRAFFIC_ONE_HOST: 'cursor' });
+  return dir;
+}
+
+/** cursorReady whose per-role contract DIRECTORY has been replaced by a plain
+ * file, so materialization cannot write the contracts and cannot repair the path
+ * either.
+ *
+ * Cursor rather than Claude because the refusal is per-host and this is the host
+ * whose contract path is planted here; cursorReady rather than
+ * materializedGreenfield because on Cursor the models-capture deny
+ * (`onboarding-cursor-models-required`) fires at the same gate and EARLIER, so
+ * every case built on a plainer Cursor fixture characterizes that instead —
+ * measured while building this, all three rows came back
+ * `onboarding-cursor-models-required` before the base was changed.
+ *
+ * The obstruction is a file rather than mode 0500 deliberately: a mode bit is
+ * not reproducible for root and is silently ineffective on some volumes, whereas
+ * a plain file at a directory path fails the same way everywhere. */
+export function roleContractsUnwritable(host: HostId): string {
+  const dir = cursorReady(host);
+  const contracts = path.join(dir, CURSOR_AGENTS_REL);
+  fs.rmSync(contracts, { recursive: true, force: true });
+  fs.writeFileSync(contracts, 'a file where the role contracts belong\n', 'utf8');
   return dir;
 }
 

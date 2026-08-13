@@ -215,14 +215,36 @@ const PROCESS_LEG_SKIPPED_MARKER = 'HOOK TIMING · OS PROCESS LEG NOT RUN';
  * p95 at 100% CPU delivery when this file runs alone, and 152.40 ms (91%
  * delivered) and 242.86 ms (81% delivered) on the same commit inside `npm
  * test`'s 291-file parallel suite. That is a 3.4-5.4x inflation of the wall
- * clock while the instrument's starvation detector still reports 81-91%, and
- * the detector is right to: its reference workload is pure arithmetic and does
- * no I/O (see latency-budget.ts), whereas this row's cost is dominated by
- * fixture filesystem work queued behind 290 other test processes. So the ONE
- * signal the three-valued instrument has for "do not trust this number" is
- * structurally blind to the contention this particular measurement suffers, and
- * enforcing here produces a red that carries no information about the code —
- * exactly the failure mode the instrument was built to end.
+ * clock while the instrument's starvation detector still reported 81-91%,
+ * because its only reference workload was pure arithmetic, whereas this row's
+ * cost is dominated by fixture filesystem work queued behind 290 other test
+ * processes. The ONE signal the three-valued instrument had for "do not trust
+ * this number" was structurally blind to the contention this particular
+ * measurement suffers.
+ *
+ * latency-budget.ts now runs a FILESYSTEM reference beside the arithmetic one,
+ * which is the detector that CAN see this contention. Be careful crediting it
+ * for these two readings in particular — re-derived by driving classifyLatency
+ * with both models:
+ *
+ *   152.40 ms @ 91%   already INCONCLUSIVE on the arithmetic reference alone
+ *                     (152.40 x 0.91 = 138.7 ms, inside budget once discounted),
+ *                     and inconclusive at every filesystem delivery from 1.00
+ *                     down to 0.50. The second reference changes nothing here.
+ *   242.86 ms @ 81%   FAIL on the arithmetic reference alone, and still fail
+ *                     with the filesystem one at >= 0.80. It becomes
+ *                     inconclusive only at <= 0.79 — and the filesystem
+ *                     delivery of that run was never recorded, so what the
+ *                     widened instrument would have said about it is not known.
+ *
+ * The general claim survives and the specific one does not: a filesystem the
+ * suite is queueing on is now visible to the instrument instead of being billed
+ * to the code (that is pinned by the recorded distributions in
+ * latency-budget.test.ts and by the live reference row beside them), but these
+ * two readings are not the demonstration. Either way it does not make the
+ * parallel suite a place a budget can be enforced, because an inconclusive
+ * verdict enforces nothing. The reason this switch is off there and on here is
+ * therefore unchanged.
  *
  * Set in the serial `latency-budget` CI job, which runs this file alone on a
  * runner that has done nothing else, and which hard-fails if the ENFORCED

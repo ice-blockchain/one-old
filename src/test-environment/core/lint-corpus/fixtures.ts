@@ -51,6 +51,13 @@ export interface CorpusCommandFixture {
   guards: string;
   command: string;
   expectBlock?: 'forbidden-install';
+  /**
+   * Same strictness contract as the file fixtures: set when the command
+   * legitimately draws a stack ADVISORY, which most of the forbidden table now
+   * is. An advisory row must still be reported, so this records the reporting
+   * rather than excusing it.
+   */
+  advisoryOk?: boolean;
 }
 
 // ── Good: React (vite-react profile, compiled contract) ─────────────────────
@@ -653,9 +660,19 @@ export const COMMAND_FIXTURES: CorpusCommandFixture[] = [
     command: 'npx shadcn@latest add button card',
   },
   {
-    id: 'kb-forbidden-mobx',
-    guards: 'inverse guard: a genuinely forbidden state library still denies',
+    id: 'cmd-off-stack-state-library',
+    guards: 'an off-stack state library is a preference, not a refusal: the install proceeds and the advice is reported alongside it',
     command: 'pnpm add mobx',
+    advisoryOk: true,
+  },
+  {
+    id: 'kb-forbidden-next',
+    // The one row left in the table that denies, and the only honest inverse
+    // guard now: `next` rewrites what the capability profile detects, so a run
+    // whose architecture and verification contracts are already frozen would
+    // gather every check against a project the contract does not describe.
+    guards: 'inverse guard: an install that would make the compiled capability contract false about the project still denies',
+    command: 'pnpm add next',
     expectBlock: 'forbidden-install',
   },
 ];

@@ -41,6 +41,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'one-mcp-report.cjs': './runners/one-mcp-report/index.js',
   'one-mcp-host.cjs': './runners/one-mcp-host/index.js',
   'traffic-one-cleanup.cjs': './runners/traffic-one-cleanup/index.js',
+  'traffic-one-reset.cjs': './runners/traffic-one-reset/index.js',
   'traffic-one-uninstall.cjs': './runners/traffic-one-uninstall/index.js',
   'run-status.cjs': './runners/run-status/index.js',
   'qa-evidence-runner.cjs': './runners/qa-evidence/index.js',

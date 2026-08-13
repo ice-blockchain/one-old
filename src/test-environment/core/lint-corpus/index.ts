@@ -59,6 +59,7 @@ import {
   roPluralCatalogFixture,
   shadcnVendorPrimitiveFixture,
   sourceCatalogSeed,
+  type CorpusCommandFixture,
   type CorpusFileFixture,
   type CorpusGateId,
   type CorpusProfileId,
@@ -191,6 +192,16 @@ function evaluateFileFixture(env: CorpusEnv, fixture: CorpusFileFixture): Corpus
   // analysis). Error severity blocks — at write time for the hot ids, at the
   // completion scan for everything else — so the corpus treats every
   // error-severity structural finding as blocking.
+  //
+  // That projection survives the existing-codebase demotion of the structural
+  // opinions, for two independent reasons worth stating because neither is
+  // visible from this call site. Every corpus state below declares `mode:
+  // "new-project"`, which is the only mode where those opinions block; and the
+  // demotion lives in plan-readiness, which filters what the hot analyzer
+  // returns — the analyzer itself has no existing-mode knob, so nothing reached
+  // from here can change severity. A corpus for existing mode would be a
+  // SECOND corpus with inverted known-bad rows (a demoted finding must still be
+  // reported), not a flag flipped here.
   const structural = contract
     ? analyzeStructureTextAgainstContract(fixture.file, fixture.content, contract, {})
     : analyzeStructureText(fixture.file, fixture.content, profile, []);
@@ -287,20 +298,28 @@ function evaluateFileFixture(env: CorpusEnv, fixture: CorpusFileFixture): Corpus
 
 function evaluateCommandFixture(
   env: CorpusEnv,
-  fixture: { id: string; guards: string; command: string; expectBlock?: 'forbidden-install' },
+  fixture: CorpusCommandFixture,
 ): CorpusFixtureResult {
   const blocking: string[] = [];
+  const advisory: string[] = [];
   if (INSTALL_RE.test(fixture.command)) {
     const hits = forbiddenForStack(INSTALL_STATE, false, env.reactContract.profile.uiSystem)
-      .filter(([pattern]) => new RegExp(pattern).test(fixture.command));
-    for (const [pattern, tip] of hits) blocking.push(`${pattern}: ${tip}`);
+      .filter((rule) => new RegExp(rule.pattern).test(fixture.command));
+    // Read the tier off the row rather than treating every match as a refusal.
+    // Most of the table is library preference and advises; only a row that
+    // would make the compiled capability contract false about the project
+    // denies. Projecting every hit as blocking would have kept reporting a
+    // deny the gate no longer issues — and, worse, would have gone on passing.
+    for (const rule of hits) {
+      (rule.blocking ? blocking : advisory).push(`${rule.pattern}: ${rule.tip}`);
+    }
   }
   return {
     id: fixture.id,
     file: fixture.command,
     guards: fixture.guards,
     expectBlock: fixture.expectBlock ?? null,
-    gates: [{ gate: 'forbidden-install', blocking, advisory: [] }],
+    gates: [{ gate: 'forbidden-install', blocking, advisory }],
   };
 }
 
@@ -382,7 +401,9 @@ export function runLintCorpus(): CorpusReport {
       shadcnVendorPrimitiveFixture(env.reactContract),
     ];
     const advisoryOkIds = new Set(
-      fileFixtures.filter((fixture) => fixture.advisoryOk).map((fixture) => fixture.id),
+      [...fileFixtures, ...COMMAND_FIXTURES]
+        .filter((fixture) => fixture.advisoryOk)
+        .map((fixture) => fixture.id),
     );
     const results = [
       ...fileFixtures.map((fixture) => evaluateFileFixture(env, fixture)),

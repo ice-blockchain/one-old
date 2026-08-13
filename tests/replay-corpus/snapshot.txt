@@ -44,13 +44,13 @@ consent.pre-consent-writes-fenced-then-no	allow			-
 consent.pre-consent-writes-fenced-then-yes	deny	onboarding-gate	onboarding-server-deny-first	-
 host-coverage.claude-shell-readonly	allow			-
 host-coverage.codex-other	allow			-
-host-coverage.copilot-file-read	allow			-
+host-coverage.copilot-file-read	context			-
 host-coverage.cursor-search	allow			-
-host-coverage.kilo-file-write-existing-codebase	allow			-
+host-coverage.kilo-file-write-existing-codebase	context			-
 host-coverage.kilo-search	allow			-
 host-coverage.opencode-other	allow			-
 host-coverage.windsurf-search	allow			-
-lifecycle.materialize-project-command	allow			-
+lifecycle.materialize-project-command	context			-
 lifecycle.post-tool-use-shell-scaffolded-claude	context			-
 lifecycle.post-tool-use-write-greenfield-claude	noop			-
 lifecycle.session-start-existing-codebase-windsurf	context			-
@@ -82,6 +82,9 @@ onboarding.kilo-setup-required	deny	onboarding-gate	onboarding-setup-required-op
 onboarding.opencode-setup-required	deny	onboarding-gate	onboarding-setup-required-opencode	-
 onboarding.read-only-pre-consent-still-denied	deny	onboarding-gate	onboarding-use-plugin-question	-
 onboarding.repaired-materialization	deny	onboarding-gate	repaired-materialization	-
+onboarding.role-contracts-healthy-write-not-denied	deny	plan-guard.write	plan-gate	project-path:apps/web/src/components/Widget.tsx
+onboarding.role-contracts-unwritable-read-allowed	context			-
+onboarding.role-contracts-unwritable-write	deny	onboarding-gate	host-role-contracts-unwritable	project-path:.cursor/agents
 onboarding.server-deny-first-claude	deny	onboarding-gate	onboarding-server-deny-first	-
 onboarding.server-deny-repeat-claude	deny	onboarding-gate	onboarding-server-deny-repeat	-
 onboarding.team-mode-downgrade-guard	deny	onboarding-gate	team-mode-downgrade-guard	-
@@ -102,26 +105,29 @@ order.authoring-guard-runs-before-onboarding-gate	deny	session.authoring-guard	a
 plan-guard.apply-patch-invalid-payload	deny	session.workspace-boundary	apply-patch-payload-invalid	-
 plan-guard.apply-patch-reconstruction-failed	deny	plan-guard.write	apply-patch-reconstruction-failed	project-path:src/index.ts
 plan-guard.deploy-fingerprint-mismatch	deny	plan-guard.deploy	deploy-gate-fingerprint-mismatch	tool-command
-plan-guard.deploy-non-publishing-command-allowed	allow			-
+plan-guard.deploy-non-publishing-command-allowed	context			-
 plan-guard.deploy-security-check-stale	deny	plan-guard.deploy	deploy-gate-security-check-stale	tool-command
 plan-guard.deploy-shipper-approval-required	deny	plan-guard.deploy	deploy-gate-shipper-approval-required	tool-command
 plan-guard.feature-source-write-before-plan	deny	plan-guard.write	plan-gate	project-path:apps/web/src/components/Widget.tsx
-plan-guard.library-allowlist-allowed-redux	allow			-
-plan-guard.library-allowlist-forbidden-mobx	deny	plan-guard.library	library-allowlist-forbidden	tool-command
+plan-guard.library-allowlist-advised-mobx	context			-
+plan-guard.library-allowlist-allowed-redux	context			-
+plan-guard.library-allowlist-forbidden-next	deny	plan-guard.library	library-allowlist-forbidden	tool-command
 plan-guard.monorepo-root-vite	deny	plan-guard.write	monorepo-root-vite	project-path:src/main.tsx
 plan-guard.opencode-external-temp-shell	deny	plan-guard.write	opencode-external-temp-shell	-
-plan-guard.readme-write-allowed-without-plan	allow			-
+plan-guard.readme-write-allowed-without-plan	context			-
 plan-guard.registry-probe-gate	deny	plan-guard.write	registry-probe-gate	-
+plan-guard.reset-record-erased-by-shell	deny	plan-guard.write	reset-record-owner-gate	project-path:.traffic-one/runs/.resets.json
+plan-guard.reset-record-read-allowed	context			-
 plan-guard.run-id-mismatch-write	deny	plan-guard.write	run-id-mismatch	project-path:.traffic-one/digests/2026-06-17T12-09-40Z/architect.md
 plan-guard.runtime-assignments-owner-gate	deny	plan-guard.write	runtime-assignments-owner-gate	project-path:.traffic-one/runs/2026-06-17T12-09-40Z/assignments.json
-plan-guard.scaffold-gate-noop-other-hosts	allow			-
+plan-guard.scaffold-gate-noop-other-hosts	context			-
 plan-guard.scaffold-main-agent-plan-gate-windsurf	deny	plan-guard.scaffold	scaffold-main-agent-plan-gate	abs-path-outside-project
 plan-guard.scaffold-plan-gate-windsurf-subagents	deny	plan-guard.scaffold	scaffold-plan-gate	abs-path-outside-project
 plan-guard.scaffold-stack-gate-windsurf-nextjs	deny	plan-guard.scaffold	scaffold-stack-gate	abs-path-outside-project
-plan-guard.scaffolded-greenfield-edit-allowed	allow			-
+plan-guard.scaffolded-greenfield-edit-allowed	context			-
 plan-guard.state-mode-downgrade	deny	plan-guard.write	state-mode-downgrade	project-path:.traffic-one/.one.json
 plan-guard.struct-scan-incomplete	deny	plan-guard.write	plan-write-struct-scan-incomplete	project-path:apps/web/src/App.tsx
-plan-guard.supabase-local-non-supabase-backend-allowed	allow			-
+plan-guard.supabase-local-non-supabase-backend-allowed	context			-
 plan-guard.supabase-local-stack-gate	deny	plan-guard.supabase-local	supabase-local-stack-gate	tool-command
 plan-static.asset-extension-mismatch	deny	plan-guard.write	asset-extension-mismatch	project-path:apps/web/public/logo.png
 plan-static.asset-extension-mismatch-existing-codebase	deny	plan-guard.write	asset-extension-mismatch	project-path:public/logo.png
@@ -130,20 +136,20 @@ plan-static.cross-feature-import	deny	plan-guard.write	cross-feature-import	proj
 plan-static.css-ts-import	deny	plan-guard.write	css-ts-import	project-path:apps/web/src/components/panel.ts
 plan-static.deep-relative-package	deny	plan-guard.write	deep-relative-package	project-path:apps/web/src/features/cart/button.ts
 plan-static.default-export	deny	plan-guard.write	default-export	project-path:apps/web/src/components/Badge.tsx
-plan-static.dynamic-inline-style-allowed	allow			-
-plan-static.existing-codebase-standdown-allowed	allow			-
+plan-static.dynamic-inline-style-allowed	context			-
+plan-static.existing-codebase-standdown-allowed	context			-
 plan-static.expo-route-service-files	deny	plan-guard.write	expo-route-service-files	project-path:apps/web/app/home.service.ts
 plan-static.monorepo-package-json	deny	plan-guard.write	monorepo-package-json	project-path:package.json
 plan-static.monorepo-root-flat-scaffold	deny	plan-guard.write	monorepo-root-flat-scaffold	project-path:tsconfig.app.json
 plan-static.native-dom-tags	deny	plan-guard.write	native-dom-tags	project-path:apps/mobile/src/components/Row.tsx
 plan-static.native-inline-style	deny	plan-guard.write	native-inline-style	project-path:apps/mobile/src/components/Card.tsx
 plan-static.no-any	deny	plan-guard.write	no-any	project-path:apps/web/src/components/util.ts
-plan-static.no-any-test-scope-allowed	allow			-
+plan-static.no-any-test-scope-allowed	context			-
 plan-static.pages-service-files	deny	plan-guard.write	pages-service-files	project-path:apps/web/src/pages/home.service.ts
 plan-static.vanilla-extract-import	deny	plan-guard.write	vanilla-extract-import	project-path:apps/web/src/components/theme.ts
 plan-static.web-inline-style	deny	plan-guard.write	web-inline-style	project-path:apps/web/src/components/Box.tsx
 plan-static.websocket-location	deny	plan-guard.write	websocket-location	project-path:apps/web/src/components/live.ts
 undecided.mutating-shell-blocked-before-onboarding	deny	onboarding-gate	onboarding-use-plugin-question	-
-workspace-boundary.read-inside-workspace-allowed	allow			-
+workspace-boundary.read-inside-workspace-allowed	context			-
 workspace-boundary.read-outside-workspace	deny	session.workspace-boundary	workspace-boundary-guard	abs-path-outside-project
 workspace-boundary.shell-unresolved-expansion	deny	session.workspace-boundary	workspace-boundary-unresolved-expansion	project-path:$UNRESOLVED_VAR/out.txt

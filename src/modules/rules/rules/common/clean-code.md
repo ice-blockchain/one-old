@@ -46,11 +46,35 @@ and `frontend/<flavour>/core.md`.
   tamper guard").
 - Layer and placement rules are likewise expressed in that config as import
   boundaries, not inferred from file or component names.
-- Runtime structural findings remain blocking where a linter cannot see them,
-  because they compare against the compiled architecture rather than the source
-  alone: entrypoints containing inline UI/routes, route/contract mismatches,
-  work-unit allowlist gaps, planned-module gaps, orphan modules, and incomplete
-  scans. Collapsed source is also still rejected at the write, because the
+- Runtime structural findings see what a linter cannot, because they compare
+  against the compiled architecture rather than the source alone: entrypoints
+  containing inline UI/routes, route/contract mismatches, work-unit
+  allowlist gaps, planned-module gaps, and orphan modules. On a project
+  Traffic One scaffolded, every one of them blocks. On an existing codebase
+  only the two that are facts rather than conventions do — a write outside your
+  work-unit allowlist, and a planned module that does not exist — and the rest
+  are recorded as findings against a layout the repository chose before the run.
+  An incomplete scan is demoted only where the run's verification contract
+  actually compensates for it, and there are three ways to read less than the
+  whole tree. A genuine BOUND — more source files than a walk reads, in either
+  the structure scan or the collapse scan — is recorded as a warning and it
+  pins `uiImpact` to the truncated-scan floor, so that run owes MORE browser
+  evidence than a complete one, not less; both scans record it, on every role's
+  digest.
+  An entry a walk WITHDREW — a file it could not open, a directory it could not
+  read, an entry it cannot classify, a symbolic link it declined to follow — is
+  skipped, recorded by path, and the rest of the tree is judged normally, and it
+  raises the same floor: what a withdrawal costs is not the entry but the whole
+  subtree behind it, including error-grade findings in files nobody read, so the
+  run owes the same extra evidence a bound owes. There is exactly ONE way not to
+  follow a link for free — the same walk read the target anyway, under the
+  target's own real path, so nothing is missing from the report. A link into a
+  build or generated directory is NOT that case and is recorded: those bytes are
+  real source, and because the real path is one the scan excludes, no report
+  judges them under either name.
+  A source root that does not resolve stays an error in both modes: there is no
+  floor that compensates a report about nothing.
+  Collapsed source is still rejected at the write in every mode, because the
   formatter is not installed yet when the first files land.
 - Prefer the active language's clear control-flow idioms. Avoid unexplained
   literals; use named values or domain types where that improves meaning.
