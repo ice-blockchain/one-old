@@ -104,6 +104,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { isDoctorIdArgument } from '../../../shared/doctor-command';
 import {
   COMMAND_WORD_PREFIX,
   compressorKeepsInput,
@@ -513,6 +514,77 @@ function runsTreeScope(rel: string): string | null {
   return covers ? literal : null;
 }
 
+/**
+ * The run the fence is protecting, or '' for "no run is live" — which routes
+ * into the branch that protects EVERY run.
+ *
+ * `shellRuntimeSidecarDestruction` used to derive this with `.trim()` and a
+ * non-empty test, so ANY non-empty string narrowed the enumeration and a value
+ * no run directory can ever equal narrowed it to NOTHING. Measured at the gate
+ * on a fixture holding two runs with real sidecars: with `currentRunId` set to
+ * `..`, `.`, `/tmp/x`, `a/b`, a NUL, `../../../../../../tmp/t1-escape`, an id
+ * 400 characters long, `<id>/`, or any well-shaped id naming no run at all,
+ * `rm -rf .traffic-one` and `rm -rf .traffic-one/runs` both went from DENY to
+ * PERMIT. Nothing escapes the project — the narrowing is simply switched off, so
+ * the fence finds nothing to protect and the whole-tree wipe succeeds.
+ *
+ * TWO QUESTIONS, and the second is the one that matters. A SHAPE test alone
+ * (`..` is not an id) closes the path-flavoured spellings and leaves
+ * `currentRunId: 'no-such-run'` disarming the fence exactly as before, which
+ * would be six literal values fixed and the general case open.
+ *
+ * The shape is `isDoctorIdArgument` (shared/doctor-command.ts) rather than a
+ * regex written here: it is the repository's own id grammar, documented there as
+ * the charset `safePathSegment` treats as a safe on-disk segment and shared with
+ * tool-classify, reset-command, override and the reset runner. It is what the
+ * MINTERS produce — `runIdNow()`'s epoch-ms string and the reset runner's
+ * `${runIdNow()}-r` successor, whose own comment (reset.ts:319) justifies the
+ * suffix as staying "inside both safePathSegment's charset and the gate
+ * grammar's id shape". `/^\d{13}$/` was the tempting alternative and would have
+ * been wrong in the expensive direction: it rejects that `-r` successor and
+ * every legacy id `ensureCurrentRunId` hands back verbatim, so it would refuse
+ * REAL runs.
+ *
+ * EXISTENCE is asked of the runs directory's own DIRECTORY entries rather than
+ * with `existsSync`, and neither half of that is pedantry.
+ *
+ * The entry NAME, because this hook runs on case-insensitive filesystems, where
+ * `existsSync` answers yes for `RUN-1` when only `run-1` exists — and the
+ * comparison in `otherRun` is case-SENSITIVE, so that mismatch would skip every
+ * sidecar of the run it was pointing at. An exact entry match cannot disagree
+ * with that comparison. Every id the shape admits is `safePathSegment`-
+ * invariant, so the name compared here is the name `runDir` builds.
+ *
+ * A real DIRECTORY, because a SYMLINK entry defeated the shape and the existence
+ * test together: measured with `runs/run-linked` linked to a run directory
+ * outside the project and `currentRunId: 'run-linked'`, both whole-tree wipes
+ * PERMITTED again. The narrowing fired on the link's name while `sidecarsUnder`
+ * — which walks `isDirectory()` entries and so does not follow it — could see
+ * nothing under it to protect, leaving every real run classified as somebody
+ * else's. The two questions have to be asked about the same kind of entry, and
+ * `runDir` only ever makes a real directory.
+ *
+ * The cost of failing closed here is already-shipped behaviour: absent, empty
+ * and whitespace pointers all protect every run today, so a pointer that names
+ * no run protects every run too. What that costs is housekeeping — `rm -rf
+ * .traffic-one/runs/<finished id>` is refused while the pointer is damaged —
+ * and the module header has promised exactly this since the narrowing shipped:
+ * the narrowing must not be reachable by breaking the thing it reads.
+ */
+function liveRunId(value: unknown, projectRoot: string): string {
+  if (typeof value !== 'string') return '';
+  const id = value.trim();
+  if (!isDoctorIdArgument(id)) return '';
+  try {
+    const entries = fs.readdirSync(path.join(projectRoot, RUNS_DIR), { withFileTypes: true });
+    return entries.some((entry) => entry.name === id && entry.isDirectory()) ? id : '';
+  } catch {
+    // No readable runs tree: nothing to narrow, and `sidecarsUnder` enumerates
+    // nothing either, so this costs no refusal.
+    return '';
+  }
+}
+
 function sidecarsUnder(projectRoot: string, rel: string): string[] {
   const scope = rel === '' || rel === '.traffic-one' ? RUNS_DIR : rel;
   const found: string[] = [];
@@ -840,7 +912,9 @@ function destroyedScopes(command: string, workdir: string, projectRoot: string):
  *
  * Empty or unresolvable `currentRunId` protects EVERY run, because "no run is
  * live" is also what an unreadable state file looks like and the narrowing must
- * not be reachable by breaking the thing it reads.
+ * not be reachable by breaking the thing it reads. This sentence stood here
+ * while only its EMPTY half was implemented — see `liveRunId` for what
+ * "unresolvable" now means and for the measurement of what it used to cost.
  */
 export function shellRuntimeSidecarDestruction(
   command: unknown,
@@ -864,7 +938,7 @@ export function shellRuntimeSidecarDestruction(
   // which is the same two-test pre-filter `reset-record-shell.ts` uses
   // (`MENTIONS_RE || DESTRUCTIVE_VERB_RE`) and for the same measured reason.
   if (!DESTRUCTIVE_VERB_RE.test(scanned) && !scanned.includes('.traffic-one')) return [];
-  const live = typeof currentRunId === 'string' ? currentRunId.trim() : '';
+  const live = liveRunId(currentRunId, projectRoot);
   const otherRun = (sidecar: string): boolean => {
     if (!live) return false;
     const rest = sidecar.slice(`${RUNS_DIR}/`.length);
