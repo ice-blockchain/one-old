@@ -66,12 +66,18 @@ and `frontend/<flavour>/core.md`.
   skipped, recorded by path, and the rest of the tree is judged normally, and it
   raises the same floor: what a withdrawal costs is not the entry but the whole
   subtree behind it, including error-grade findings in files nobody read, so the
-  run owes the same extra evidence a bound owes. There is exactly ONE way not to
-  follow a link for free — the same walk read the target anyway, under the
-  target's own real path, so nothing is missing from the report. A link into a
-  build or generated directory is NOT that case and is recorded: those bytes are
-  real source, and because the real path is one the scan excludes, no report
-  judges them under either name.
+  run owes the same extra evidence a bound owes. Two things excuse not
+  following a link into source a walk would otherwise judge, and the two walks
+  do not agree on the second. Both are excused when the same walk read the
+  target anyway, under the target's own real path, so nothing is missing from
+  the report. The structure scan is additionally silent — no skip record and no
+  raised floor — about a link whose target resolves under a build output this
+  project DECLARED in its compiled architecture; the collapse scan has no such
+  case and records that link like any other, floor included. Neither excuse is
+  inferred from a name: a link under a source name whose target lands in a build
+  or generated directory the contract does not declare is recorded by both,
+  because those bytes are real source, and because the real path is one the scan
+  excludes, no report judges them under either name.
   A source root that does not resolve stays an error in both modes: there is no
   floor that compensates a report about nothing.
   Collapsed source is still rejected at the write in every mode, because the

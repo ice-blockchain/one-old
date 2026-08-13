@@ -49,11 +49,15 @@ description: >
   way and costs the same extra evidence — and it costs the refactor something
   else too: the subtree behind that entry was not read, so nothing in this
   report says whether the behaviour you are preserving still holds there. A link
-  is free only when the same walk read its target under the target's own real
-  path; one pointing into a generated or build directory is recorded, because no
-  report judges those bytes under either name. Treat a skipped path over code you
-  touched as unverified, not as clean. A source root that does not resolve is an
-  error and does block, and no exception lifts it.
+  is free when the same walk read its target under the target's own real path,
+  and in the structure scan also when its target resolves under a build output
+  the compiled architecture DECLARES — that one leaves no record to read, so an
+  empty skip list is not proof that no link was stepped over, and the collapse
+  scan records the same link anyway. One that carries a source name into a
+  generated or build directory the contract does not declare is recorded, because
+  no report judges those bytes under either name. Treat a skipped path over code
+  you touched as unverified, not as clean. A source root that does not resolve
+  is an error and does block, and no exception lifts it.
 - Use Playwright/screenshots only when the derived web `uiImpact` requires
   them; use native QA for native UI; use no browser for API/CLI/worker/data-only
   work.

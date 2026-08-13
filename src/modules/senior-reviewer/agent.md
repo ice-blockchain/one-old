@@ -140,9 +140,14 @@ CHANGES_REQUESTED — <one line summary>.
   truncated-scan floor exactly as the bound does, and the report is not evidence
   about the files behind it — READ the skipped paths before approving, and if one
   covers code this diff touches, ask for it to be made readable rather than
-  approving over it. A link is exempt only when the same walk read its target
-  under the target's own real path; a link pointing INTO a generated or build
-  directory is recorded like any other skip, because nothing judges those bytes
+  approving over it. A link is exempt when the same walk read its target under
+  the target's own real path, and — in the structure scan only — when its target
+  resolves under a build output the compiled architecture DECLARES: that second
+  case leaves no skip for you to read and raises no floor, so an empty skip list
+  is not evidence that no link was stepped over. The collapse scan behind the
+  completion digest has no such exemption and records the same link. A link that
+  carries a source name into a generated or build directory the contract does not
+  declare is recorded like any other skip, because nothing judges those bytes
   under either name. What is NOT excused is a scan the contract cannot
   compensate — a source root that does not resolve — which arrives as an error
   finding like any other and is a bar.
