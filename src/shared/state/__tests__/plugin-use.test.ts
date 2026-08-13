@@ -4,6 +4,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+// DECLARED, not inherited, because this file's subject IS the fence's answer:
+// `src/build/test-preload.mjs` hands every suite '0', the opposite of the
+// shipped ASK_USE_PLUGIN_FIRST, and a suite about the decider that never names
+// the value it decides under is reading its own configuration by accident.
+// '0' is the right one to pin here and costs nothing: every case below RECORDS
+// or CLEARS a choice explicitly, and a recorded choice governs itself under
+// either value — the pending-project cell this variable actually decides is
+// pinned in state/__tests__/consent-write-fence.test.ts, under both.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
+
 import {
   clearPluginUseChoice,
   pluginUseDeclined,

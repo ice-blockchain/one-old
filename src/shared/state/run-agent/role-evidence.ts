@@ -12,6 +12,7 @@ import {
 import {
   firstString,
 } from './run-paths';
+import { openRegularFd, readRegularFileOrThrow } from '../../bounded-read';
 
 const ROLLOUT_THREAD_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 export function transcriptThreadId(transcriptPath: unknown): string | null {
@@ -182,7 +183,7 @@ const CODEX_SESSION_META_LINE_MAX_BYTES = 128 * 1024;
 function readFirstLineCapped(filePath: string, maxBytes: number = CODEX_SESSION_META_LINE_MAX_BYTES): string {
   let fd: number | undefined;
   try {
-    fd = fs.openSync(filePath, 'r');
+    fd = openRegularFd(filePath);
     const chunks: Buffer[] = [];
     let offset = 0;
     while (offset < maxBytes) {
@@ -216,7 +217,7 @@ const TRANSCRIPT_ROLE_SCAN_MAX_BYTES = 1024 * 1024;
 function readHeadCapped(filePath: string, maxBytes: number = TRANSCRIPT_ROLE_SCAN_MAX_BYTES): string {
   let fd: number | undefined;
   try {
-    fd = fs.openSync(filePath, 'r');
+    fd = openRegularFd(filePath);
     const buffer = Buffer.alloc(maxBytes);
     const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0);
     return bytesRead > 0 ? buffer.subarray(0, bytesRead).toString('utf8') : '';
@@ -316,7 +317,7 @@ export function inferRoleEvidenceFromTranscript(transcriptPath: unknown): RoleEv
   }
   let raw: string;
   try {
-    raw = fs.readFileSync(transcriptPath, 'utf8');
+    raw = readRegularFileOrThrow(transcriptPath);
   } catch {
     return { kind: 'none' };
   }

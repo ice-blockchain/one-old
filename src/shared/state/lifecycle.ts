@@ -49,6 +49,34 @@ export function isExistingProjectMode(state: unknown): boolean {
   return normalizedMode(obj(state)?.mode).startsWith('existing');
 }
 
+// The POSITIVE test, for gates whose subject is a stack Traffic One prescribed
+// rather than code it did not write. Deliberately not `!isExistingProjectMode`:
+// an ABSENT or unrecognized mode is neither, and the two readings are not
+// interchangeable for it — armed there is fail-closed for an architecture gate
+// and fail-open for one that would otherwise judge the project against a
+// GUESSED stack. Shares `normalizedMode` with its sibling so a hand-edited
+// ` New-Project ` cannot read as scaffolded to one caller and undeclared to the
+// other.
+export function isNewProjectMode(state: unknown): boolean {
+  return normalizedMode(obj(state)?.mode) === 'new-project';
+}
+
+/**
+ * The mode as every predicate in this file reads it: trimmed, lower-cased, and
+ * '' for anything that is not a string.
+ *
+ * Exported for the ONE caller that does not merely compare the mode but carries
+ * it: session-start reads `state.mode` into a local, writes it back to state and
+ * interpolates it into `rules/modes/<mode>.md`. A hand-edited ` Existing-Codebase `
+ * was an existing codebase to `isExistingProjectMode`, a missing rule file to
+ * that path, and neither existing nor new to the two raw comparisons beside it.
+ * Normalizing at the source is what makes those three agree; comparing through
+ * the predicates is what keeps them agreeing.
+ */
+export function canonicalProjectMode(mode: unknown): string {
+  return normalizedMode(mode);
+}
+
 export function projectPhase(state: unknown, mode?: unknown): LifecyclePhase {
   const lifecycle = obj(obj(state)?.lifecycle);
   const phaseRaw = typeof lifecycle?.phase === 'string' ? lifecycle.phase.trim().toLowerCase() : '';

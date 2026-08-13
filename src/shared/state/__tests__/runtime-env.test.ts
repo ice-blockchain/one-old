@@ -9,6 +9,17 @@ import { initializeTrafficOneEnv } from '../runtime-env';
 import { defaultProjectPrefsPath, readProjectPrefs } from '../local-prefs';
 import { projectWritesPermitted, resetPluginUseCache } from '../plugin-use';
 
+// DECLARED, not inherited. The fixture guard below asserts that the consent
+// fence PERMITS deleting under the project's state dir, and that answer is
+// whatever `TRAFFIC_ONE_ASK_USE_PLUGIN` says for a project with no recorded
+// choice: under the shipped default (ASK_USE_PLUGIN_FIRST = true) it is `false`
+// and the guard fails while blaming the wrong thing. These fixtures mean "a
+// project the user already said yes to" and cannot record it — the canonical
+// prefs root must NOT exist, which is the very refusal being characterized — so
+// the value is pinned here instead of being taken from src/build/test-preload.mjs
+// without saying so. Enforced by shared/__tests__/durable-writer-rule.test.ts.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
+
 test('initializeTrafficOneEnv migrates completed project-local Cursor answers before deleting retired storage', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runtime-env-'));
   const cwd = path.join(dir, 'project');

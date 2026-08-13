@@ -47,20 +47,60 @@ export {
   // 'evidence'), which has no deny to hang `overrideForDeny` off.
   activeOverrideToken,
   mintOverride,
+  overrideLedgerDigest,
+  overrideLedgerIllegible,
   parseOverrideTtl,
   readOverrideLedger,
+  readOverrideLedgerResult,
   runOverrideRecords,
   unvouchableOverrideEntries,
+  vouchableMintIds,
+  vouchableOverrideEntries,
 } from './token';
 export type {
   MintOverrideInput,
   MintOverrideResult,
   OverrideEntry,
   OverrideEntryOutcome,
+  OverrideLedgerKind,
+  OverrideLedgerRead,
   OverrideScope,
   OverrideToken,
 } from './token';
-export { OVERRIDE_DIR_NAME, overrideLedgerPath, overrideRoot } from './paths';
+export { OVERRIDE_DIR_NAME, overrideLedgerPath, overrideRoot, overrideSnapshotDir } from './paths';
+// The completeness half of the primitive: whether the record can still account
+// for itself. Read by settlement (never by a gate) and by the doctor probe.
+export {
+  OVERRIDE_ACKNOWLEDGED_COUNTER_CONTRADICTED_CHECK,
+  OVERRIDE_LEDGER_ILLEGIBLE_CHECK,
+  OVERRIDE_MINT_COUNTER_UNVERIFIABLE_CHECK,
+  OVERRIDE_MINT_COUNT_MISMATCH_CHECK,
+  OVERRIDE_SNAPSHOT_ORPHANED_CHECK,
+  OVERRIDE_SNAPSHOT_SCAN_INCOMPLETE_CHECK,
+  overrideEvidenceChecks,
+  overrideEvidenceReport,
+  overrideReconciliationDraft,
+} from './integrity';
+export type { OverrideEvidenceReport, OverrideReconciliationDraft } from './integrity';
+export { readOverrideMintCounter } from './mint-counter';
+export type { OverrideMintCounterRead, OverrideMintCounterState } from './mint-counter';
+export type { OrphanSnapshot } from './snapshots';
+// The named, append-only repair for a record that cannot account for itself.
+// Minted by the doctor's operator command; consulted by settlement for the
+// run quarantine that is what makes the repair safe to grant.
+export {
+  MAX_QUARANTINED_RUNS,
+  OVERRIDE_RECONCILE_SECTION,
+  readOverrideReconciliations,
+  reconciliationRef,
+  recordOverrideReconciliation,
+  runQuarantinedByOverrideReconciliation,
+} from './reconcile';
+export type {
+  OverrideAcknowledgement,
+  OverrideReconciliation,
+  RecordReconciliationResult,
+} from './reconcile';
 
 export interface OverridableDenyInput {
   readonly event: CanonicalEvent;
@@ -101,10 +141,13 @@ export function unblockCommand(gateId: string, runId: string | null): string {
  * paragraph here trains an agent to treat the override as a step in the loop.
  *
  * Addressed to the human on purpose ("you, in your own terminal"): an agent
- * that runs this gets refused (the mint requires a TTY it does not have), and
- * the sentence has to make that predictable rather than a surprise. The
- * ineligibility consequence is stated in the same breath as the command,
- * because that is the only moment anyone reads it.
+ * that runs this from an ordinary tool call gets refused — the mint wants a TTY
+ * a piped tool call does not have — and the sentence has to make that
+ * predictable rather than a surprise. It is a cost, not a boundary (see
+ * runners/doctor/unblock.ts's header on what a pty makes possible), which is
+ * why the ineligibility consequence is stated in the same breath as the
+ * command: that is the half that holds either way, and this is the only moment
+ * anyone reads it.
  */
 export function operatorOverrideHint(
   input: OverridableDenyInput & { readonly gateId: string; readonly runId: string | null },
@@ -150,6 +193,13 @@ export function overrideAppliedNotice(token: OverrideToken, gateId: string, deny
 /**
  * Did this run ever have an override minted for it? The abuse guard, consulted
  * by run-settlement/io.ts. Deliberately TTL-blind — see runOverrideRecords.
+ *
+ * Answers only what the ledger SHOWS, and `false` therefore covers both "no
+ * override" and "the line naming one is gone". Its companion
+ * `overrideEvidenceChecks` (integrity.ts) is what refuses the second case;
+ * settlement asks both, in that order, because a mint we can still see deserves
+ * the specific `operator-override-used` reason rather than a generic one about
+ * the record being incomplete.
  */
 export function runUsedOperatorOverride(
   projectRoot: string,

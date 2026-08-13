@@ -21,11 +21,16 @@ import { recordPluginUseChoice, resetPluginUseCache } from '../../state/plugin-u
 import { isTrafficOneDoctorCommand } from '../../tool-classify';
 import { parseArgs } from '../../../runners/doctor/lib';
 import {
+  OVERRIDE_LEDGER_ILLEGIBLE_CHECK,
   OVERRIDE_MAX_TTL_MS,
+  OVERRIDE_MINT_COUNT_MISMATCH_CHECK,
+  OVERRIDE_SNAPSHOT_ORPHANED_CHECK,
   activeOverrideToken,
   mintOverride,
   operatorOverrideHint,
   overridableDeny,
+  overrideEvidenceChecks,
+  overrideEvidenceReport,
   overrideForDeny,
   overrideLedgerPath,
   parseOverrideTtl,
@@ -42,7 +47,14 @@ import type { Ctx, Handler, HookInput, HookResult } from '../../../core/types';
 // ── fixture ──────────────────────────────────────────────────────────────────
 
 const TEMP_DIRS: string[] = [];
+const CLAMPED: string[] = [];
 after(() => {
+  // Restore before the rm: a mode-000 file defeats a recursive delete on some
+  // platforms, and this runs after a FAILED assertion too, which is exactly
+  // when per-test cleanup would have been skipped.
+  for (const file of CLAMPED) {
+    try { fs.chmodSync(file, 0o644); } catch { /* already gone */ }
+  }
   for (const dir of TEMP_DIRS) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -264,6 +276,34 @@ test('the mint writes its audit line and its pre-override snapshot, and never mu
   });
 });
 
+test('a mint that cannot write its line refuses in words and takes its snapshot back', () => {
+  // Measured as an uncaught throw: the append routes through a helper that
+  // rethrows every errno but ELOOP, so the documented `ledger-write-failed`
+  // never returned, the caller had no catch, and the operator got exit 1 with
+  // no sentence. Worse than the silence — the snapshot is written FIRST, so the
+  // failed mint left one behind with no line to account for it, and that is
+  // precisely the shape settlement now refuses the whole project for. A mint
+  // that did not happen must cost nothing.
+  withOverrideStore(({ projectRoot }) => {
+    const ledger = overrideLedgerPath(projectRoot);
+    fs.mkdirSync(ledger, { recursive: true });
+
+    const result = mintOverride({
+      projectRoot, runId: 'run-1', scope: 'gate', target: 'plan-guard', snapshot: { before: 'state-A' },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? '' : result.reason, 'ledger-write-failed');
+
+    const snapshotDir = path.join(path.dirname(ledger), 'snapshots');
+    const left = fs.existsSync(snapshotDir) ? fs.readdirSync(snapshotDir) : [];
+    assert.deepEqual(left, [], 'no orphan is left behind by a mint that refused');
+
+    fs.rmSync(ledger, { recursive: true });
+    assert.deepEqual(overrideEvidenceReport(projectRoot).checks, [],
+      'and the project is exactly as it was found');
+  });
+});
+
 // ── the tier-1 predicate ─────────────────────────────────────────────────────
 
 test('tier-1 is PreToolUse, not askUser, not never-overridable — and nothing else is offered a command', () => {
@@ -422,6 +462,87 @@ test('a token for another gate, another run, or past its TTL leaves the deny sta
       );
       assert.equal(result.kind, 'deny', label);
     });
+  }
+});
+
+// ── an illegible ledger costs the TOKEN and nothing else ─────────────────────
+// That an unreadable ledger yields no token is the easy half of the fail-closed
+// rule, and integrity.test.ts asserts it directly. The half worth driving a real
+// pipeline for is the other one: a ledger nobody can read must not DENY
+// anything. It is a user-scope file outside the project — one full disk, one
+// half-flushed write, one stray chmod — and if illegibility leaked into the gate
+// path it would convert that into a project-wide work stoppage. Settlement is
+// the only reader that gained a refusal, and this is what says so.
+//
+// Asserted as an IDENTITY against the ABSENT ledger, not as "denied for the
+// right reason": every field of the verdict must match the file-is-gone case,
+// which a deny carrying new prose or a new id could not satisfy by accident.
+
+/** The verdict minus its correlation ref, which is a run/seq/pid triple and is
+ *  therefore the one field that cannot be equal across two fixtures. */
+function withoutCorrelationRef(result: HookResult): unknown {
+  if (result.kind !== 'deny') return result;
+  return { ...result, reason: result.reason.replace(/\(traffic-one ref: [^)]+\)/, '(ref)') };
+}
+
+const WRECKED_LEDGERS = [
+  // The baseline, and the shape of the attack itself: `rm` the ledger.
+  ['absent', (file: string) => fs.rmSync(file)],
+  ['corrupt', (file: string) => fs.writeFileSync(file, 'not json at all\n{"v":1}\n', 'utf8')],
+  ['oversized', (file: string) => fs.writeFileSync(file, `${'x'.repeat(600 * 1024)}\n`, 'utf8')],
+  ['unreadable', (file: string) => { fs.chmodSync(file, 0o000); CLAMPED.push(file); }],
+] as const;
+
+test('an illegible ledger is indistinguishable from an absent one AT THE GATE, and denies nothing of its own', async () => {
+  const verdicts = new Map<string, { deny: unknown; allowed: string; settlement: string[] }>();
+
+  for (const [label, wreck] of WRECKED_LEDGERS) {
+    await withOverrideStoreAsync(async ({ projectRoot }) => {
+      withRun(projectRoot, 'run-1');
+      mint({ projectRoot });
+      assert.ok(activeOverrideToken(projectRoot, 'run-1', 'gate', 'plan-guard'),
+        `${label}: fixture guard — the token has to be live BEFORE the damage or this measures nothing`);
+
+      wreck(overrideLedgerPath(projectRoot));
+      // Doubles as the `unreadable` fixture guard: a root uid ignores the mode
+      // bits, and the token would still be honoured here.
+      assert.equal(activeOverrideToken(projectRoot, 'run-1', 'gate', 'plan-guard'), null,
+        `${label}: fail-closed — a record we cannot read lifts nothing`);
+
+      const refused = await runPipeline(
+        [gate('plan-guard', 10, () => deny('plan write refused', { denyId: 'scaffold-plan-gate' }))],
+        ctxFor(projectRoot),
+      );
+      // The call NO gate refuses. This is the regression that matters: the
+      // pipeline consults the override store on the deny path only, and a
+      // reader that started throwing or refusing on illegible bytes would show
+      // up here first.
+      const quiet = await runPipeline([gate('quiet', 10, () => context('nothing to refuse'))], ctxFor(projectRoot));
+      assert.notEqual(quiet.kind, 'deny', `${label}: a tool call nobody objected to is still not refused`);
+
+      verdicts.set(label, {
+        deny: withoutCorrelationRef(refused),
+        allowed: quiet.kind,
+        settlement: overrideEvidenceChecks(projectRoot),
+      });
+    });
+  }
+
+  const baseline = verdicts.get('absent')!;
+  assert.equal((baseline.deny as { kind: string }).kind, 'deny', 'the gate still refuses on its own merits');
+  for (const [label] of WRECKED_LEDGERS) {
+    assert.deepEqual(verdicts.get(label)!.deny, baseline.deny,
+      `${label}: the verdict, its id and its prose must be exactly what an absent ledger produces`);
+    assert.equal(verdicts.get(label)!.allowed, baseline.allowed, label);
+  }
+
+  // …and the one place they are allowed to differ. All four refuse
+  // certification — that is the point of the lane — but only settlement asks.
+  assert.deepEqual(baseline.settlement,
+    [OVERRIDE_SNAPSHOT_ORPHANED_CHECK, OVERRIDE_MINT_COUNT_MISMATCH_CHECK],
+    'a deleted ledger is caught by the two witnesses that outlive it');
+  for (const label of ['corrupt', 'oversized', 'unreadable']) {
+    assert.deepEqual(verdicts.get(label)!.settlement, [OVERRIDE_LEDGER_ILLEGIBLE_CHECK], label);
   }
 });
 

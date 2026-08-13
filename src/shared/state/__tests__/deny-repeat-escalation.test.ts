@@ -9,7 +9,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { runPipeline } from '../../../core/pipeline';
@@ -26,27 +25,26 @@ import { mintOverride } from '../../override';
 import { DENY_REPEAT_ESCALATE_AT, denyRepeatCounted, denySignature } from '../deny-repeat';
 import { readDecisions } from '../decision-log';
 import { recordPluginUseChoice } from '../plugin-use';
+import { trackedTempDirs } from '../../../test-support/__tests__/temp-dirs';
 
-const TMP_PREFIX = 't1-deny-escalate-';
 const RUN_ID = 'R';
 
-// Attributed by PREFIX on teardown (below), not by a global temp count: other
-// suites run concurrently, so only dirs this file created can be judged, and a
-// mkdtemp-owned prefix is the only thing that identifies them.
-const dirs: string[] = [];
+// Attributed by the PATH each fixture was handed at creation time, never by a
+// prefix scan of os.tmpdir(): other runs of this same file are concurrent
+// processes, and a prefix names the file rather than the run — see
+// test-support/__tests__/temp-dirs.ts.
+const dirs = trackedTempDirs('t1-deny-escalate-');
 const savedEnv = {
   prefs: process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
   state: process.env.XDG_STATE_HOME,
 };
 
 function freshProject(): string {
-  // realpath because the override ledger keys on a hash of the RESOLVED project
-  // root (macOS's tmpdir is a symlink), and the pipeline consults it on every
-  // overridable deny — an unresolved fixture path reads a different ledger than
-  // it writes. The basename is unchanged, so prefix attribution below still sees
-  // anything this leaves behind.
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), TMP_PREFIX)));
-  dirs.push(dir);
+  // The helper realpaths, because the override ledger keys on a hash of the
+  // RESOLVED project root (macOS's tmpdir is a symlink) and the pipeline
+  // consults it on every overridable deny — an unresolved fixture path reads a
+  // different ledger than it writes.
+  const dir = dirs.make();
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, '.traffic-one', '.one.json'),
@@ -75,9 +73,7 @@ after(() => {
   else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = savedEnv.prefs;
   if (savedEnv.state === undefined) delete process.env.XDG_STATE_HOME;
   else process.env.XDG_STATE_HOME = savedEnv.state;
-  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
-  const leaked = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith(TMP_PREFIX));
-  assert.deepEqual(leaked, [], `this file leaked temp dirs: ${leaked.join(', ')}`);
+  dirs.cleanup();
 });
 
 function gate(id: string, run: () => HookResult): Handler {

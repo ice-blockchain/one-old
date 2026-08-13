@@ -11,6 +11,7 @@ import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
 import { stateTimestamp } from './io';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 const MAX_LEDGER_BYTES = 256 * 1024;
 
@@ -81,7 +82,7 @@ export function appendQualityFindings(
     let existingText = '';
     try {
       if (fs.statSync(file).size > MAX_LEDGER_BYTES) return; // cap reached — keep the early evidence
-      existingText = fs.readFileSync(file, 'utf8');
+      existingText = readRegularFileOrThrow(file);
     } catch {
       // missing file → first append
     }
@@ -114,7 +115,7 @@ export function appendQualityFindings(
 export function readQualityFindings(cwd: string, runId: string): QualityFindingEntry[] {
   let text: string;
   try {
-    text = fs.readFileSync(ledgerPath(cwd, runId), 'utf8');
+    text = readRegularFileOrThrow(ledgerPath(cwd, runId));
   } catch {
     return [];
   }

@@ -18,9 +18,9 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { trackedTempDirs } from '../../../test-support/__tests__/temp-dirs';
 import {
   denyExpectationSubject,
   openDenyExpectation,
@@ -43,7 +43,8 @@ import type { Ctx, Handler, HookInput, HookResult } from '../../../core/types';
 // XDG_STATE_HOME rather than TRAFFIC_ONE_PROJECT_PREFS_PATH, so prefs stay keyed
 // PER PROJECT — the pending-consent case below rests on one project having no
 // answer while its neighbours do. Same reasoning as core/__tests__/pipeline.test.ts.
-const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 't1-deny-expectation-'));
+const dirs = trackedTempDirs('t1-deny-expectation-');
+const TMP_ROOT = dirs.make();
 const savedStateHome = process.env.XDG_STATE_HOME;
 process.env.XDG_STATE_HOME = path.join(TMP_ROOT, 'machine-state');
 let dirSeq = 0;
@@ -51,9 +52,7 @@ let dirSeq = 0;
 after(() => {
   if (savedStateHome === undefined) delete process.env.XDG_STATE_HOME;
   else process.env.XDG_STATE_HOME = savedStateHome;
-  fs.rmSync(TMP_ROOT, { recursive: true, force: true });
-  const leaked = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('t1-deny-expectation-'));
-  assert.deepEqual(leaked, [], `this file leaked temp dirs: ${leaked.join(', ')}`);
+  dirs.cleanup();
 });
 
 /** A project that answered "yes" to the use-plugin question. */

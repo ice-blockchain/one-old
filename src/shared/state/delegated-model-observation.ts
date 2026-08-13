@@ -16,7 +16,6 @@
 // is a durable diagnostic ledger: it never changes a gate decision and never
 // throws.
 
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { RUNS_REL_DIR } from '../../config/state';
@@ -25,6 +24,7 @@ import { writeJson } from '../fsjson';
 import { obj } from '../obj';
 
 import { withProjectStateLock } from './project-state-lock';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 const STORE_FILE = 'delegated-model-observations.json';
 const MAX_OBSERVATIONS = 200;
@@ -74,7 +74,7 @@ function parseObservation(value: unknown): DelegatedModelObservation | null {
 export function readDelegatedModelObservations(cwd: string, runId: string): DelegatedModelObservation[] {
   if (!runId) return [];
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(storePath(cwd, runId), 'utf8'));
+    const parsed: unknown = JSON.parse(readRegularFileOrThrow(storePath(cwd, runId)));
     if (!Array.isArray(parsed)) return [];
     return parsed.map(parseObservation).filter((o): o is DelegatedModelObservation => Boolean(o));
   } catch {

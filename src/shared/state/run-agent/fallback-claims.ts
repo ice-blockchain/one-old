@@ -5,7 +5,8 @@ import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isNonProjectRoot } from '../../authoring-root';
-import {  readJson, readJsonResult,  writeJson } from '../../fsjson';
+import { readRegularFileResult } from '../../bounded-read';
+import { readJsonResult, writeJson } from '../../fsjson';
 import { normalizeRelPath } from '../../scope';
 import {
   SUBAGENT_STALE_MS,
@@ -90,12 +91,33 @@ export function releaseFallbackClaimsForHolderUnlocked(
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     const file = path.join(dir, entry.name);
-    const claim = obj(readJson(file, null));
+    // ONE READ, BOUNDED, AND THE BYTES THAT DECIDED ARE THE BYTES KEPT.
+    //
+    // This was a bounded `readJson(file, null)` followed three lines later by a
+    // BARE `fs.readFileSync(file, 'utf8')` — so the site the census excused as
+    // "a fallback-claims record under the project run directory" was in fact the
+    // lstat-then-read window bounded-read.ts spends a paragraph arguing the
+    // descriptor exists to close, reproduced as bounded-read-then-bare-read.
+    // The second read was the one that reached the kernel with a path, and it
+    // was the unbounded one: anybody who can write in this directory — which is
+    // the population a claim file exists to arbitrate between — could substitute
+    // the name between the two calls, and a FIFO or a device node put there
+    // wedged the release with no deny and nothing logged.
+    //
+    // Reading once fixes both halves at their root. `raw` is the backup the
+    // durable rebind journal replays, so it MUST be the bytes this decision was
+    // made on; deriving it from a second read could have preserved a different
+    // file than the one removed. An unreadable entry still falls through to the
+    // next one, exactly as the `readJson` fallback already made it.
+    const read = readRegularFileResult(file);
+    if (read.kind !== 'text') continue;
+    let parsed: unknown;
+    try { parsed = JSON.parse(read.text); } catch { continue; }
+    const claim = obj(parsed);
     if (!claim || String(claim.runId || '') !== runId || claim.holder !== holder) continue;
     try {
-      const raw = fs.readFileSync(file, 'utf8');
       fs.rmSync(file, { force: true });
-      removed.push({ filePath: file, raw });
+      removed.push({ filePath: file, raw: read.text });
     } catch {
       // The durable rebind journal owns forward recovery. Report the exact
       // partial deletion set instead of attempting rollback: restoring a subset
@@ -139,11 +161,35 @@ function unreadableClaimStillHolds(file: string): boolean {
   }
 }
 
+/**
+ * TWO QUESTIONS, AND A CALLER MAY WANT ONLY THE FIRST. "Who holds this path?"
+ * is a CHECK; "this session now holds it" is a RECORD. They travelled together
+ * until a caller appeared that must ask one without the other: plan-guard's
+ * dispatcher judges a write it is going to REFUSE, and a refused write may not
+ * stake a lease that locks the path to this session for the rest of the run —
+ * while the ownership conflict itself is exactly what that write's author needs
+ * to be told.
+ *
+ * Suppressing the whole call to suppress the record is what conflated them, and
+ * it was MEASURED as a withheld deny: a path already held by one child, written
+ * by another with an unrelated static violation, reported the static rule alone
+ * where the same fixture with clean content reported the conflict — so the
+ * conflict went missing precisely when another violation coexisted, the author
+ * fixed the static rule and only then learned the path belongs to somebody
+ * else, and the two denies landed in different repeat-escalation buckets
+ * (shared/state/deny-repeat.ts signs a refusal with the whole rendered reason).
+ *
+ * `record: false` therefore changes NOTHING about the answer — the same lock,
+ * the same read, the same holder test, the same `blocked`/`holder` pair — and
+ * only declines to write the claim file when the path is free.
+ */
 export function tryFallbackClaim(
   cwd: string,
   ctx: RunAgentContext,
   target: string,
+  options: { record?: boolean } = {},
 ): { blocked: boolean; holder?: string } {
+  const record = options.record !== false;
   const runId = ctx && ctx.runId != null ? String(ctx.runId) : '';
   if (!runId) return { blocked: false };
   if (isNonProjectRoot(cwd)) return { blocked: false }; // no claim files in the plugin's own repo
@@ -172,6 +218,10 @@ export function tryFallbackClaim(
       result = { blocked: true, holder: UNIDENTIFIED_CLAIM_HOLDER };
       return;
     }
+    // The path is free. A caller that only asked WHO holds it stops here: it has
+    // its answer, and taking the lease would be an authority this write is not
+    // going to earn.
+    if (!record) return;
     const claim: Rec = {
       version: 1,
       runId,

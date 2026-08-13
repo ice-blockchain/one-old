@@ -12,6 +12,8 @@ import { LEGACY_STACK_ALIASES, STACK_IDS } from '../../config/stacks';
 import { LEGACY_LOCK_FILE, LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { isNonProjectRoot } from '../authoring-root';
 import { type JsonRead, readJson, readJsonResult, readText, writeJsonDurable, writeTextFile } from '../fsjson';
+import { dirDeclaresWorkspace } from '../hook/workspace-declaration';
+import { WORKSPACE_PROJECT_MODE } from '../hook/workspace-members';
 import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import {
   canonicalizeStateShape,
@@ -197,9 +199,36 @@ export function writeState(cwd: string, state: unknown): boolean {
   // Creation-time only — a dir that already owns state keeps updating, so a
   // legitimately nested project is untouched and an already-strayed root can still
   // be written until the retention sweep heals it.
+  //
+  // `dirDeclaresWorkspace` is the third clause and it was always missing; npm
+  // simply never exercised it. A container declaring `workspaces` does so in a
+  // `package.json`, which is ALSO a `MANIFEST_MARKERS` entry, so `dirOwnsProject`
+  // answered yes for an unrelated reason and the container was let through by
+  // accident. Gradle is the first DECLARATION-ONLY container — a `settings.gradle`
+  // with no build file of its own — and it made the gap visible: measured, such a
+  // container nested inside a repository came back `refused` and could not hold
+  // the registry naming its own members, while the same layout at a repository
+  // root was `written` because `.git` covered it.
+  //
+  // A DECLARATION IS NOT PROJECTHOOD, and this clause is deliberately here rather
+  // than inside `dirOwnsProject`. Teaching ownership about `settings.gradle` is
+  // the inversion this codebase just removed — the file that enumerates the
+  // members would be claiming to be one, which re-anchors every submodule at
+  // itself. What a declaration earns is exactly one thing: the right to hold the
+  // container state that records who its members are — so the STATE BEING WRITTEN
+  // has to be that state, which is what `mode: 'workspace'` says and what nothing
+  // here used to check. Unchecked, the clause was wider than its own sentence:
+  // measured, an ordinary `mode: 'existing-codebase'` state landed at a
+  // declaration-only Gradle aggregator nested in a repository, and resolution then
+  // anchored every file under it at the aggregator instead of the repository — a
+  // repository split by a file that only ever enumerated members. Container state
+  // still lands, which is the row the clause was added for; an already-owned
+  // directory keeps updating through `ownsState` regardless of mode.
   const ownsState = fs.existsSync(statePath(cwd)) || fs.existsSync(legacyStatePath(cwd));
+  const containerState = obj(state) && (state as Rec).mode === WORKSPACE_PROJECT_MODE;
   if (!ownsState
     && !dirOwnsProject(cwd)
+    && !(containerState && dirDeclaresWorkspace(cwd))
     && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) return false;
   let source: Rec = obj(state) ? { ...(state as Rec) } : {};
   delete source.pluginVersion;
@@ -210,7 +239,12 @@ export function writeState(cwd: string, state: unknown): boolean {
   if (source.stack) {
     canonicalizeStateShape(source);
     if (typeof source.stack === 'string') {
-      normalizeState(source, (typeof source.mode === 'string' && source.mode) || 'new-project');
+      // `.trim()` so a whitespace-only mode reaches normalizeState as the blank
+      // it is and gets `new-project` like every other blank spelling. It changes
+      // nothing else: the trimmed value is CONSUMED only when the mode is blank
+      // (see the repair below), so a padded ` New-Project ` still passes its own
+      // untouched value here and still never uses it.
+      normalizeState(source, (typeof source.mode === 'string' && source.mode.trim()) || 'new-project');
     }
   }
   const split = splitLocalPreferences(cwd, source);
@@ -384,7 +418,18 @@ export function normalizeState(state: unknown, defaultMode?: string): boolean {
   changed = normalizeLegacyStack(s) || changed;
   if (typeof s.stack !== 'string' || !STACK_IDS.has(s.stack)) return changed;
 
-  if (!s.mode && defaultMode) { s.mode = defaultMode; changed = true; }
+  // `!s.mode` is not the blank test it reads as: `' '` is truthy, so a
+  // whitespace-only mode survived every repair and stayed on disk for the life
+  // of the project — reading as NEITHER new nor existing, because both
+  // predicates normalize and neither answer matches. Blank-ish is blank.
+  //
+  // The default is checked the same way for the same reason: most callers spell
+  // it `state.mode || detectMode(cwd)`, so a whitespace mode arrives as its own
+  // replacement and repairing to it would leave the file exactly as broken while
+  // reporting `changed`. Their publish still heals — writeState above derives its
+  // own default from the trimmed mode.
+  const modeBlank = typeof s.mode === 'string' ? !s.mode.trim() : !s.mode;
+  if (modeBlank && typeof defaultMode === 'string' && defaultMode.trim()) { s.mode = defaultMode; changed = true; }
   if (s.confirmed !== true) { s.confirmed = true; changed = true; }
   if (s.onboardingComplete !== true) { s.onboardingComplete = true; changed = true; }
   if (!s.confirmedAt) { s.confirmedAt = stateTimestamp(); changed = true; }

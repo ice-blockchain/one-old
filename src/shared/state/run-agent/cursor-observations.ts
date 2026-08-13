@@ -69,6 +69,31 @@ export interface CursorSpawnObservation {
   claimedAtMs: number | null;
   consumedAtMs: number | null;
   updatedAtMs: number;
+  /**
+   * The run this row was COPIED FROM by `traffic-one-reset`, when it did not
+   * originate here. Optional so the many literals that construct a whole
+   * observation stay valid; the normalizer always resolves it, so every row a
+   * reader gets back carries the field.
+   *
+   * Set ONLY on a row that already carried an `outcome` AND the `directive` that
+   * outcome resolved to, and the qualifier is the whole of the field's soundness.
+   * Such a row is a finished resolution rather than a fresh observation, and the
+   * distinction is
+   * load-bearing: re-deriving it against the SUCCESSOR's state mints bounds (a
+   * terminal model exhaustion, a model-choice pause) that the reset's own
+   * obligation table deliberately withheld from the successor — the copy would
+   * silently override its neighbours' conditionals. See cursor-failure-select.ts
+   * refreshPendingResolution.
+   *
+   * An UNRESOLVED row is not a resolution and must never be stamped, and that
+   * covers two shapes, not one: the row of a child the reset left running (the
+   * reset releases claims and terminates nothing, so it records its outcome HERE,
+   * in the successor), and the row of a child whose death was recorded but whose
+   * resolution had not been derived yet — a correlated failure takes two passes
+   * and a reset can land between them. Stamping either suppressed that run's own
+   * failure permanently — see obligations.ts carryCursorSpawns.
+   */
+  carriedFromRunId?: string | null;
 }
 
 interface CursorSpawnObservationUpdate {
@@ -240,6 +265,7 @@ function normalizeCursorSpawnObservation(value: unknown): CursorSpawnObservation
     claimedAtMs,
     consumedAtMs,
     updatedAtMs,
+    carriedFromRunId: boundedCursorSpawnText(item.carriedFromRunId ?? item.carried_from_run_id, 200),
   };
 }
 
@@ -300,14 +326,38 @@ export function cursorParentObservationFingerprint(
   return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 }
 
-export function writeCursorSpawnObservationStore(cwd: string, runId: string, observations: CursorSpawnObservation[]): void {
+/**
+ * Publish the store, and REPORT WHETHER IT LANDED.
+ *
+ * The boolean is `writeJson`'s own, forwarded rather than dropped: this used to
+ * return void, so its one non-hook caller — `traffic-one-reset`'s carry, whose
+ * whole job is to move a bound out of a run that is about to stop being read —
+ * reported a REFUSED write as a carried obligation, in the operator's warnings
+ * and in the reset's audit record. The neighbouring registry carry propagated its
+ * writer's boolean all along; this is the same signal, no longer discarded on the
+ * way through the store.
+ *
+ * The record/claim/update/consume/mark/suppress paths that mutate through this
+ * function ROUTE the boolean into their own answer: a refused publish returns
+ * `null` (or an empty batch), which is the answer a lost lock and a failed
+ * precondition already give. They used to hand back the row they had just
+ * mutated IN MEMORY, so a refused write was indistinguishable from a durable
+ * one — the caller correlated a child transcript, settled a retry, or emitted a
+ * one-shot follow-up against a store that never changed. See
+ * cursor-spawn-store-refusal.test.ts.
+ */
+export function writeCursorSpawnObservationStore(
+  cwd: string,
+  runId: string,
+  observations: CursorSpawnObservation[],
+): boolean {
   const store: CursorSpawnObservationStore = {
     version: 1,
     observations: [...observations]
       .sort((a, b) => a.startedAtMs - b.startedAtMs || a.toolCallId.localeCompare(b.toolCallId))
       .slice(-CURSOR_SPAWN_OBSERVATION_LIMIT),
   };
-  writeJson(cursorSpawnObservationFile(cwd, runId), store);
+  return writeJson(cursorSpawnObservationFile(cwd, runId), store);
 }
 
 /**
@@ -415,7 +465,10 @@ export function recordCursorSpawnObservation(
     const existing = store.observations.find((item) => item.toolCallId === candidate.toolCallId);
     if (existing) return existing;
     store.observations.push(candidate);
-    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    // A refused publish is not a recorded spawn: subagent-bind.ts settles a
+    // correlated retry only on a non-null answer here, and settling it against a
+    // ledger that never got the start is what this null prevents.
+    if (!writeCursorSpawnObservationStore(cwd, runId, store.observations)) return null;
     return candidate;
   });
 }
@@ -445,7 +498,11 @@ export function claimCursorSpawnObservation(
     target.childTranscriptId = childId;
     target.claimedAtMs = finiteMs(nowMs) || Date.now();
     target.updatedAtMs = target.claimedAtMs;
-    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    // The claim IS the write. Handing back a row whose childTranscriptId only
+    // exists in this process would let the caller publish a failure under a
+    // correlation the store never learned, and the next pass would claim the
+    // same transcript again.
+    if (!writeCursorSpawnObservationStore(cwd, runId, store.observations)) return null;
     return target;
   });
 }
@@ -489,7 +546,7 @@ export function updateCursorSpawnObservation(
     if (patch.followupEmitted === true) target.followupEmitted = true;
     if (patch.retryHandled === true) target.retryHandled = true;
     target.updatedAtMs = finiteMs(nowMs) || Date.now();
-    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    if (!writeCursorSpawnObservationStore(cwd, runId, store.observations)) return null;
     return target;
   });
 }

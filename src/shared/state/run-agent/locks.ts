@@ -7,6 +7,7 @@ import { obj } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { readOwnerEntry } from '../../bounded-read';
 import { trustworthyAgeSince } from '../../clock-skew';
 import { ensureDir } from '../../fsjson';
 import { type MutationResult, unavailable } from './mutation-result';
@@ -49,9 +50,18 @@ type OwnerSentinel =
   | { kind: 'gone' };
 
 function readOwnedLock(filePath: string): OwnerSentinel {
-  let raw: string;
+  let raw: string | null;
   try {
-    raw = fs.readFileSync(filePath, 'utf8');
+    // `readOwnerEntry`, not a bare read, and this is the file whose own errno
+    // split that leaf was MODELLED on — the eighth copy of the owner-file shape,
+    // one import away from it, and the last of them still reading bare. DRIVEN
+    // before the change (.tmp/bounded4): a FIFO at `<lockDir>/.owner-*.json`
+    // SIGKILLed `withOwnedDirLock` at 8 004 ms and a symlink to `/dev/zero` at
+    // 8 076 ms, against a 318 ms regular-file control. O_NOFOLLOW is the right
+    // refusal here for the reason the leaf's docblock gives: every owner file is
+    // written by this protocol under a random token name, so a link at that name
+    // can only be another lock's evidence answering for this one.
+    raw = readOwnerEntry(filePath);
   } catch (error) {
     // Every errno but ENOENT is a sentinel that is THERE and unreadable, which
     // is not the same claim as "no sentinel" and must not reclaim on the same
@@ -62,6 +72,11 @@ function readOwnedLock(filePath: string): OwnerSentinel {
     try { fs.lstatSync(filePath); } catch { return { kind: 'gone' }; }
     return { kind: 'illegible' };
   }
+  // A sentinel that is THERE and is not a regular file — a FIFO, a device, a
+  // directory. Present and unreadable, which is exactly `illegible`: it makes no
+  // liveness claim, so the age guard below decides, and the reclaim it licenses
+  // is the same one a torn sentinel gets.
+  if (raw === null) return { kind: 'illegible' };
   let parsed: unknown;
   try { parsed = JSON.parse(raw) as unknown; } catch { return { kind: 'illegible' }; }
   const record = obj(parsed);
@@ -195,6 +210,9 @@ function acquireOwnedDirLock(
   // until the caller's whole timeout elapsed on a project that simply has not
   // opted in.
   try { if (!ensureDir(path.dirname(lockDir))) return null; } catch { return null; }
+  // ONE attempt is owed to a reclaim that outlived the budget. See the branch at
+  // the bottom of the loop for why, and what it cost to find out.
+  let reclaimGraceUsed = false;
   while (true) {
     let madeDir = false;
     try {
@@ -212,9 +230,55 @@ function acquireOwnedDirLock(
         try { fs.unlinkSync(ownerFile); } catch { /* best-effort */ }
         try { fs.rmdirSync(lockDir); } catch { /* best-effort */ }
       }
-      if (reclaimStaleOwnedDirLock(lockDir, staleMs)) continue;
-      if (Date.now() >= deadline) return null;
-      Atomics.wait(waitArray, 0, 0, retryMs);
+      // THE DEADLINE IS TESTED ON EVERY PATH OUT OF THIS CATCH, and the reclaim
+      // no longer jumps over it with a `continue`. A loop whose error or
+      // fast-path branch skips its own deadline check is unbounded regardless of
+      // what the reads inside it do — measured in the sibling copy of this
+      // protocol (agent-model/exhausted-models.ts, whose `catch { continue; }`
+      // spun a core for 130.9 s of CPU on a dangling symlink before this round).
+      // A successful reclaim still skips the SLEEP, which is what made it worth
+      // a separate branch.
+      //
+      // AND IT COST A SUITE ROW THAT WAS THEN FILED AGAINST ANOTHER LANE, which
+      // is the part worth the paragraph. The bound above, written as `reclaim,
+      // then return null if the budget is spent`, converts a reclaim that
+      // outlives the budget into "the obstacle is GONE and the caller is told the
+      // mutation did not happen". DRIVEN, deterministically, in a child with the
+      // deadline enforced by the parent (.tmp/bounded5/p3-pre.json,
+      // `timeoutMs 0`): `held false`, `ran false`, **stale lock REMOVED**. At the
+      // 250 ms budget of `state/__tests__/future-skew-locks.test.ts` that is a
+      // coin flip under concurrency — the reclaim is a read, two unlinks and an
+      // rmdir — and it is why that suite's `a dead owner stamped in the PAST is
+      // reclaimed (the control)` row went red 2 of 9 concurrent runs with this
+      // repair and 0 of 9 without it (measured by the round-4 peer, reproduced
+      // here). Round 4 recorded that red as somebody else's clock flake. It was
+      // this file's.
+      //
+      // So a SUCCESSFUL reclaim buys exactly ONE more attempt past the deadline,
+      // once. That is not a return to the unbounded `continue`, and the
+      // difference is the guard rather than the count: the grace is gated on
+      // `reclaimed`, and `reclaimStaleOwnedDirLock` answers true only after
+      // `unlinkSync(ownerFile)` AND `rmdirSync(lockDir)` have both SUCCEEDED —
+      // i.e. only after the obstacle it was refusing has been removed. Every
+      // shape that spins answers FALSE (the dangling symlink whose reads all
+      // throw, the aged DIRECTORY at the sentinel path whose unlink raises EPERM,
+      // a live holder) and still returns null at the deadline. And `once` bounds
+      // the one case where a reclaim can keep succeeding: a CONCURRENT RECREATOR
+      // re-planting an aged dead-pid lock. DRIVEN against exactly that
+      // (.tmp/bounded5/p3-post.json, a child re-planting the lock in a tight
+      // loop): with `timeoutMs 0` the single grace attempt wins the directory and
+      // the call RETURNS (1 530 ms wall, no signal); at `timeoutMs 250` it
+      // returns REFUSING, because the recreator's lock is fresh and a reclaim
+      // that removes nothing cannot buy the retry. Termination is the claim here,
+      // not the verdict — either answer is bounded, which is what the round-4
+      // repair was for.
+      const reclaimed = reclaimStaleOwnedDirLock(lockDir, staleMs);
+      if (Date.now() >= deadline) {
+        if (!reclaimed || reclaimGraceUsed) return null;
+        reclaimGraceUsed = true;
+        continue;
+      }
+      if (!reclaimed) Atomics.wait(waitArray, 0, 0, retryMs);
     }
   }
 }

@@ -26,6 +26,7 @@ import {
 } from './run-paths';
 import {
   ensureRunLedger,
+  runLedgerClaimAdmission,
 } from './ledger';
 import {
   isCorrectionGradeEvidence,
@@ -117,12 +118,39 @@ export function claimThreadRole(
     evidence?: RoleEvidence;
     /** Verified child binds must never replace another live thread for this role. */
     refuseOccupiedRole?: boolean;
+    /**
+     * DECIDE WITHOUT STAKING. Every read, every precondition and every refusal
+     * below is unchanged, and the returned context is built from the same record
+     * the bind would have written — but nothing is persisted: no claim file, no
+     * archive of the record it would have replaced, no pending-claim removal, no
+     * `releaseSupersededRoleClaimsLocked`, no reuse-registry row, and the run
+     * ledger is READ (`runLedgerClaimAdmission`) instead of activated.
+     *
+     * WHO NEEDS IT: plan-guard attributes a Cursor worker's write by scope alone
+     * (plan-runteam.ts attributeForeignWriteBySpawnScope) and that attribution is
+     * the one path in the gate that MINTS authority. It runs before the gate has
+     * decided, so a write the gate went on to refuse still made its author the
+     * incumbent for the role — and an incumbent claim denies the next legitimate
+     * respawn for as long as it stays live, bounded at SUBAGENT_STALE_MS. That
+     * price was argued for a successful write; it must not be paid for a refused
+     * one.
+     *
+     * THE BOUND, stated rather than implied: this suppresses the ROLE CLAIM and
+     * every displacement it causes. It does NOT make the call write-free — an
+     * absent `currentRunId` is still minted by `ensureCurrentRunId` (a run-id
+     * stamp is not authority over a role, and the surrounding gate has already
+     * read the run through it), and an authorized rebind already recorded in the
+     * journal is still replayed. Neither can make a thread the incumbent for a
+     * role it did not already hold.
+     */
+    mint?: boolean;
   } = {},
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (typeof threadId !== 'string' || !threadId.trim()) return null;
   if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const id = threadId.trim();
+  const mint = options.mint !== false;
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   // Same serialized-mint fallback as ensureRunAgentClaim (13c-codex sibling mints).
   const runId = typeof source.currentRunId === 'string' && source.currentRunId
@@ -185,14 +213,16 @@ export function claimThreadRole(
         delete next.releasedAt;
         delete next.releasedReason;
       }
-      if (reclaiming || nextSource !== existing.roleSource || (transcriptPath && transcriptPath !== existing.transcriptPath)) {
+      if (mint && (reclaiming || nextSource !== existing.roleSource || (transcriptPath && transcriptPath !== existing.transcriptPath))) {
         try { writeJson(runAgentFile(cwd, runId, id), next); } catch { return; }
       }
-      removeSiblingPendingClaims(
-        cwd, source, runId, role,
-        parentSessionId || firstString(existing.parentSessionId),
-        firstString(existing.claimId),
-      );
+      if (mint) {
+        removeSiblingPendingClaims(
+          cwd, source, runId, role,
+          parentSessionId || firstString(existing.parentSessionId),
+          firstString(existing.claimId),
+        );
+      }
       claim = next;
       return;
     }
@@ -200,12 +230,19 @@ export function claimThreadRole(
     if (options.refuseOccupiedRole
       && activeClaimForOtherThread(cwd, source, runId, role, id)) return;
 
-    const ledger = ensureRunLedger(cwd, runId, {
-      status: 'active',
-      kind: 'agent-claim',
-      ...stackFingerprintPatch(cwd, runId, source),
-    });
-    if (ledger?.status !== 'active') return;
+    // READ, not activate, when nothing is being staked. `runLedgerClaimAdmission`
+    // asks the same state machine the write below would have asked
+    // (`runLedgerTransitionAllowed(status, 'active')`), and its `unknown` arm —
+    // a torn or unreadable ledger — refuses here exactly as the failed
+    // transition would have.
+    if (mint) {
+      const ledger = ensureRunLedger(cwd, runId, {
+        status: 'active',
+        kind: 'agent-claim',
+        ...stackFingerprintPatch(cwd, runId, source),
+      });
+      if (ledger?.status !== 'active') return;
+    } else if (runLedgerClaimAdmission(cwd, runId) !== 'admits') return;
 
     const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId, model);
     // Re-claim of THIS same thread after its earlier claim was released or aged
@@ -255,6 +292,7 @@ export function claimThreadRole(
         ? { previousClaimId: prior.claimId }
         : {}),
     };
+    if (!mint) return; // decided, and `claim` carries the decision — see `mint`
     fs.mkdirSync(runDir(cwd, runId), { recursive: true });
     // The write below destroys whatever record this thread's claim file held —
     // preserve it before it is gone (see archiveSupersededClaim).
@@ -267,7 +305,12 @@ export function claimThreadRole(
   });
   if (!locked) return null;
   const expectedForRebind = rebindExpected as Rec | null;
-  if (expectedForRebind && isCorrectionGradeEvidence(evidence, expectedForRebind.roleSource)) {
+  // A rebind REWRITES another role's claim, so it is a mint by any reading and
+  // is refused (null, the closed direction) rather than performed when nothing
+  // is being staked. Unreachable from the one `mint: false` caller — it passes
+  // no `evidence`, and `rebindExpected` is only set for correction-grade
+  // evidence — so this is the guard on a door, not a branch with traffic.
+  if (expectedForRebind && mint && isCorrectionGradeEvidence(evidence, expectedForRebind.roleSource)) {
     return authoritativeRebindThreadRole(cwd, state, runId, id, expectedForRebind, evidence, {
       parentSessionId,
       model,

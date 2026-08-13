@@ -17,7 +17,7 @@ import {
   effectiveLegacyRunOutcome,
   effectiveLegacyRunStatus,
   projectRunLedgerForV2Rollback,
-  readRunSettlement,
+  readRunSettlementResult,
   writeRunSettlement,
   type CanonicalRunStatus,
 } from '../../run-settlement';
@@ -567,7 +567,8 @@ function syncCanonicalSettlementFromLedger(
   authorizedResume = false,
 ): CanonicalRunStatus | null {
   const ledgerStatus = isRunLedgerStatus(ledger.status) ? ledger.status : 'planned';
-  const previous = readRunSettlement(cwd, runId);
+  const record = readRunSettlementResult(cwd, runId);
+  const previous = record.settlement;
   let status: CanonicalRunStatus = ledgerStatus === 'completed'
     ? 'verified'
     : ledgerStatus === 'failed'
@@ -581,7 +582,25 @@ function syncCanonicalSettlementFromLedger(
   // explicit V2 contract activation. Newly planned Traffic One runs set
   // qaContractVersion=2 before implementation; existing V2 sidecars continue
   // to reconcile idempotently.
-  if (ledger.qaContractVersion !== 2 && !previous) return status;
+  //
+  // ABSENT, not "did not parse" — and the difference was a path that reported
+  // `applied` having written nothing. `readRunSettlement` answers `null` for a
+  // damaged record exactly as it does for a missing one, so a legacy ledger
+  // over a settlement whose hash had been edited took this early return: the
+  // caller's strict post-sync check (`settlement !== requested`) compared the
+  // status this line RETURNS rather than one anything wrote, `transitionRunStatus`
+  // reported success, and the garbage on disk was untouched. MEASURED: it is
+  // also the whole of the "escape" the settlement wedge was said to have — the
+  // recovery drill only worked because deleting `run.json` produced a V1 ledger
+  // that came through here. A status nobody wrote is the laundering this lane
+  // exists to prevent, so the short-circuit is narrowed to the one state that
+  // really is "nothing to opt in": no record at all.
+  //
+  // A V1 run whose record is illegible therefore goes through the writer like
+  // any other: it quarantines the bytes, rebuilds the record and marks the run
+  // permanently uncertifiable (run-settlement/io.ts). `previous` stays null, so
+  // nothing below reads a field out of a record that did not parse.
+  if (ledger.qaContractVersion !== 2 && record.kind === 'absent') return status;
 
   // A metadata-only legacy-ledger refresh must not regress a richer canonical
   // lifecycle stage that was already written by the OpenCode runner/verifier.

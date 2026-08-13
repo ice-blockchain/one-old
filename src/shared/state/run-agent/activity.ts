@@ -22,6 +22,7 @@ import * as path from 'path';
 
 import { obj } from '../../obj';
 import { runDir } from './run-paths';
+import { readRegularFileOrThrow } from '../../bounded-read';
 
 /** Warn-once threshold: a role past this many calls gets one consolidation nudge. */
 export const AGENT_ACTIVITY_WARN_THRESHOLD = 20;
@@ -88,7 +89,7 @@ export function readRunAgentActivity(cwd: string, runId: string, role: string): 
   const out: RunAgentActivity = { total: 0, bySession: {} };
   if (!runId || !role) return out;
   try {
-    const lines = fs.readFileSync(activityPath(cwd, runId, role), 'utf8').split('\n');
+    const lines = readRegularFileOrThrow(activityPath(cwd, runId, role)).split('\n');
     for (const line of lines) {
       const id = line.trim();
       if (!id) continue;

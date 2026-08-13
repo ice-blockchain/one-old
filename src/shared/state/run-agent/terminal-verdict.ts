@@ -5,7 +5,7 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import {  readJson } from '../../fsjson';
+import {  readJson, readJsonResult, type JsonRead } from '../../fsjson';
 import { isQaBrowserBridgeEligible, readQaReportV1, type QaReportValidationResult } from '../../qa-report';
 import { readQaReportV2, type QaV2ValidationResult } from '../../qa-report-v2';
 import {
@@ -29,6 +29,7 @@ import {
   runHasOrchestratedArtifacts,
 } from './run-settle';
 import { maintenanceRunReachedTerminal } from './run-settle';
+import { readRegularFileOrThrow } from '../../bounded-read';
 
 // --- Verification settlement (terminal verdict) ----------------------------
 // A digest FILE exists from the moment its role first runs (Phase 3) and is
@@ -79,7 +80,7 @@ function digestCandidates(cwd: string, runId: string, name: string): DigestCandi
       // Read here, not later: statSync succeeds without read permission, so resolving by
       // stat alone let an unreadable canonical file win and return '' where the old code
       // fell back to the readable sibling — which at the QA exemption meant fake-green.
-      const text = fs.readFileSync(file, 'utf8');
+      const text = readRegularFileOrThrow(file);
       if (!text.trim()) continue;
       found.push({ file, mtimeMs: Math.floor(st.mtimeMs), text });
     } catch {
@@ -333,13 +334,28 @@ export function runHasQaEvidence(cwd: string, runId: string): boolean {
 export function runLedgerStatusRecord(cwd: string, runId: string): {
   status: RunLedgerStatus | null;
   outcome: RunLedgerOutcome | null;
+  /**
+   * WHY `status` is null, for the one caller that cannot treat the three
+   * reasons alike. `status: null` folds "there is no ledger" together with
+   * "there is one and we could not read it", which is the right fold for every
+   * gate here — all of them fail closed and a fold toward null is closed. It is
+   * the wrong fold for shared/retention.ts, whose failure direction is a
+   * DELETE: a run whose `run.json` was torn by a crashed write or a merge looks
+   * exactly like a run that never had one, and the mint-window arm that spares
+   * a live run then never fires. The kinds are `readJsonResult`'s own, not a
+   * second taxonomy — `absent` really is absent, and only `corrupt`/
+   * `unreadable` mean we could not tell.
+   */
+  legibility: JsonRead<unknown>['kind'];
 } {
-  const ledger = obj(readJson(runLedgerFile(cwd, runId), null));
+  const read = readJsonResult<unknown>(runLedgerFile(cwd, runId));
+  const ledger = obj(read.kind === 'ok' ? read.value : null);
   const status = effectiveLegacyRunStatus(ledger);
   const outcome = effectiveLegacyRunOutcome(ledger);
   return {
     status: isRunLedgerStatus(status) ? status : null,
     outcome: isRunLedgerOutcome(outcome) ? outcome : null,
+    legibility: read.kind,
   };
 }
 

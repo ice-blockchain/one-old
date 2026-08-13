@@ -125,7 +125,12 @@ export function claimCursorFollowupsBatch(
       target.followupEmitted = true;
       target.updatedAtMs = claimedAtMs;
     }
-    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    // The batch is OWNED by the write that persists `followupEmitted`. A refused
+    // publish leaves every row in it unclaimed on disk, so handing the batch back
+    // would emit a continuation no store records as emitted — and the next
+    // lifecycle hook would find the same rows pending and emit it again. An empty
+    // batch is the answer the caller already treats as "nothing to continue".
+    if (!writeCursorSpawnObservationStore(cwd, runId, store.observations)) return [];
     return claimed.map((observation) => ({ ...observation }));
   }) || [];
 }
@@ -173,7 +178,10 @@ export function suppressCursorFollowupsBatch(
       observation.followupSuppressionReason = request.reason;
       observation.updatedAtMs = suppressedAtMs;
     }
-    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    // Durable is the whole claim: an abort whose suppression was refused has not
+    // suppressed anything, and reporting the rows as suppressed would certify a
+    // latch the next hook cannot see.
+    if (!writeCursorSpawnObservationStore(cwd, runId, store.observations)) return [];
     return changed.map((observation) => ({ ...observation }));
   }) || [];
 }
@@ -194,7 +202,9 @@ function markCursorSpawnObservationOnce(
       || (field === 'followupEmitted' && (target.retryHandled || target.followupSuppressed))) return null;
     target[field] = true;
     target.updatedAtMs = finiteMs(nowMs) || Date.now();
-    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    // A compare-and-SET whose set was refused has not won anything, and null is
+    // already this function's "another hook owns this action" answer.
+    if (!writeCursorSpawnObservationStore(cwd, runId, store.observations)) return null;
     return target;
   });
 }
@@ -234,7 +244,9 @@ export function consumeCursorSpawnObservation(
     if (target.consumedAtMs) return target;
     target.consumedAtMs = finiteMs(nowMs) || Date.now();
     target.updatedAtMs = target.consumedAtMs;
-    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    // `consumedAtMs` is the finalization marker the follow-up batch CAS requires,
+    // so a refused publish must not be reported as a finalized failure.
+    if (!writeCursorSpawnObservationStore(cwd, runId, store.observations)) return null;
     return target;
   });
 }

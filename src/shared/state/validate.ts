@@ -15,6 +15,7 @@ import {
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
 } from '../../config/state';
+import { isNewProjectMode } from './lifecycle';
 import { hasInitializedToolchain } from './toolchain';
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -141,7 +142,7 @@ export function trafficOneStateValidationIssues(
     if (typeof mobile.framework !== 'string' || !MOBILE_FRAMEWORK_IDS.has(mobile.framework)) {
       issues.push(`\`mobile.framework\` is ${formatStateValue(mobile.framework)}; valid values: ${idList(MOBILE_FRAMEWORK_IDS)}.`);
     } else if (
-      s.mode === 'new-project'
+      isNewProjectMode(s)
       && mobile.framework === 'ionic-capacitor'
       && s.frontend === 'none'
     ) {
@@ -149,7 +150,7 @@ export function trafficOneStateValidationIssues(
     }
     if (typeof mobile.source !== 'string' || !MOBILE_SOURCE_IDS.has(mobile.source)) {
       issues.push(`\`mobile.source\` is ${formatStateValue(mobile.source)}; valid values: ${idList(MOBILE_SOURCE_IDS)}.`);
-    } else if (s.mode === 'new-project' && mobile.source === 'none') {
+    } else if (isNewProjectMode(s) && mobile.source === 'none') {
       issues.push('`mobile.source` must be `prompted` or `explicit` after the Mobile App prompt for new-project onboarding.');
     }
   }
@@ -158,19 +159,19 @@ export function trafficOneStateValidationIssues(
     issues.push('`technologies` must contain `frontend`, `backend`, and `mobile` arrays.');
   }
 
-  if (s.mode === 'new-project' && !hasValidProjectContext(s.projectContext)) {
+  if (isNewProjectMode(s) && !hasValidProjectContext(s.projectContext)) {
     issues.push('`projectContext` must be an object with `source`, `summary`, `answers`, and `collectedAt`.');
   }
 
-  if (s.mode === 'new-project' && !hasValidTeamState(s.team)) {
+  if (isNewProjectMode(s) && !hasValidTeamState(s.team)) {
     issues.push(`\`team\` must be an object with valid \`mode\` (${idList(TEAM_MODE_IDS)}) and \`source\` (${idList(TEAM_SOURCE_IDS)}).`);
   }
 
-  if (s.mode === 'new-project' && !hasValidPerformanceState(s.performance)) {
+  if (isNewProjectMode(s) && !hasValidPerformanceState(s.performance)) {
     issues.push(`\`performance\` must be an object with valid \`level\` (${idList(PERFORMANCE_LEVEL_IDS)}) and \`source\` (\`prompted\` · \`explicit\`).`);
   }
 
-  if (s.mode === 'new-project' && hasValidPerformanceState(s.performance) && hasValidTeamState(s.team)) {
+  if (isNewProjectMode(s) && hasValidPerformanceState(s.performance) && hasValidTeamState(s.team)) {
     const perf = asObject(s.performance);
     const team = asObject(s.team);
     const expectedTeamMode = teamModeForLevel(perf ? String(perf.level) : '');

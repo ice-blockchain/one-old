@@ -6,9 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { RUNS_REL_DIR, VALID_AGENT_ROLES } from '../../config/state';
+import { readOwnerEntry } from '../bounded-read';
 import { trustworthyAgeSince } from '../clock-skew';
 import { obj, type Rec } from '../obj';
 import { readRunModelPolicy } from '../run-model-policy';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 const STORE_VERSION = 1;
 const STORE_FILE = 'codex-model-observations.json';
@@ -88,7 +90,7 @@ function parseObservation(value: unknown): CodexModelObservation | null {
 
 function readStore(cwd: string, runId: string): Record<string, CodexModelObservation> {
   try {
-    const raw = obj(JSON.parse(fs.readFileSync(storePath(cwd, runId), 'utf8')));
+    const raw = obj(JSON.parse(readRegularFileOrThrow(storePath(cwd, runId))));
     if (!raw || raw.version !== STORE_VERSION) return {};
     const values = obj(raw.observations);
     if (!values) return {};
@@ -147,7 +149,17 @@ function reclaimStaleStoreLock(lockPath: string, ownerPath: string): boolean {
   }
   if (entries.length !== 1 || entries[0] !== path.basename(ownerPath)) return false;
   let owner: Rec;
-  try { owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Rec; } catch { return false; }
+  // BOUNDED (shared/bounded-read.ts), the same substitution the identical fold in
+  // shared/run-model-policy.ts takes. A non-regular file at the owner name lands
+  // where unparseable bytes land — the reclaim is refused, because presence with
+  // no liveness evidence is not evidence of death. Unbounded before: this read is
+  // inside the observer's retry loop, so the LOCK_TIMEOUT_MS the comment below
+  // prices was unreachable rather than generous.
+  try {
+    const bytes = readOwnerEntry(ownerPath);
+    if (bytes === null) return false;
+    owner = JSON.parse(bytes) as Rec;
+  } catch { return false; }
   const at = typeof owner.at === 'number' ? owner.at : 0;
   // An absent stamp is the neighbouring question and keeps its fail-closed
   // answer, for the reason spelled out at the identical fold in
@@ -210,7 +222,13 @@ function withStoreLock<T>(cwd: string, runId: string, body: () => T): T | null {
     // The token proves the lease is still ours. Without that check the release
     // deletes whichever directory is at the path, including a successor's.
     try {
-      const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Rec;
+      // BOUNDED: this release runs in a `finally`, so a shape that never answers
+      // at our own owner path hangs the caller AFTER the body already succeeded —
+      // the work done, the lease still held, and nothing reportable. A null reads
+      // as "we cannot prove this is ours", which is the branch this block already
+      // has for a foreign token.
+      const bytes = readOwnerEntry(ownerPath);
+      const owner = (bytes === null ? {} : JSON.parse(bytes)) as Rec;
       if (owner.token === token) {
         fs.unlinkSync(ownerPath);
         try { fs.rmdirSync(lockPath); } catch { /* a foreign entry stays fail-closed */ }

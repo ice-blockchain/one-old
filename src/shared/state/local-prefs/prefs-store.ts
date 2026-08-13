@@ -5,6 +5,7 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
+import { readOwnerEntry } from '../../bounded-read';
 import { trustworthyAgeSince } from '../../clock-skew';
 import { readJson } from '../../fsjson';
 import { dirOwnsProject, projectMembershipRoot } from '../../project-membership';
@@ -38,12 +39,22 @@ import {
 // TWO buckets: two consent records, two prefs files, two override ledgers for
 // one project. Symlink spellings are already folded together; only CASE splits.
 //
-// Do NOT "fix" this by switching to `.native`. That is not a canonicalization
-// improvement, it is a RELOCATION of every bucket on every machine: consent
-// reverts to unanswered and the user is asked "use Traffic One here?" again,
-// wizard answers and host prefs vanish, and every already-issued override token
-// stops matching (shared/override/token.ts checks `projectKey` against this
-// hash). A real fix has to READ BOTH SPELLINGS AND MIGRATE, under a lock, once.
+// Do NOT "fix" this by switching to `.native`, and the reason is NOT the one
+// stated here and in shared/override/paths.ts until this round. MEASURED on
+// this machine (APFS, case-insensitive): the CANONICAL spelling comes back
+// identical from both implementations, so the swap does not move the bucket of
+// a project reached by its true spelling, and it does not invalidate an
+// override token minted there. What it moves is exactly the MISCASED buckets —
+// and that is the real cost, because a machine whose operator has always used
+// the miscased spelling has its one LIVE bucket there. Relocating it is
+// indistinguishable, to every reader, from the bucket having been deleted: the
+// consent answer and host prefs are gone (the project is re-asked the
+// use-plugin question, and writes are refused until it is answered), and the
+// override ledger AND its mint counter move together to a fresh empty pair,
+// which is a free erasure of an audit trail, performed by an upgrade, on a
+// machine that did nothing. A real fix has to READ BOTH SPELLINGS AND MIGRATE,
+// under a lock, once — for that reason rather than for the token one.
+//
 // Until that exists the asymmetry is the cheaper defect, and
 // shared/__tests__/path-spelling-contract.test.ts pins it so the swap cannot be
 // made silently.
@@ -98,7 +109,14 @@ function observedProjectPrefsLockOwner(lockPath: string): ProjectPrefsLockOwner 
     if (entries.length !== 1) return null;
     const ownerName = entries[0]!;
     const ownerPath = path.join(lockPath, ownerName);
-    const raw = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Record<string, unknown>;
+    // BOUNDED (shared/bounded-read.ts) — the fourth port of
+    // state/project-state-lock.ts's `observedLockOwner`, and the property that
+    // did not travel with the other three is the one that bounds the read.
+    // Anything but a regular file is not a record this protocol wrote; the
+    // abandoned arm then decides on presence plus age.
+    const bytes = readOwnerEntry(ownerPath);
+    if (bytes === null) return null;
+    const raw = JSON.parse(bytes) as Record<string, unknown>;
     const token = typeof raw.token === 'string' ? raw.token : '';
     const pid = typeof raw.pid === 'number' ? raw.pid : Number.NaN;
     const createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : Number.NaN;
@@ -212,7 +230,12 @@ function acquireProjectPrefsLock(filePath: string): ProjectPrefsLock {
 function releaseProjectPrefsLock(lock: ProjectPrefsLock): void {
   const releasedPath = `${lock.dirPath}.${lock.token}.released`;
   try {
-    const raw = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')) as Record<string, unknown>;
+    // BOUNDED: the ownership proof reads a path inside the lock directory, so a
+    // shape that never answers can be substituted for our own owner file and
+    // hang the release with the work already done and the lease still held.
+    const bytes = readOwnerEntry(lock.ownerPath);
+    if (bytes === null) return;
+    const raw = JSON.parse(bytes) as Record<string, unknown>;
     if (raw.token !== lock.token) return;
     // Atomically vacate the canonical lock path before best-effort cleanup, so
     // an interrupted release cannot leave an empty directory that wedges prefs.
