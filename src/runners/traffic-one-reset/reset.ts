@@ -77,8 +77,8 @@ import {
 // this file may not reach a project-root resolver — and `obligations.ts` below
 // already puts it in this module's import closure.
 import { runDir } from '../../shared/state/run-agent/run-paths';
-import { carryRunObligations, type CarryOutcome } from './obligations';
-import { readResetRecord, recordReset } from './resets';
+import { carryRunObligations, resetObligationToImpose, type CarryOutcome } from './obligations';
+import { priorResetCount, recordReset, resetLedgerMirror } from './resets';
 
 export interface ResetResult {
   readonly ok: boolean;
@@ -554,6 +554,25 @@ function settleReset(cwd: string, target: string, committed: Committed): ResetRe
   const { fresh } = committed;
   const warnings: string[] = [];
 
+  // THE TWO FACTS `.resets.json` CARRIES, COMPUTED BEFORE THE LEDGER IS OPENED
+  // so they can ride the SAME write that opens it.
+  //
+  // `.resets.json` is erasable through channels no reader of command text can
+  // see, and erasing it PAID: measured, `count` 3 -> 0 and the successor's
+  // inherited exhaustion gone, which admits a respawn the user never authorized.
+  // The answer is not another spelling in the fence — all three surviving classes
+  // need a VALUE followed at run time — it is that the successor's own ledger
+  // carries the same two facts, so the record's erasure alone buys nothing. See
+  // resets.ts THE MIRROR for the measurements, the fences either copy has, and
+  // the residual this does NOT close.
+  //
+  // The count is FLOORED by the retired run's own mirror, so an erasure cannot
+  // roll the ladder back to free, and the obligation is computed here rather than
+  // inside the carry so that the stamp, the operator warning and the record are
+  // one value and cannot disagree.
+  const priorResets = priorResetCount(cwd, target);
+  const obligation = resetObligationToImpose(cwd, target, priorResets);
+
   // The successor's ledger. Best-effort by design: an ABSENT ledger reads as
   // `planned` and admits claims (runLedgerClaimAdmission), so the next claim
   // mint creates it and the project is usable either way — but a caller is
@@ -562,11 +581,16 @@ function settleReset(cwd: string, target: string, committed: Committed): ResetRe
   // successor is current with no ledger of its own is a window the product
   // already has to be correct in, because a hook can read the new pointer the
   // instant it lands whether or not this process still holds the lock.
+  //
+  // It is also where the mirror lands, in this one write — a second, later write
+  // would have to name a status, and a child activating the successor in between
+  // makes `planned -> planned` inadmissible and loses the stamp silently.
   const successor = ensureRunLedger(cwd, fresh, {
     status: 'planned',
     kind: 'run-reset',
     stackFingerprint: stackFingerprint(committed.published),
     supersedes: target,
+    ...resetLedgerMirror(priorResets + 1, obligation),
   });
   if (!successor || successor.status !== 'planned') {
     warnings.push(`the successor run ${fresh} has no 'planned' ledger yet; the first spawn will open one`);
@@ -606,12 +630,15 @@ function settleReset(cwd: string, target: string, committed: Committed): ResetRe
   // at a run whose claims are about to be released. That trade is the same
   // one the claim release makes, for the same reason.
   //
-  // The record is READ here, and that is the loop's only bound. It was
-  // write-only: nothing in `src/**` consulted it, so the dropped bucket
-  // refreshed at full value on every cycle without limit. `priorResets` is
-  // the count as it stands BEFORE this reset is appended, so the reset being
-  // performed is the (count + 1)-th, and at WIDEN_AT the carry widens.
-  const priorResets = readResetRecord(cwd).count;
+  // The record is READ for this — at the top of the function now, because the
+  // ledger stamp above needs the same two values — and that read is the loop's
+  // only bound. It was write-only: nothing in `src/**` consulted it, so the
+  // dropped bucket refreshed at full value on every cycle without limit.
+  // `priorResets` is the count as it stands BEFORE this reset is appended, so
+  // the reset being performed is the (count + 1)-th, and at WIDEN_AT the carry
+  // widens. `obligation` is the value already stamped and about to be recorded,
+  // handed over rather than recomputed.
+  //
   // THE OUTER BOUNDARY, and it is the belt to obligations.ts's per-row braces.
   // Every row there is individually guarded and lands in `failed`, so a throw
   // reaching here means the carry could not even be entered — and the one thing
@@ -619,9 +646,13 @@ function settleReset(cwd: string, target: string, committed: Committed): ResetRe
   // exception propagated out of the CLI as a stack trace, and the widening ladder
   // — the entire answer to "repeated resets buy budget" — was BYPASSED for every
   // reset that reached the throwing path, because the reset was never recorded.
-  let carried: CarryOutcome = { carried: [], failed: [], widened: [], obligation: { terminalRoles: [] } };
+  // The fallback carries the OBLIGATION, not an empty one: a carry that could
+  // not be entered has still spent a widening step, and the value is already on
+  // disk in the successor's ledger, so recording anything else would leave the
+  // two copies disagreeing about what this very reset imposed.
+  let carried: CarryOutcome = { carried: [], failed: [], widened: [], obligation };
   try {
-    carried = carryRunObligations(cwd, target, fresh, { priorResets });
+    carried = carryRunObligations(cwd, target, fresh, { priorResets, obligation });
   } catch (error) {
     warnings.push(`the obligation carry could not run (${errorText(error)}); every carried bound `
       + `restarts in ${fresh}, and this reset is still counted`);
@@ -677,6 +708,14 @@ function settleReset(cwd: string, target: string, committed: Committed): ResetRe
   }
   if (!recorded) {
     warnings.push('this reset was not added to .traffic-one/runs/.resets.json; the recovery itself is complete');
+    // An unwritten record used to mean an unpriced reset. The stamp above landed
+    // in its own write, so the price stands on the ledger alone — say so, because
+    // a caller told the record failed would otherwise read the next spawn deny as
+    // a contradiction.
+    if (obligation.terminalRoles.length > 0) {
+      warnings.push(`the successor's own ledger still carries what this reset imposed (${
+        obligation.terminalRoles.join(', ')}), so clearing a terminal model exhaustion needs your enable/retry answer`);
+    }
   }
 
   return {

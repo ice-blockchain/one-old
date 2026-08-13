@@ -343,7 +343,7 @@ export const RUN_OBLIGATIONS: readonly Obligation[] = [
   { entry: '.run-ledger.lock', kind: 'bound-dropped', why: "the retired ledger's lease; the ledger itself is never touched by this runner, and a lease over an immutable terminal record protects nothing." },
 
   // ── evidence ──────────────────────────────────────────────────────────────
-  { entry: 'run.json', kind: 'evidence', why: "the retired run's terminal ledger, kept byte-identical — that is the immutability invariant this runner refuses to punch." },
+  { entry: 'run.json', kind: 'evidence', why: "the retired run's terminal ledger, kept byte-identical — that is the immutability invariant this runner refuses to punch. The SUCCESSOR's ledger is a different file and does carry a bound now (`resetSeq` and `inheritedTerminalRoles`, stamped by reset.ts in the same write that opens it, mirroring what `.resets.json` records so an erasure of that one file stops paying); this row is about the retired one, which is never rewritten." },
   {
     entry: 'run.json.corrupt',
     kind: 'evidence',
@@ -1186,6 +1186,35 @@ export interface CarryOptions {
    * performed. At or past WIDEN_AT the carry widens; see WIDEN_AT.
    */
   readonly priorResets?: number;
+  /**
+   * The obligation the caller has ALREADY computed and published — see
+   * `resetObligationToImpose`.
+   *
+   * `reset.ts` needs this value before it writes the successor's ledger (the
+   * mirror is stamped into that one write), and needs the identical value in the
+   * record. Passing it in is what makes "the stamp, the warning and the record
+   * cannot disagree" structural instead of two calls that happen to agree: the
+   * second call would re-read the retired run's exhaustion store, which a
+   * still-live child of that run can move underneath it.
+   */
+  readonly obligation?: ResetObligation;
+}
+
+/**
+ * What a reset at this count imposes on its successor, computed WITHOUT taking a
+ * single lease — the same two unlocked reads `terminalRolesToWiden` has always
+ * made, hoisted so the caller can publish the answer before the carry runs.
+ *
+ * Exported for exactly one caller (`reset.ts settleReset`), which stamps it into
+ * the successor's ledger, hands it back through `CarryOptions.obligation`, and
+ * records it. Under WIDEN_AT it is empty, which is the decision WIDEN_AT
+ * documents and this function does not revisit.
+ */
+export function resetObligationToImpose(cwd: string, from: string, priorResets: number): ResetObligation {
+  const prior = typeof priorResets === 'number' && Number.isFinite(priorResets)
+    ? Math.max(0, Math.floor(priorResets))
+    : 0;
+  return { terminalRoles: terminalRolesToWiden(cwd, from, prior + 1 >= WIDEN_AT) };
 }
 
 /**
@@ -1248,7 +1277,15 @@ export function carryRunObligations(cwd: string, from: string, to: string, optio
   // price, and the whole point of re-siting it is that no store's availability
   // decides whether it is paid. Its two inputs are unlocked reads; the write is
   // the caller's `recordReset`, which happens even when every carry failed.
-  const terminalRoles = terminalRolesToWiden(cwd, from, widen);
+  //
+  // The caller may have computed it ALREADY — it has to, to stamp the mirror into
+  // the successor's ledger in the same write that opens it — and then this is the
+  // same value rather than a second reading of a store a live child can move. A
+  // caller that passes nothing gets the computation, so this function stays
+  // correct standalone (obligations.test.ts drives it that way).
+  const terminalRoles = options.obligation
+    ? [...options.obligation.terminalRoles]
+    : terminalRolesToWiden(cwd, from, widen);
   if (terminalRoles.length) {
     widened.push(`exhausted-models terminal: ${terminalRoles.join(', ')}`);
   }

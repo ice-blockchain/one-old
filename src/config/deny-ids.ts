@@ -709,7 +709,10 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   // obligation rather than throwing, so no operator ever needs it deleted to
   // unblock the product; and the one bound it does enforce is discharged by the
   // user's own enable/retry answer in `model-choice.json`, which is a JOIN
-  // against a record that already exists rather than an edit to this one. So the
+  // against a record that already exists rather than an edit to this one — and
+  // that answer is now the ONLY thing that lifts it, since the same bound is
+  // mirrored into the successor's ledger and deleting this file no longer clears
+  // it (runners/traffic-one-reset/resets.ts THE MIRROR). So the
   // honest answer to an operator who wants it lifted is that they have an
   // ungated shell — the hook mediates agent tool calls, not the user's terminal.
   'reset-record-owner-gate',

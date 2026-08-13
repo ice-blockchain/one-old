@@ -8,9 +8,21 @@
 // `modelExhaustionTerminalForRole` reads and `correlatedCursorFailureGate`
 // denies `cursor-api-limit-terminal` on. MEASURED on a live obligation: record
 // intact → terminal `true` → the spawn is denied; record unlinked or truncated →
-// `false` → the spawn is ADMITTED. Erasing this file lets a role whose model is
-// exhausted respawn with no user answer, and rolls the reset ladder back to
+// `false` → the spawn is ADMITTED. Erasing this file let a role whose model is
+// exhausted respawn with no user answer, and rolled the reset ladder back to
 // free.
+//
+// THAT MEASUREMENT IS NOW HISTORY AND THE FENCE IS STILL THE FENCE. The reset
+// mirrors both facts into the successor's own `runs/<id>/run.json` and both
+// readers take the record UNION that mirror, so the same erasure re-measured
+// leaves terminal `true` and the count where the ladder stood
+// (runners/traffic-one-reset/resets.ts THE MIRROR, and its
+// __tests__/record-erasure.test.ts). This fence is not redundant because of it:
+// the mirror answers the three spellings BELOW that no reader of command text
+// can see, and it is this fence that keeps every spelling one CAN see from
+// reaching the record at all — a project whose current run has no ledger, or
+// whose ledger a `runs/`-wide erasure took with the record, has the record and
+// nothing else.
 //
 // It had no fence of its own. Every refusal it enjoyed came from
 // `strayRunIdInText` reading the FILENAME `.resets.json` as a fabricated run id

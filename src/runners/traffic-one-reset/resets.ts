@@ -58,8 +58,9 @@
 import * as path from 'path';
 
 import { readModelChoice } from '../../modules/agent-model/model-choice';
+import { obj } from '../../shared/obj';
 import { readJson, writeJson } from '../../shared/fsjson';
-import { runsRoot } from '../../shared/state/run-agent/run-paths';
+import { runLedgerFile, runsRoot } from '../../shared/state/run-agent/run-paths';
 
 export const RESETS_FILE = '.resets.json';
 /** Bounded so the file cannot grow without limit on a project that resets
@@ -223,6 +224,141 @@ function readObligations(raw: unknown): Record<string, ResetObligation> {
   return out;
 }
 
+// ── THE MIRROR: THE SAME TWO FACTS IN THE SUCCESSOR'S OWN LEDGER ────────────
+//
+// This file is erasable, and erasing it PAID. `rm`-shaped channels that name it
+// are refused by `reset-record-owner-gate`, but a line that hides the path from
+// static reading is not — measured through the real `planWriteGate` on a
+// materialized fixture driven to WIDEN_AT resets, then run in real bash on that
+// same fixture, with the two decisions below re-read afterwards:
+//
+//   rm -f "$(cat <planted file>)"                     gate noop, record erased
+//   eval "rm -rf .traffic-one/runs" (no run dir)      gate noop, record erased
+//   node -e "…rmSync('.traf'+'fic-one/…/.res'+'ets.json')"  gate noop, erased
+//
+// and in every one of them `count` went 3 -> 0 and the obligation
+// `[senior-frontend]` -> `[]`, so `modelExhaustionTerminalForRole` flipped true
+// -> false and `correlatedCursorFailureGate` stopped denying the respawn of a
+// role whose whole rotation is exhausted. FIVE consecutive rounds answered that
+// by adding a spelling to the detector and a sixth spelling was found by hand
+// each time; all three classes above require following a VALUE at run time,
+// which a reader of command text cannot do. So this is not a fourth arm.
+//
+// The move is retention.ts's REMEDY_PROBE move — stop reasoning about the
+// obstacle, establish the thing itself — pointed at the payoff instead of the
+// command: the reset stamps the count and the obligation into the successor's
+// OWN LEDGER, `runs/<successor>/run.json`, and both readers below take the
+// record UNION the mirror. Erasing this file then buys nothing at all.
+//
+// WHY THAT LEDGER, and it is measured rather than assumed:
+//   - the reset ALREADY writes an off-interface field there (`supersedes`, one
+//     writer, `reset.ts`), so the mechanism ships today. Unknown fields survive
+//     because `writeRunLedgerTransition` builds `{...existing, ...patch}` and
+//     both settlement projections spread `...source`/`...existing`. Driven: the
+//     stamp survives an ordinary `planned -> active` transition, and
+//     `supersedes` survives even the `kind` CLOBBER that ordinary product paths
+//     perform by passing their own `kind`.
+//   - it is SEPARATELY fenced, and — measured rather than assumed — NOT BETTER
+//     fenced. That is a claim an earlier draft of this comment made and the
+//     measurement withdrew, which is worth keeping visible: `runs/<id>/run.json`
+//     is a `runtimeOwnedRunSidecar`, so `runtime-sidecar-owner-gate` answers for
+//     it, and asked class by class at the real gate on the current run's ledger
+//     it answers exactly as the record's own fence answers for the record — the
+//     path spelled outright, a literal `eval` of the same `rm`, and a printed
+//     substitution PLANTED AND USED IN ONE COMMAND (where the plant leaves the
+//     literal in the text) are refused at both files, while a value planted in
+//     an EARLIER command and a split join are noop at both. So the second copy
+//     is not better hidden; it is a DIFFERENT FILE, and that is the whole of
+//     what it buys — a line aimed at one of them takes one, and the ladder needs
+//     both.
+//   - retention RESERVES `currentRunId`, so the mirror is never swept off the
+//     run a gate is asking about.
+//
+// THE RESIDUAL, and it is not small: a class-3 interpreter join that splits the
+// ledger's own name reaches the mirror at gate noop, and a tree-wide erasure
+// (`rm -rf` whatever a substitution PRINTS) takes both copies in one command
+// and costs the agent nothing measurable. What this buys is that erasing THE
+// RECORD ALONE stops paying, and that the second copy sits behind a fence that
+// refuses two of the three classes. It is not a closure of the value-hiding
+// class, which no static reader of command text can close.
+//
+// A SNAPSHOT, NOT A RE-DERIVATION, and that is the whole of its safety. The
+// mirror holds the value `recordReset` is handed, written by the same command in
+// the same settlement, so the second source cannot say MORE than the record
+// would have. Re-deriving the obligation later — walking `supersedes` and
+// re-reading the retired run's `roles[*].terminal` — was the other candidate and
+// is REJECTED for a reachable over-widening: this transaction releases claims
+// and terminates nothing (obligations.ts rule 4), so a still-live child of the
+// retired run can add a terminal marker AFTER the reset, and a re-derivation
+// would inherit a bound the reset never imposed.
+
+/** The two fields the reset stamps into the successor's ledger, and the ONE
+ *  definition of their names — the writer (reset.ts) and the readers below both
+ *  come through here, so a rename cannot leave a reader silently answering
+ *  nothing while every test still passes. */
+const MIRROR_SEQ = 'resetSeq';
+const MIRROR_TERMINAL_ROLES = 'inheritedTerminalRoles';
+
+/**
+ * The ledger patch that carries the mirror, for `reset.ts` to merge into the
+ * `ensureRunLedger` call it ALREADY makes for the successor.
+ *
+ * One write, not two, and deliberately: a second, later `ensureRunLedger` would
+ * have to name a status, and a child activating the successor in between makes
+ * `planned -> planned` inadmissible, so the stamp would be silently lost in
+ * exactly the busy project that most needs it.
+ */
+export function resetLedgerMirror(resetSeq: number, obligation: ResetObligation): Record<string, unknown> {
+  return {
+    [MIRROR_SEQ]: Math.max(0, Math.floor(resetSeq)),
+    [MIRROR_TERMINAL_ROLES]: [...obligation.terminalRoles],
+  };
+}
+
+interface LedgerMirror {
+  readonly resetSeq: number;
+  readonly terminalRoles: readonly string[];
+}
+
+const NO_MIRROR: LedgerMirror = { resetSeq: 0, terminalRoles: [] };
+
+/** Every field re-validated on read, exactly as `readResetRecord` re-validates
+ *  the record: this is a plain JSON file in the project, and an unreadable or
+ *  malformed mirror answers "no mirror" rather than throwing on a gate path. */
+function readLedgerMirror(cwd: string, runId: string): LedgerMirror {
+  const ledger = obj(readJson<unknown>(runLedgerFile(cwd, runId), null));
+  if (!ledger) return NO_MIRROR;
+  const seq = ledger[MIRROR_SEQ];
+  const roles = ledger[MIRROR_TERMINAL_ROLES];
+  return {
+    resetSeq: typeof seq === 'number' && Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0,
+    terminalRoles: Array.isArray(roles)
+      ? [...new Set(roles.filter((role): role is string => typeof role === 'string' && !!role.trim())
+        .map((role) => role.trim()))].sort()
+      : [],
+  };
+}
+
+/**
+ * How many resets this project had recorded BEFORE the one being performed —
+ * the record's `count`, floored by what the current run's own ledger says.
+ *
+ * The floor never exceeds the truth: the mirror is the count as it stood when
+ * this run was minted, so on an intact project the two agree and the `max` is
+ * the record's own answer. An erased record reads 0 and the floor is what keeps
+ * the ladder from rolling back to free.
+ *
+ * `recordReset` is deliberately NOT changed to write the floor: it is the one
+ * writer and its arithmetic stays `count + 1` over what is on disk. The stamp
+ * for the successor is computed from THIS answer instead, so the mirror stays
+ * monotone across an erasure even while the record itself restarts.
+ */
+export function priorResetCount(cwd: string, runId: string): number {
+  const recorded = readResetRecord(cwd).count;
+  if (typeof runId !== 'string' || !runId.trim()) return recorded;
+  return Math.max(recorded, readLedgerMirror(cwd, runId.trim()).resetSeq);
+}
+
 /**
  * What run `runId` owes because of the reset that minted it — AND THE DISCHARGE,
  * folded in here rather than written back, which is what keeps this file to one
@@ -325,12 +461,31 @@ function readObligations(raw: unknown): Record<string, ResetObligation> {
  * when the obligation lands. The cross-run case is closed separately and
  * behaviourally — see obligations.test.ts, "the remedy is scoped to the run that
  * was given it, so it cannot discharge a successor".
+ *
+ * ── IT READS TWO SOURCES NOW, AND THE DISCHARGE STILL COMES FIRST ────────────
+ * The answer is the record UNION the mirror in the successor's own ledger (see
+ * THE MIRROR above), because this file is erasable through channels no reader of
+ * command text can see and erasing it PAID. The discharge is evaluated before
+ * either source is consulted, so the user's answer clears both; that ordering is
+ * pinned as a behavioural row rather than trusted to this paragraph.
  */
 export function resetObligationFor(cwd: string, runId: string): ResetObligation {
   if (typeof runId !== 'string' || !runId.trim()) return NO_OBLIGATION;
   const id = runId.trim();
+  // THE DISCHARGE IS AHEAD OF BOTH SOURCES, AND THE ORDER IS THE LOAD-BEARING
+  // PART OF THE MIRROR. A remedy that ran after the union would clear the record
+  // and hand the same obligation straight back out of the ledger — the exact
+  // behaviour the delete used to have and that this fold exists to replace,
+  // resurrected by a second copy. It is a TEST ROW rather than this sentence:
+  // __tests__/record-erasure.test.ts, 'the enable/retry answer discharges the
+  // MIRROR too, because the discharge is ahead of both sources', which fails
+  // with the answer ignored if the two lines below are reordered.
   if (readModelChoice(cwd, id) === 'enable-retry') return NO_OBLIGATION;
-  return readResetRecord(cwd).obligations[id] ?? NO_OBLIGATION;
+  const recorded = readResetRecord(cwd).obligations[id]?.terminalRoles ?? [];
+  const mirrored = readLedgerMirror(cwd, id).terminalRoles;
+  if (recorded.length === 0 && mirrored.length === 0) return NO_OBLIGATION;
+  // Union, so either copy alone is the whole answer; a role in both is one role.
+  return { terminalRoles: [...new Set([...recorded, ...mirrored])].sort() };
 }
 
 /**

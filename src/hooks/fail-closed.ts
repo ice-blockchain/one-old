@@ -537,7 +537,19 @@ export const RECOVERY_RUNNERS: readonly RecoveryRunner[] = [
   //      at WIDEN_AT the successor inherits the terminal exhaustion its
   //      predecessor reached — recorded in `.resets.json` rather than carried
   //      into the store it applies to, so the price is not defeatable by the
-  //      capability that defeats the bound (see property 2). WHAT ENFORCES IT
+  //      capability that defeats the bound (see property 2). THE PRICE IS NOW IN
+  //      TWO PLACES, which is what answers the residual property 2 discloses
+  //      rather than closing it: the reset also stamps the count and that
+  //      inherited exhaustion into the successor's own `runs/<id>/run.json`
+  //      beside the `supersedes` it already writes, and both readers take the
+  //      record UNION that mirror with the user's enable/retry discharge ahead
+  //      of both (runners/traffic-one-reset/resets.ts THE MIRROR). So erasing
+  //      the record ALONE — the three spellings above — no longer buys a free
+  //      reset or an unbound respawn, measured after a real `rm` through the
+  //      printed-substitution spelling. It buys the payoff back by taking BOTH
+  //      copies, which the same spelling does at no refusal when it is aimed at
+  //      `runs/` instead of at one file, so this is a narrower breach and not a
+  //      closed one. WHAT ENFORCES IT
   //      is named because it is not obvious and was read wrongly once: the
   //      inheritance is a deny at the Cursor spawn gate
   //      (correlatedCursorFailureGate → `cursor-api-limit-terminal`), not a
