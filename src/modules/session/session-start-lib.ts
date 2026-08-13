@@ -9,6 +9,8 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { readRegularFile } from '../../shared/bounded-read';
+
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { trustworthyAgeSince } from '../../shared/clock-skew';
 import { removePath, writeTextFile } from '../../shared/fsjson';
@@ -17,7 +19,7 @@ import { STACK_IDS } from '../../config/stacks';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { detectMode } from '../../shared/detection';
 import { exec } from '../../shared/exec';
-import { hasMaterializedProjectAssets, materializedFromDifferentPluginBuild, materializeProjectAssets, writeOpenCodeHostAssets } from '../../shared/materialize';
+import { hasMaterializedProjectAssets, materializedFromDifferentPluginBuild, materializeProjectAssets, roleContractDirectoryRefusal, roleContractShortfallSentence, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { detectHost } from '../../shared/host';
 import { isUncertifiedHost, uncertifiedHostSessionBanner } from '../../shared/host/tiers';
 import { firstEmitThisSession } from '../../shared/once';
@@ -27,6 +29,8 @@ import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
   isMaintenancePhase,
   isMaterialized,
+  isExistingProjectMode,
+  isNewProjectMode,
   normalizeState,
   patchState,
   readEffectiveState,
@@ -63,7 +67,22 @@ export function ensureAgentTeamsEnv(cwd: string, host: string, env: NodeJS.Proce
   const file = path.join(cwd, '.claude', 'settings.local.json');
   let settings: Rec = {};
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // BOUNDED (shared/bounded-read.ts), and this one runs on SessionStart — the
+    // FIRST hook after a clone, which is exactly when a repository-carried shape
+    // fires.
+    //
+    // A non-regular object here RETURNS rather than joining the "start fresh"
+    // arm below, and that is not the reflexive adoption. This reader is half of
+    // a read-modify-WRITE, and the write is a raw `fs.writeFileSync` on a path
+    // outside `.traffic-one/` that no fence covers — so folding a FIFO into
+    // "nothing parseable, start fresh" would carry the hang from the read
+    // STRAIGHT INTO THE WRITE (`write(2)` on a FIFO with no reader blocks the
+    // same way `open(2)` does) and, on a device node, would destroy a target
+    // nobody classified. Bounding a read by moving the block ten lines down is
+    // not bounding it.
+    const raw = readRegularFile(file);
+    if (raw === null) return '';
+    const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) settings = parsed as Rec;
   } catch {
     // missing or invalid → start fresh (preserving nothing we can't parse)
@@ -188,7 +207,7 @@ function codeGraphBuildLockMs(cwd: string): number {
 // disabled, the artifact is missing/empty, and no build ran within the cooldown (disk lock).
 export function shouldBuildCodeGraph(cwd: string, state: Rec, nowMs: number): boolean {
   const mode = state.mode;
-  const isExisting = mode === 'existing-codebase' || mode === 'existing-with-supabase';
+  const isExisting = isExistingProjectMode({ mode });
   // Also self-heal a NEW project once onboarding is complete and a provider is set but the
   // graph is missing/empty. This covers BOTH (a) a deferred onboarding graph install
   // (offline / transient / no runtime yet) AND (b) a build that DEGRADED before its Phase-5
@@ -198,7 +217,7 @@ export function shouldBuildCodeGraph(cwd: string, state: Rec, nowMs: number): bo
   // makes the NEXT SessionStart land the graph the same way Codex's Phase 5 did. Gated on
   // onboardingComplete so a mid-onboarding scaffold isn't scanned early; the hasGraph +
   // cooldown guards below keep it a cheap no-op once a non-empty graph exists.
-  const isNewProjectNeedingGraph = mode === 'new-project' && state.onboardingComplete === true;
+  const isNewProjectNeedingGraph = isNewProjectMode({ mode }) && state.onboardingComplete === true;
   if (!isExisting && !isNewProjectNeedingGraph) return false;
   if (state.codeGraphAutoRun === false || state.graphifyAutoRun === false) return false;
   const provider = state.codeGraphProvider;
@@ -275,7 +294,10 @@ const OPENCODE_HEAL_LOCK = '.opencode-heal-lock';
 function diskLockMs(lock: string): number {
   try {
     if (!fs.existsSync(lock)) return 0;
-    const t = Date.parse(fs.readFileSync(lock, 'utf8').trim());
+    // BOUNDED. A non-regular object at the lock path falls through to the mtime,
+    // which is the same answer an unparseable lock body already gets.
+    const body = readRegularFile(lock);
+    const t = body === null ? NaN : Date.parse(body.trim());
     return Number.isNaN(t) ? fs.statSync(lock).mtimeMs : t;
   } catch {
     return 0;
@@ -382,7 +404,11 @@ export function readGraphPreview(cwd: string, provider?: unknown): string {
   const previewPath = path.join(cwd, '.traffic-one', 'graph-preview.md');
   if (!fs.existsSync(previewPath)) return '';
   try {
-    const body = fs.readFileSync(previewPath, 'utf8').trimEnd();
+    // BOUNDED. `.traffic-one/graph-preview.md` is project-controlled and this
+    // runs on SessionStart; `null` returns the empty string, which is the arm a
+    // stale preview already takes — nothing gets injected.
+    const body = readRegularFile(previewPath)?.trimEnd();
+    if (body === undefined) return '';
     // A provider switch can leave the previous provider's compact preview on
     // disk while the newly selected graph builds in the background. Never inject
     // that stale preview; the new runner will replace it after a successful scan.
@@ -458,6 +484,38 @@ export function tokenEconomyBanner(cwd: string, probe?: ToolchainProbe | null): 
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
 
+/**
+ * THE SESSION'S OWN DISCLOSURE that this host's per-role contracts are missing.
+ *
+ * SessionStart is the one route where a refused role directory used to be
+ * completely silent, and the silence was total in both directions:
+ * `ensureSessionMaterialization` below returns a BOOLEAN, so the writer's report
+ * had nowhere to go, and on the already-current path the writer does not even
+ * run — a session that opens against a project refused three weeks ago converged
+ * nothing, so there was no report to drop. A healthy session and a refused one
+ * were byte-identical.
+ *
+ * So this reads DISK (role-contract-status.ts) rather than a materialization
+ * result, and it is emitted into the SessionStart header — the agent-facing
+ * `additionalContext` every branch of runSessionStartInner assembles — which is
+ * the channel the token-economy, toolchain and graph banners beside it already
+ * use. That is the point of putting it here rather than logging it: this repo's
+ * most repeated failure is a disclosure written to a channel nobody reads, and a
+ * `console.error` on this path reaches no agent and no user at all.
+ *
+ * Deliberately NOT gated on whether this session materialized: the condition is
+ * persistent and the whole defect was that the quiet path is the common one.
+ */
+export function roleContractBanner(cwd: string, state: Rec): string {
+  if (!state || typeof state !== 'object' || state.onboardingComplete !== true) return '';
+  const shortfall = roleContractDirectoryRefusal(cwd);
+  if (!shortfall) return '';
+  return `[role contracts] ${roleContractShortfallSentence(cwd, shortfall)} `
+    + 'Clear that path, then any tool call re-materializes them. Until then file-changing tools are refused '
+    + '(`host-role-contracts-unwritable`) and a spawned child must be given its role inline: keep '
+    + '`[t1-role: senior-<role>]` as the first prompt line and do NOT tell it to read a contract file.\n';
+}
+
 // Converge session-time materialization for an onboarded project. Returns true
 // when it (re)materialized AND recorded that in the project state. The one-mcp
 // reporter is injected (default no-op).
@@ -486,6 +544,13 @@ export function ensureSessionMaterialization(
   // materialization fingerprint. Refresh them even when project artifacts are
   // already current (catalog/plan/performance changes must not be skipped).
   if (detectHost() === 'opencode') {
+    // The outcome is discarded HERE and reported by `roleContractBanner` from
+    // disk instead, which is strictly more than this value can say: this call is
+    // skipped entirely on every host but OpenCode and on every session where
+    // this function returns early, while the banner runs on both SessionStart
+    // headers unconditionally. What the type change bought is that a refusal can
+    // no longer be MISTAKEN for "nothing to do" — before, this returned a plain
+    // number that added a project-local sweep count to a user-local write count.
     try { writeOpenCodeHostAssets(cwd, state, []); } catch { /* best-effort */ }
   }
 

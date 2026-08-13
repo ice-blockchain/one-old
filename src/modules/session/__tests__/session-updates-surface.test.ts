@@ -516,12 +516,19 @@ test('a subagent thread is never shown the user\'s announcements and never marks
  * is wrong. Run alone this path measures wall p95 0.03-0.11 ms; inside `npm
  * test`'s 290-file parallel suite the same code measures 1.97 ms, with the
  * harness reporting 100% CPU delivery — because the cost here is a
- * `readFileSync`, and the delivery detector's reference workload is pure
- * arithmetic that does no I/O (see latency-budget.ts). That is the exact
- * blindness hook-timing.test.ts documents for its own SessionStart row. A
- * budget that a quiet machine clears by 1400x and a busy one breaches is not
- * measuring this code, and a red that carries no information about the code is
- * the failure mode the instrument was built to end.
+ * `readFileSync` and the delivery detector's only reference workload was pure
+ * arithmetic. A budget that a quiet machine clears by 1400x and a busy one
+ * breaches is not measuring this code, and a red that carries no information
+ * about the code is the failure mode the instrument was built to end.
+ *
+ * That blindness is now closed — latency-budget.ts runs a FILESYSTEM reference
+ * beside the arithmetic one, so a contended readFileSync reads as inconclusive
+ * rather than as a regression here (measured: cpu 84% / filesystem 77% beside
+ * twelve peer test files, where the CPU figure alone said the machine was
+ * healthy). It does not make the budget tighter. An inconclusive verdict
+ * enforces nothing, so the reason to keep this number a tenth of the event
+ * rather than a hundredth is unchanged: the verdict that DECIDES is the one
+ * taken alone, in the serial `latency-budget` CI job.
  *
  * The measured numbers are printed on every PASS, so tightening this stays a
  * data-driven change against a table that already exists.

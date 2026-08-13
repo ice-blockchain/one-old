@@ -29,6 +29,9 @@ import {
   hasRunAgentState,
   hookSessionIdentity,
   isMaintenancePhase,
+  canonicalProjectMode,
+  isExistingProjectMode,
+  isNewProjectMode,
   isSubagentThread,
   legacyRunAgentContext,
   legacyStatePath,
@@ -52,9 +55,9 @@ import { hasLocalPreferenceFields } from '../../shared/state/local-prefs';
 import { readJson } from '../../shared/fsjson';
 import { applyExistingCodebaseDetection } from '../../shared/onboarding/detection-stamp';
 import { nowIsoNoMs } from '../../shared/text';
-import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner, uncertifiedHostBanner } from './session-start-lib';
+import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, roleContractBanner, sweepOldDigests, tokenEconomyBanner, uncertifiedHostBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
-import { sweepTrafficOneRetention } from '../../shared/retention';
+import { retentionAdvisory, sweepTrafficOneRetention } from '../../shared/retention';
 import {
   oneMcpSessionWarning,
   syncOneMcpForSessionStart,
@@ -478,8 +481,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   // so a per-site notice is both easy to misplace and easy for the next edit to
   // forget — which is the shape of the defect being fixed.
   let stateRecorded = true;
+  // A retention suspension is indefinite and only the USER can lift it, so the
+  // remedy has to reach them: the sweep writes it to stderr, and a SessionStart
+  // hook that exits 0 shows stderr to nobody on the hosts we target. It rides the
+  // same advisory prefix STATE_NOT_RECORDED already uses, composed here so no
+  // return site has to remember it.
+  let retentionNotice = '';
   const sessionContext = (text: string, meta?: ResultMeta): HookResult => (
-    context(stateRecorded ? text : `${STATE_NOT_RECORDED}${text}`, meta ?? {})
+    context(`${retentionNotice}${stateRecorded ? text : `${STATE_NOT_RECORDED}${text}`}`, meta ?? {})
   );
   const legacyMigration = legacyCustomBackendMigration(cwd, state);
   if (legacyMigration.changed) {
@@ -514,7 +523,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   cleanActiveSkills();
   sweepOldDigests(cwd, 5);
   pruneExpiredPendingClaims(cwd);
-  sweepTrafficOneRetention(cwd, { dryRun: false });
+  retentionNotice = retentionAdvisory(sweepTrafficOneRetention(cwd, { dryRun: false }).notices) || '';
   // Deterministic self-heal: strip any machine-local preference fields (team, toolchain
   // with absolute binPaths, performance, …) a stale runner may have left in the committed
   // .one.json, routing them to the per-user preferences.json. .one.json is not gitignored.
@@ -542,10 +551,12 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     return subagentRoleContext(ctx, state, agentContext, root);
   }
 
-  const mode = (state.mode as string) || detectMode(cwd);
+  // Canonical from here down: this local is written back to state, compared
+  // against below, and interpolated into `rules/modes/<mode>.md`.
+  const mode = canonicalProjectMode(state.mode) || detectMode(cwd);
   state.mode = mode;
   let stackId = state.stack as string | undefined;
-  if (mode === 'new-project' && reconcileStackFromArtifacts(cwd, state)) {
+  if (isNewProjectMode({ mode }) && reconcileStackFromArtifacts(cwd, state)) {
     normalizeState(state, mode);
     if (!writeState(cwd, state)) stateRecorded = false;
     try {
@@ -563,7 +574,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const onboardingComplete = Boolean(state.onboardingComplete);
   const onboardingReady = onboardingComplete
     && typeof stackId === 'string' && STACK_IDS.has(stackId)
-    && (mode !== 'new-project' || !isNewProjectOnboardingIncomplete(state, ctx.host));
+    && (!isNewProjectMode({ mode }) || !isNewProjectOnboardingIncomplete(state, ctx.host));
   // Preference acknowledgements are keyed by the canonical project root. Never
   // let a nested package or the hook process cwd select another project's hash.
   const localPreferenceTarget = currentLocalPreferenceTarget(
@@ -666,6 +677,11 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     header += sessionPerformanceContext(state, ctx.host, process.env, cwd);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
+    // The one session-time channel that reaches the agent on every host. A refused
+    // role-contract directory is otherwise invisible on this branch: it is the
+    // ALREADY-MATERIALIZED path, so the writer that would have reported it never
+    // ran (see roleContractBanner).
+    header += roleContractBanner(cwd, state);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     header += ensureAgentTeamsEnv(cwd, ctx.host); // zero-touch: enable senior-team continuation (one agent per role)
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
@@ -678,7 +694,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   }
 
   // ── Flow 2 — existing project with detectable stack → auto-write + prune ──
-  if (mode === 'existing-codebase' || mode === 'existing-with-supabase') {
+  if (isExistingProjectMode({ mode })) {
     // The ask-first question used to be answered HERE, which is why an
     // onboarded project (Flow 1, above) never reached it. It now guards the
     // whole body — see the projectWritesPermitted return above.
@@ -725,6 +741,10 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     header += sessionPerformanceContext(state, ctx.host, process.env, cwd);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
+    // `stampMaterialization` above is the direct materializeProjectAssets call on
+    // this branch and it discards its result, so this read of disk is the only
+    // thing on the auto-detected path that can report a refused role directory.
+    header += roleContractBanner(cwd, state);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     header += ensureAgentTeamsEnv(cwd, ctx.host); // zero-touch: enable senior-team continuation (one agent per role)
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
@@ -738,7 +758,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     return sessionContext(`${banner}\n\n${header}${graphPreview}\n${body}`);
   }
 
-  if (mode === 'new-project' && stackId && isNewProjectOnboardingIncomplete(state, ctx.host)) {
+  if (isNewProjectMode({ mode }) && stackId && isNewProjectOnboardingIncomplete(state, ctx.host)) {
     return sessionContext(`[ACTIVE STACK: ${stackId}]\n\n${setupPendingDirective(ctx, cwd)}`, {
       systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
     });
