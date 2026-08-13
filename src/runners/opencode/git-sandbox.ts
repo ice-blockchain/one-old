@@ -5,6 +5,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { copyRegularFile } from '../../shared/bounded-read';
+import { copyTreeStrict } from '../../shared/copy-tree';
 import { spawnTool } from '../../shared/spawn-tool';
 
 export function git(cwd: string, args: string[], timeout = 60_000, env?: NodeJS.ProcessEnv): { status: number; stdout: string; stderr: string } {
@@ -181,10 +183,23 @@ function copyPath(src: string, dst: string): void {
     return;
   }
   if (stat.isDirectory()) {
-    fs.cpSync(src, dst, { recursive: true, force: true });
+    // `fs.cpSync` was the same phantom one branch over, and it is worse than the
+    // discarded boolean below because nothing at all is returned to discard: a
+    // FIFO or a socket inside the tree is SILENTLY OMITTED (measured on node
+    // v26.5.0: returns in ~2 ms, destination missing the entry) and a symlink loop
+    // ABORTS THE PROCESS uncatchably. The backup was then recorded as taken while
+    // being unable to reconstruct the target, and the rollback below removes the
+    // target FIRST — so it reported a clean restore having destroyed the tree.
+    copyTreeStrict(src, dst);
     return;
   }
-  fs.copyFileSync(src, dst);
+  // `copyRegularFile` answers `false` for a source that is not a regular file
+  // rather than throwing. Discarding that answer is not survivable HERE, because
+  // the caller records the backup as taken either way: `restoreApplyTargets`
+  // removes the target BEFORE it restores, so a backup that never happened turns
+  // a rollback into a deletion of the file it exists to protect. Refusing to
+  // start the apply is the direction that keeps the bytes.
+  if (!copyRegularFile(src, dst)) throw new Error(`cannot copy ${src}: not a regular file`);
 }
 
 export function backupApplyTargets(cwd: string, targetPaths: string[], parent: string): ApplyTargetBackup[] {

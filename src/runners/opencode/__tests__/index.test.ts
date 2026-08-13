@@ -2088,9 +2088,16 @@ test('postApply quality/size/styling stand down on an existing codebase', () => 
       }), 'utf8');
     };
     writeMode('existing-codebase');
-    // No git HEAD to attribute authorship → fail toward the stand-down.
-    assert.equal(postApplyQuality(dir, [collapsed]), null);
-    assert.equal(postApplyStyling(dir, [tailwindish]), null);
+    // No git HEAD, so authorship cannot be attributed — and the fallback fails
+    // toward JUDGING rather than toward the stand-down. Skipping every touched
+    // file when git cannot answer looks conservative and is not: a project with
+    // no usable HEAD would have its whole delegated diff judged on nothing,
+    // which is the one outcome neither mode wants. The per-file stand-down is a
+    // claim about who WROTE a file, and an unanswerable claim is not a licence.
+    assert.match(String(postApplyQuality(dir, [collapsed])), /packs an entire function\/component onto one line/);
+    assert.match(String(postApplyStyling(dir, [tailwindish])), /no tailwindcss dependency/);
+    // The module-size budget is fenced by MODE alone — no authorship claim to be
+    // unanswerable — so it stands down on anything that is not a new project.
     assert.equal(postApplySize(dir, [oversized]), null);
 
     // With a HEAD, only files that existed there are the repo owner's: a file
@@ -2538,12 +2545,26 @@ test('Step-0 rejects a module the structural write gate would refuse to edit', (
     const oversized = `export const rows = [\n${Array.from({ length: 500 }, (_, i) => `  { id: ${i} },`).join('\n')}\n];\n`
       + Array.from({ length: 60 }, (_, i) => `export const v${i} = ${i};`).join('\n');
     fs.writeFileSync(path.join(dir, rel), oversized, 'utf8');
+    // The budget is an opinion about code Traffic One scaffolded, so it is fenced
+    // by the SAME predicate the write gate's static family reads — a declared
+    // `new-project` is what makes the module ours to size.
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'minimal', frontend: 'react-vite', backend: 'none', onboardingComplete: true,
+    }), 'utf8');
     assert.match(String(postApplySize(dir, [rel])), /logical lines, over the 400 limit/);
 
     const small = 'src/features/ok/index.ts';
     fs.mkdirSync(path.join(dir, path.dirname(small)), { recursive: true });
     fs.writeFileSync(path.join(dir, small), 'export const a = 1;\n', 'utf8');
     assert.equal(postApplySize(dir, [small]), null);
+
+    // And on a project that never declared a mode the budget stands down with
+    // the rest of the family, which is the point of routing it through the
+    // predicate: an UNDECLARED project is not a scaffolded one, and the write
+    // gate that used to trap this module's owner stands down over the same value.
+    fs.rmSync(path.join(dir, '.traffic-one'), { recursive: true, force: true });
+    assert.equal(postApplySize(dir, [rel]), null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

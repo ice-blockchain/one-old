@@ -27,16 +27,6 @@ Do this once before retrying:
 3. Re-run model-gate, then retry the spawn with the exact role→model value it prints. Project \`.cursor/agents\` contracts remain model-agnostic.
 Do not retry with an uncaptured family guess and do not build the project inline because of this gate.`;
 
-// Verbatim mirror of the SKILL.md `architect-phase-incomplete` block, so a
-// missing block never softens the gate's prose (observed 8c: the orchestrator
-// mis-read this deny as a Step-0 request and burned a second dead spawn — the
-// prose must lead with the exact next action).
-export const ARCHITECT_PHASE_INCOMPLETE_FALLBACK = `Architect phase gate: \`{{ROLE}}\` cannot start yet — spawn \`senior-architect\` for run \`{{RUN_ID}}\` FIRST, in your next message. Do NOT retry \`{{ROLE}}\` unchanged and do NOT run the OpenCode Step-0 plan batch instead; neither clears this gate.
-
-Missing on disk: {{MISSING}}
-
-The architect must finish the required project-memory baseline, semantic \`.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json\`, and \`.traffic-one/digests/{{RUN_ID}}/architect.md\` containing \`PLAN_READY\`. Traffic One runtime—not the architect—then compiles and atomically publishes the architecture, verification, assignments, and child bootstraps. Only after those hash-valid contracts exist may you retry \`{{ROLE}}\` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.`;
-
 // Verbatim mirror of the SKILL.md `spawn-claim-unavailable` block. This gate
 // exists precisely for the case where the project's state dir is not answering,
 // which is also a state a missing/unreadable SKILL.md correlates with — so it is

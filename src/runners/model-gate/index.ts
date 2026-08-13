@@ -9,11 +9,16 @@
 import { markModelGatePrompted, readModelChoice } from '../../modules/agent-model/model-choice';
 import { cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { captureCursorModels, hasFreshCursorModels } from '../../shared/materialize/cursor-models';
-import { buildCursorSpawnModelMap, formatCursorSpawnMapBlock, syncCursorSpawnAgentFiles } from '../../shared/materialize/cursor-spawn-map';
+import {
+  buildCursorSpawnModelMap,
+  cursorSpawnContractWarning,
+  formatCursorSpawnMapBlock,
+  syncCursorSpawnAgentFiles,
+} from '../../shared/materialize/cursor-spawn-map';
 import { AGENT_ROLES } from '../../config/performance';
 import { detectHostPlan } from '../../shared/host/plan';
 import { obj } from '../../shared/obj';
-import { ensureCurrentRunId, readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId, isNewProjectMode, readEffectiveState } from '../../shared/state';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
 
 function cursorModelCaptureStop(): string {
@@ -36,14 +41,20 @@ function modelGateFailedStop(): string {
 function writeSpawnReady(cwd: string, state: Record<string, unknown>, headline: string): boolean {
   const map = buildCursorSpawnModelMap(cwd, state);
   if (AGENT_ROLES.some((role) => !map[role])) return false;
-  syncCursorSpawnAgentFiles(cwd, state);
+  const contracts = syncCursorSpawnAgentFiles(cwd, state);
   process.stdout.write(`${headline}\n`);
   // This map is the authoritative one the orchestrator spawns from, and for a
   // new project the `.cursor/agents/**` contracts were written by the same
   // build — so the role-named type is not in the session's captured type set
   // and recommending it guarantees a "Couldn't start" on the first spawn.
-  const block = formatCursorSpawnMapBlock(map, state.mode === 'new-project');
+  const block = formatCursorSpawnMapBlock(map, isNewProjectMode(state));
   if (block) process.stdout.write(`${block}\n`);
+  // The map's closing instruction is "tell the child to read
+  // `.cursor/agents/<role>.md`". When that file could not be written, saying so
+  // is the difference between an orchestrator that adapts and one that hands
+  // every child a path to nothing — which is what this gate did silently.
+  const warning = cursorSpawnContractWarning(contracts);
+  if (warning) process.stdout.write(`${warning}\n`);
   return true;
 }
 
@@ -84,7 +95,7 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
     if (team?.mode === 'subagents') {
       const runId = ensureCurrentRunId(cwd, state);
       const existingPolicy = runId ? readRunModelPolicy(cwd, runId) : null;
-      if (!existingPolicy && state.mode === 'new-project' && !hasFreshCursorModels(cwd, detectHostPlan('cursor'))) {
+      if (!existingPolicy && isNewProjectMode(state) && !hasFreshCursorModels(cwd, detectHostPlan('cursor'))) {
         process.stdout.write(`${cursorModelCaptureStop()}\n`);
         return 2;
       }

@@ -36,7 +36,6 @@ import {
 import { readRuntimeAssignments } from '../../shared/architecture-contract';
 
 import {
-  ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
   CURSOR_MODELS_CAPTURE_FALLBACK,
   block,
 } from './handler-prose';
@@ -338,4 +337,4 @@ export function agentModelGate(ctx: Ctx): HookResult {
   return modelEnforcementGates(gateCtx);
 }
 
-export { ARCHITECT_PHASE_INCOMPLETE_FALLBACK, CURSOR_MODELS_CAPTURE_FALLBACK } from './handler-prose';
+export { CURSOR_MODELS_CAPTURE_FALLBACK } from './handler-prose';

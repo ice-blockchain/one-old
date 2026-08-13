@@ -17,7 +17,7 @@ import {
   SKIP_FILES,
 } from '../../config/reporting';
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
-import { readJsonResult, writeJsonDurable } from '../../shared/fsjson';
+import { readJsonResult, readText, writeJsonDurable } from '../../shared/fsjson';
 import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
 import {
   preserveCurrentRunId,
@@ -33,13 +33,33 @@ import { buildMcpPayload } from './buildMcpPayload';
 
 type Rec = Record<string, unknown>;
 
-export function readText(filePath: string): string | null {
-  try {
-    return fs.readFileSync(filePath, 'utf8');
-  } catch {
-    return null;
-  }
-}
+/**
+ * fsjson.ts's `readText`, RE-EXPORTED rather than reimplemented — this module's
+ * own copy is deleted, and the copy is the point.
+ *
+ * It was the same bare `readFileSync`-in-a-try, with the same `string | null`
+ * fold, that fsjson.ts carried until bounded-read.ts replaced it: unbounded on
+ * a FIFO (`open(2)` waits for a writer forever) and on a symlink to a character
+ * device. Its consumer is `collectFileExtensions`, which reads and counts lines
+ * for EVERY file the report walk finds anywhere in the project, so one planted
+ * shape in the tree was a `traffic-one` command that never returned. That is a
+ * runner rather than a hook, so the price is the command and not the editor
+ * session — a real difference in severity, and none at all in the fix.
+ *
+ * DELETED IN FAVOUR OF THE SHARED READER, argued from the import graph rather
+ * than from taste. This module ALREADY imports `readJsonResult` and
+ * `writeJsonDurable` from shared/fsjson.ts (see above), and nothing under
+ * `shared/` imports this file, so the edge exists in this direction today and
+ * removing the copy adds none. Bounding in place would instead add a SECOND
+ * edge — lib.ts → shared/bounded-read.ts — to keep a function whose body would
+ * then be byte-for-byte fsjson's, i.e. a third structurally identical reader of
+ * the kind bounded-read.ts's own header records finding twice already.
+ *
+ * The dependency-free hook-runtime rule does not object: it forbids npm
+ * PACKAGES in `dist/scripts`, and fsjson.ts's transitive imports are `fs`,
+ * `path` and four in-tree modules.
+ */
+export { readText };
 
 export function readJson(filePath: string, fallback: unknown = null): unknown {
   const text = readText(filePath);

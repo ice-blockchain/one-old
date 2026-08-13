@@ -38,6 +38,19 @@ function textFields(...values: unknown[]): string[] {
   return values.filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
+/**
+ * The field names a spawn BRIEF arrives under, and the order they are read in.
+ *
+ * Exported because `record-agent.ts`'s id extractor has to exclude exactly what
+ * this file reads as a brief: the shared `TOOL_INPUT_KEYS` deliberately refuses
+ * four of these five (they are content spellings a RESULT uses too), so the one
+ * reader that cannot tolerate the residual carries its own exclusion — and takes
+ * it from HERE rather than from a second literal that could drift. A brief is a
+ * STRING, per the filter above; a record under the same name is not one, which
+ * is what keeps a result envelope that happens to be called `task` readable.
+ */
+export const SPAWN_BRIEF_KEYS: readonly string[] = ['message', 'prompt', 'task', 'instructions', 'description'];
+
 function markerEvidence(texts: string[]): RoleEvidenceResolution {
   const found: RoleEvidence[] = [];
   const marker = /\[t1-role:\s*((?:senior[-_](?:architect|frontend|backend|reviewer|tester|shipper)|quick[-_]fix)(?:[-_]\d+)?)\s*\]/ig;
@@ -132,8 +145,8 @@ export function inferTrafficOneSpawnRoleEvidence(toolInput: Record<string, unkno
   if (taskNameResolution.kind !== 'none') return taskNameResolution;
 
   const texts = textFields(
-    toolInput.message, toolInput.prompt, toolInput.task, toolInput.instructions, toolInput.description,
-    payload.message, payload.prompt, payload.task, payload.instructions, payload.description,
+    ...SPAWN_BRIEF_KEYS.map((key) => toolInput[key]),
+    ...SPAWN_BRIEF_KEYS.map((key) => payload[key]),
   );
   const markerResolution = markerEvidence(texts);
   if (markerResolution.kind !== 'none') return markerResolution;

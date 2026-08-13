@@ -198,6 +198,141 @@ test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible messag
   });
 });
 
+/**
+ * WHERE the model-gate command's result is, rather than where Cursor happens to
+ * keep it. The reads were all flat, which is right for Cursor and inert on every
+ * other host only because this gate is keyed on a Cursor-only capability flag —
+ * coupling that is invisible at the read site, so the day the flag widens the gate
+ * goes SILENT rather than erroring. Four properties, in one fixture:
+ *
+ *   - Cursor is byte-for-byte unchanged, including the case that distinguishes the
+ *     candidate spellings: a flat `output` STRING is the named container here, so a
+ *     reader that narrowed to the container and stopped would stop reading Cursor's
+ *     own STOP text;
+ *   - a result carried inside a wrapper/container is legible, and a SUCCESSFUL one
+ *     there is still not read as a failure;
+ *   - a result carried in an envelope NOTHING names is legible too. An earlier round
+ *     recorded that as a disclosed fail-open and pinned the broken answer, which is
+ *     a row that can only detect an accidental fix; the reader is fixed here and the
+ *     rows now red on a revert;
+ *   - and the one-level bound holds: a status two levels down is a nested child's,
+ *     and the payload's own verdict outranks any envelope it carries.
+ *
+ * One assertion over the whole table, so a revert of the reader shows EVERY family
+ * it broke rather than stopping at the first.
+ */
+test('modelGate after-shell reads the command result wherever the payload carries it', () => {
+  withProj({ models: [CURSOR_HIGHEST_SLUG, 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.currentRunId = 'run-after-shell-families';
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    freezeCursorPolicy(cwd, 'run-after-shell-families');
+
+    const STOP = 'traffic-one model-gate: STOP — model choice required';
+    const OK = 'all picked models are available';
+    // One assertion over the whole table rather than a row at a time, so a reader
+    // (or a mutation) sees EVERY family that was read wrongly instead of stopping
+    // at the first.
+    const rows: { label: string; raw: Record<string, unknown>; failed: boolean }[] = [
+      // Cursor, unchanged.
+      { label: 'flat: exit_code 2', raw: { exit_code: 2 }, failed: true },
+      { label: 'flat: exit_code 0', raw: { exit_code: 0 }, failed: false },
+      { label: 'flat: STOP in the output STRING, no code', raw: { output: STOP }, failed: true },
+      { label: 'flat: output STRING beside exit_code 0', raw: { output: OK, exit_code: 0 }, failed: false },
+      { label: 'flat: success:false', raw: { success: false }, failed: true },
+      // Wrapper and container families, previously unreadable.
+      { label: 'wrapper: exit_code 2 inside', raw: { tool_response: { exit_code: 2 } }, failed: true },
+      { label: 'wrapper (camel): STOP in stdout', raw: { toolResponse: { stdout: STOP } }, failed: true },
+      { label: 'wrapper: exit_code 0 inside', raw: { tool_response: { exit_code: 0, stdout: OK } }, failed: false },
+      { label: 'output container (OpenCode/Kilo)', raw: { output: { title: 'bash', args: { command: 'x' }, exit_code: 2 } }, failed: true },
+      { label: 'cascade tool_info', raw: { tool_info: { command_line: 'x', exit_code: 2 } }, failed: true },
+      // The families an earlier round recorded as a latent FAIL-OPEN and left at
+      // `failed: false`, which was a defect written down rather than fixed — and
+      // two rows that could only ever detect an accidental FIX, since they pinned
+      // the broken answer. `shellExitFailed` reached these through
+      // `toolResultContainer`, which refuses to GUESS an envelope no host has
+      // named: the honest answer for byte accounting, and the wrong one for a
+      // gate, because it fell back to the payload, found no flat status, and
+      // reported a FAILED model-gate command as PASSING. The STOP directive was
+      // never delivered and a blind auto-run continued.
+      //
+      // It now reads `toolResultVerdictSources` — the payload's own top level and
+      // one level into each record child — so the envelope needs no name.
+      //
+      // What a revert reds, measured against both earlier readers rather than
+      // asserted, because the two do not fail the same way. Back to the container
+      // read this replaced (`obj(toolResultContainer(payload)) ?? payload`, which
+      // was byte-identical in HEAD and in the round that disclosed the fail-open):
+      // THREE rows red, and they are the three below that expect `true` —
+      // `exit_code 2`, `STOP in stdout` and `success:false inside`. Back further, to
+      // the flat-only read that named no container at all: SEVEN, those three plus
+      // the four wrapper/container rows above, which is what makes both layers of
+      // this read load-bearing rather than only the newer one.
+      { label: 'unnamed envelope: exit_code 2', raw: { execution_record: { exit_code: 2 } }, failed: true },
+      { label: 'unnamed envelope: STOP in stdout', raw: { execution_record: { stdout: STOP } }, failed: true },
+      { label: 'unnamed envelope: exit_code 0 inside is still a pass', raw: { execution_record: { exit_code: 0, stdout: OK } }, failed: false },
+      { label: 'unnamed envelope: success:false inside', raw: { tool_output: { success: false } }, failed: true },
+      // The bound this widening does NOT cross: two levels down is some nested
+      // child's status, not this command's.
+      { label: 'two levels down is not this command result', raw: { execution_record: { child: { exit_code: 2 } } }, failed: false },
+      // And the ORDER, which only a payload reporting both can pin: the outermost
+      // report is the shell's own exit status, so an envelope never overrides it.
+      // The same precedence the subagent-failure classifier documents.
+      { label: 'the payload own code outranks an envelope code', raw: { exit_code: 0, execution_record: { exit_code: 2 } }, failed: false },
+      { label: 'and the other way round', raw: { exit_code: 2, execution_record: { exit_code: 0 } }, failed: true },
+      // And a word status is still not an exit code, one level in as at the top.
+      { label: 'unnamed envelope: a word status is not a code', raw: { execution_record: { status: 'completed' } }, failed: false },
+      // TWO SIBLINGS DISAGREEING, which is the only shape that can pin how they
+      // are resolved — and this read used to resolve it by serialization order,
+      // because it RETURNED at the first source that spoke. Measured through this
+      // hook before the fix: no STOP here, a STOP with the same two children
+      // written the other way round, no STOP with a passing sibling ahead of the
+      // sentinel, and no STOP when a sibling's success FLAG came first. Failure
+      // outranks, in every order: over-firing costs a STOP nobody needed,
+      // under-firing costs the gate.
+      { label: 'siblings disagree: passing child first', raw: { metadata: { exit_code: 0 }, execution_record: { exit_code: 2 } }, failed: true },
+      { label: 'siblings disagree: failing child first', raw: { execution_record: { exit_code: 2 }, metadata: { exit_code: 0 } }, failed: true },
+      { label: 'a passing sibling may not swallow the STOP sentinel', raw: { metadata: { exit_code: 0 }, execution_record: { stdout: STOP } }, failed: true },
+      { label: 'a sibling success FLAG may not mask a failing envelope', raw: { metadata: { ok: true }, execution_record: { exit_code: 2 } }, failed: true },
+      // The sentinel is Traffic One's OWN text and no shell echoes it by
+      // accident, so it outranks even a passing exit code at the own level. The
+      // row below it is the precedence that does NOT move: a command has one exit
+      // status, and where the payload reports one it is this command's.
+      { label: 'the STOP sentinel outranks a passing own exit code', raw: { exit_code: 0, execution_record: { stdout: STOP } }, failed: true },
+      // THE RULING, not an omission: a payload carrying no verdict information at
+      // all answers PASS. Fail-closed governs a verdict this reader could have
+      // read and did not; it cannot govern a payload with nothing to say, because
+      // "nothing to say" is also what the two rows above it look like — a verdict
+      // two levels down and a word status are deliberately NOT read, and firing
+      // on silence would deliver a STOP for exactly those and make the one-level
+      // bound decorative. Measured over the corpus this file drives: 3 of 24 rows
+      // carry no readable verdict, and all three are pinned as passes on purpose.
+      { label: 'no verdict information anywhere is a pass', raw: { conversation_id: 'c1' }, failed: false },
+    ];
+    const misread = rows
+      .filter((row) => (modelGateAfterShell(afterCtxFor(cwd, modelGateCommand(cwd, 'cursor'), row.raw)).kind === 'context') !== row.failed)
+      .map((row) => row.label);
+    assert.deepEqual(misread, [], 'these payload families were read wrongly');
+
+    // Key order is not evidence, asserted as a property rather than as two rows:
+    // the same three children in four serializations must answer identically.
+    const children: [string, unknown][] = [
+      ['metadata', { exit_code: 0 }],
+      ['execution_record', { exit_code: 2 }],
+      ['results', { ok: true }],
+    ];
+    const byOrder = new Set([[0, 1, 2], [2, 1, 0], [1, 0, 2], [1, 2, 0]].map((order) => String(
+      modelGateAfterShell(afterCtxFor(
+        cwd,
+        modelGateCommand(cwd, 'cursor'),
+        Object.fromEntries(order.map((index) => children[index]!)),
+      )).kind,
+    )));
+    assert.deepEqual([...byOrder], ['context'], 'the gate answered differently depending on which child the host serialized first');
+  });
+});
+
 test('modelGate runner fails closed when Cursor model capture is missing', () => {
   withProj({ models: null, overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
@@ -227,6 +362,23 @@ test('modelGateShell: every picked model offered → noop (the command runs, no 
   });
 });
 
+/**
+ * This row is environment-sensitive, and NOT coupled to the after-shell row above.
+ * A peer saw it red only when a `shellExitFailed` revert was applied and read that
+ * as state pollution between the two tests. Measured on a copy: with `model-gate.ts`
+ * PRISTINE and the after-shell row PASSING, this row still fails in the same process
+ * (twice of two), and with the revert applied in a different process it passes
+ * (twice of two). So the discriminator is the process environment, not the other
+ * test and not the reader. What fails is the agent-contract read at the end:
+ * `runModelGate` printed the map and every assertion before it passed, but
+ * `.cursor/agents/**` was never written into the temp project, so the read is ENOENT.
+ * The temp project lives under `os.tmpdir()`, and both processes that reproduced it
+ * had their filesystem writes confined to this repository — so treat a failure here
+ * as an unmet fixture precondition and re-run without that confinement before
+ * reading it as a defect. Recorded rather than fixed: moving the fixture into the
+ * repo would make a materialization test write into the plugin source tree, which
+ * this repo forbids.
+ */
 test('modelGate runner prints the local spawn map while project agent contracts stay model-agnostic', () => {
   withProj({ models: [CURSOR_HIGHEST_SLUG, 'gpt-5.6-terra-medium', 'composer-2.5-fast'], overrides: {} }, (cwd) => {
     const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));

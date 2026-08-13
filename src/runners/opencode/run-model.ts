@@ -49,6 +49,7 @@ import {
   validateDelegatedDiff,
   type DelegatedDiffPolicy,
 } from './diff-policy';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export function runStamp(): string {
   // Matches the orchestrator's run-id shape (YYYY-MM-DDTHH-MM-SSZ); only used
@@ -99,7 +100,7 @@ function accumulateDigestUnits(
   const filePath = digestUnitsPath(cwd, runId, digestRole);
   let prior: DelegatedDigestUnit[] = [];
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const parsed: unknown = JSON.parse(readRegularFileOrThrow(filePath));
     if (Array.isArray(parsed)) {
       prior = parsed.map(parseDigestUnit).filter((u): u is DelegatedDigestUnit => Boolean(u));
     }

@@ -3,10 +3,14 @@
 // 1:1 from scripts/doctor/buildFindings.cjs. Pure: derives messages from probe
 // data; never reads the filesystem itself except via the toolchain spec.
 
+import { registryEnclosureOf, workspaceMemberRegistryOf } from '../../shared/hook/workspace-members';
+import { isNewProjectMode } from '../../shared/state/lifecycle';
 import { toolStatus } from '../toolchain';
 import { codeGraphProviderFromValue, normalizedProjectState, onboardingStateIssues, rawStateHasLegacyShape } from './lib';
 import type { OverrideProbe } from './override-probe';
 import type { PluginRootProbe } from './plugin-root-probe';
+import { bothRunRecordsRemedy } from '../../shared/run-settlement';
+import { describeSettlementLegibility } from './run-diagnostic';
 import type { RunDiagnosticProbe } from './run-diagnostic';
 import type {
   CodexHooksProbe,
@@ -28,6 +32,19 @@ export interface Finding {
   message: string;
   recommendedCommand?: string;
   tool?: string;
+}
+
+export type DoctorSummary = 'ACTION_NEEDED' | 'INFO_ONLY' | 'HEALTHY';
+
+/**
+ * The one-word verdict, derived HERE so `doctor` and `doctor --bundle` cannot
+ * print different ones — the bundle carried no `summary` key at all, which made
+ * the artifact an operator attaches to an issue the only view of this report with
+ * no verdict in it.
+ */
+export function doctorSummary(findings: readonly Finding[]): DoctorSummary {
+  if (findings.some((finding) => finding.severity === 'fix-needed')) return 'ACTION_NEEDED';
+  return findings.length > 0 ? 'INFO_ONLY' : 'HEALTHY';
 }
 
 export interface BuildFindingsInput {
@@ -112,6 +129,40 @@ function runDiagnosticFindings(runDiagnostic: RunDiagnosticProbe): Finding[] {
         + 'Re-prompt the parent agent in the same project so the run is re-driven; do not hand-edit the ledger.',
     });
   }
+  // Settlement LEGIBILITY, which no finding covered — and its absence is what
+  // turned every wedge in the recoverability table into one with a remedy
+  // nobody could find. The probe reported `canonicalStatus: null` for a damaged
+  // record and for a legacy run alike, the report rendered both as "(no
+  // settlement-v2.json — legacy/V1 run)", and the doctor's own verdict line
+  // said HEALTHY while every settlement write for that run was being refused.
+  // A control nobody can see is half a control.
+  const settlementIllegible = runDiagnostic.ledger.canonicalLegibility !== 'ok'
+    && runDiagnostic.ledger.canonicalLegibility !== 'absent';
+  if (settlementIllegible) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'RUN_SETTLEMENT_ILLEGIBLE',
+      message: `Run ${runDiagnostic.runId}'s canonical settlement is \`${runDiagnostic.ledger.canonicalLegibility}\`: `
+        + `${describeSettlementLegibility(runDiagnostic.ledger)} `
+        + 'The next settlement write for this run preserves those bytes beside the record '
+        + `(\`.traffic-one/runs/${runDiagnostic.runId}/settlement-v2.json.corrupt\`), rebuilds it, and marks the run `
+        + 'permanently ineligible for verified/shipped — it stays drivable and resettable. '
+        + `${bothRunRecordsRemedy(runDiagnostic.runId)}`,
+    });
+  }
+  if (runDiagnostic.ledger.canonicalIllegibleOnce && !settlementIllegible) {
+    findings.push({
+      severity: 'info',
+      code: 'RUN_SETTLEMENT_WAS_ILLEGIBLE',
+      message: `Run ${runDiagnostic.runId}'s canonical settlement was found damaged at least once and has been `
+        + 'rebuilt. The run is drivable and can settle failed/blocked, but it can never certify as '
+        + 'verified/shipped: nothing on disk can say what the record claimed before the damage. '
+        + `${runDiagnostic.ledger.canonicalQuarantinePath
+          ? `The damaged bytes were preserved at ${runDiagnostic.ledger.canonicalQuarantinePath}. `
+          : ''}`
+        + 'Start a fresh run for work that has to certify.',
+    });
+  }
   if (runDiagnostic.ledger.rollbackBarrierNote) {
     findings.push({
       severity: 'info',
@@ -120,6 +171,191 @@ function runDiagnosticFindings(runDiagnostic: RunDiagnosticProbe): Finding[] {
     });
   }
   return findings;
+}
+
+/**
+ * The nested `.traffic-one` roots that are actually STRAYS.
+ *
+ * The probe (probes-toolchain.ts listNestedTrafficOneRoots) walks the tree and
+ * reports every directory below the root that owns a `.one.json`. For an
+ * ordinary project each one is a leak. For a Traffic One WORKSPACE the same
+ * finding is the opposite of the truth and dangerous with it: THE MEMBER IS THE
+ * PROJECT — the container holds shared identity and no stack, each member holds
+ * an ordinary single-stack `.one.json` and owns its runs — so a member's state
+ * dir is exactly where its state belongs. Telling an operator to point the
+ * cleanup runner at it, which the message below does, is user-initiated data
+ * loss: it deletes the runs, claims and plan of a live project.
+ *
+ * EXACT membership, matching hook/paths.ts's own question about one directory
+ * rather than the resolver's ancestor-or-self redirect. A member's own state is
+ * the member's; a `.traffic-one` sitting in `<member>/internal` is a stray inside
+ * the member and stays reported, with its wording unchanged.
+ *
+ * ASKED THROUGH `registryEnclosureOf`, THE SAME PREDICATE THE SWEEP ASKS — the
+ * same predicate, at ONE depth, which is the whole of the claim and is narrower
+ * than "the same question". This calls it once, against the registry the probe
+ * already parsed out of the doctor's own cwd; the sweep calls it inside an
+ * ancestor walk that re-reads each ancestor's registry from disk and stops at
+ * the nearest workspace root. The two agree when the doctor is run in the
+ * enclosing container and can diverge otherwise — see the structural limit at
+ * the end of this block, which is that divergence. Not writing the comparison
+ * here still buys the agreement that is available: whatever the predicate
+ * decides about one directory, both paths decide alike. That verdict has three
+ * arms that are not `none`, and only one of them is `member`:
+ *
+ *   - `member` — the registry NAMES this directory. Its state belongs to it.
+ *   - `vouched` — an entry REACHES it without naming it (a symlinked entry, a
+ *     bind mount, an entry spelled at another depth), or an entry OPTS IT OUT.
+ *     Either way it is denied a member's authority and its state is deliberately
+ *     KEPT: `resolveProjectRoot` answers with the directory itself, so
+ *     retention's sweep withholds deletion (hook/paths.ts's `vouched-not-member`
+ *     arm). The opt-out case is the one that reverses this finding's previous
+ *     reading, and it reverses it in the direction the flag's own contract
+ *     states: "Traffic One leaves this directory alone" cannot mean a report
+ *     telling the operator to delete it by hand.
+ *   - `indeterminate` — a `statSync` blipped, or the directory's name reached
+ *     nothing while its `.one.json` was still readable (a rename in flight). The
+ *     sweep withholds deletion there too, because "we could not tell" is not
+ *     evidence of a leak.
+ *
+ * So this reports a stray only for `none`, the positive finding that no entry
+ * reaches the directory at all. Reporting the other two would tell an operator
+ * to hand-delete a live project's runs, claims and plan while the automatic
+ * sweep, looking at the same directory, spares it — the advisory path and the
+ * deletion path have to answer with one voice or the report is a trap.
+ *
+ * AND THE SAME RULE NOW GOVERNS THE REGISTRY ITSELF, which is where the two
+ * voices had drifted apart again. The justification that used to sit here —
+ * "`opaque` and `none` both leave every nested root reported, which is today's
+ * behaviour and the safe direction: an unusable registry must not silence a real
+ * leak" — was sound when it was written and is stale now. The resolution walk
+ * grew an `indeterminate` arm: a container whose registry cannot be ENUMERATED
+ * (torn, unreadable, or holding one malformed entry) makes the sweep WITHHOLD
+ * deletion for everything beneath it, precisely because a non-member answer
+ * derived from a file nobody could read is not knowledge (hook/paths.ts's
+ * `workspaceMembershipOf`). "Report everything" was consistent with a sweep that
+ * also deleted everything; against a sweep that now spares a correctly
+ * registered member, it is the trap this docblock forbids — the report says
+ * hand-delete, the automatic path says keep.
+ *
+ * `opaque`/`illegible` therefore produce an INFORMATIONAL finding that carries
+ * no deletion advice: membership is unknown, and the honest instruction is to
+ * repair the container's `.one.json`, after which the question can be answered
+ * at all. `none` still reports strays with the wording unchanged — it is a
+ * positive finding, and there the two paths still agree.
+ *
+ * IT STATS, and only where the answer cannot be had for free. The registry still
+ * comes from the state record the project probe already parsed (the overload that
+ * takes a value), a project that is not a workspace never reaches past
+ * `workspaceMemberRegistryOf`'s first comparison, and a directory the registry
+ * spells exactly is answered `member` with no syscall at all. What costs is a
+ * nested root the registry does NOT spell: one stat for it, then one per entry
+ * until something matches its identity. Bounded by 50 nested roots (the probe's
+ * own cap) times the registry size, in a diagnostic that already walks the tree
+ * to find them — and `enclosingRegisteredMember`, which this replaced, had an
+ * identity pass of its own, so the module header's "never reads the filesystem
+ * itself" was already about this file's imports rather than about the answers it
+ * asks for.
+ *
+ * A FORGED OR STALE REGISTRY ENTRY HIDES A REAL STRAY, and that is accepted
+ * rather than overlooked: anyone who can add `{ path: 'tools/scratch' }` to a
+ * container's `.one.json` can silence this finding for `tools/scratch`, and an
+ * entry left behind after a member was deleted and the directory reused does
+ * the same by accident. Suppression is the safe direction here — the finding's
+ * own advice is to point the cleanup runner at the directory, so a false
+ * NEGATIVE costs an unreported stray while a false positive costs a live
+ * project its runs, claims and plan. The registry lives in the same state file
+ * the finding is derived from, so trusting it is no weaker than trusting the
+ * `mode` that decided this is a workspace at all.
+ *
+ * IT CANNOT SEE A NESTED WORKSPACE, and that limit is structural rather than an
+ * oversight. The registry read is `project.state` — the state of the directory
+ * the doctor was run in — so a Traffic One workspace sitting INSIDE an ordinary
+ * project has every one of its members reported as a stray, with the cleanup
+ * advice attached. Closing it needs a state read per nested root, which this
+ * module has no business doing; the probe is where it belongs. Recorded in
+ * KNOWN-ISSUES.md with the measurement rather than half-fixed here.
+ */
+interface NestedRootVerdict {
+  /** Directories no entry reaches: reported, with the deletion advice. */
+  readonly strays: string[];
+  /** Set when the registry could not be enumerated, so membership is UNKNOWN
+   *  for every nested root and no advice may be attached to any of them. */
+  readonly unknown: { readonly why: string; readonly roots: string[] } | null;
+}
+
+function strayNestedTrafficOneRoots(project: ProjectProbe): NestedRootVerdict {
+  const nested = Array.isArray(project.nestedTrafficOneRoots) ? project.nestedTrafficOneRoots : [];
+  const registry = workspaceMemberRegistryOf(project.state);
+  if (registry.kind === 'opaque' || registry.kind === 'illegible') {
+    return { strays: [], unknown: nested.length > 0 ? { why: registry.why, roots: nested } : null };
+  }
+  // `members` is the only arm that can EXEMPT anything; `none` is the positive
+  // finding that this is not a workspace, so everything nested is a leak.
+  if (registry.kind !== 'members') return { strays: nested, unknown: null };
+  return {
+    strays: nested.filter((dir) => registryEnclosureOf(project.cwd, registry, dir).kind === 'none'),
+    unknown: null,
+  };
+}
+
+/**
+ * The state behind an `OVERRIDE_EVIDENCE_INCOMPLETE`, in the operator's terms.
+ * The check ids name WHICH witness disagrees; this names what it saw, because
+ * "override-snapshot-orphaned" tells a reader nothing about whether they are
+ * looking at an erased audit line or a stray file someone dropped in a folder.
+ * `null`/'unknown' are reported as such — this whole finding exists because a
+ * probe that could not look once answered with the clean install.
+ */
+function describeOverrideEvidence(overrides: OverrideProbe): string {
+  const parts = [
+    `ledger ${overrides.ledger}`,
+    overrides.snapshotScanAsked === false
+      ? 'orphaned snapshots NOT SCANNED (the ledger is illegible, so that witness is off)'
+      : `orphaned snapshots ${overrides.orphanSnapshots ?? 'unreadable'}`,
+    `mint counter ${overrides.mintCounter}`
+      + `${overrides.mintCounterCount === null ? '' : ` / ${overrides.mintCounterCount}`}`
+      + `${overrides.mintCounterWritable === false ? ' (FROZEN: that file will not accept a write)' : ''}`,
+    `mints this install can vouch for ${overrides.vouchableMints ?? 'unreadable'}`,
+  ];
+  // The deficit, in every finding that describes this state rather than only in
+  // the one that refuses. It used to be printed nowhere but inside the
+  // discrepancies branch, so the reading that matters most — a counter ahead of
+  // the lines that remain — was invisible in exactly the reconciled and
+  // illegible states where nothing else can see it either.
+  const deficit = overrideCounterDeficit(overrides);
+  if (deficit > 0) {
+    parts.push(`${deficit} mint(s) the counter has recorded and the ledger can no longer show`);
+  }
+  if (overrides.reconciliations > 0) parts.push(`reconciliations on record ${overrides.reconciliations}`);
+  return `Observed: ${parts.join(', ')}.`;
+}
+
+/** Mints the counter has signed for that the ledger can no longer account for.
+ *  Only meaningful for a counter that verifies; 0 otherwise. */
+function overrideCounterDeficit(overrides: OverrideProbe): number {
+  if (overrides.mintCounter !== 'verified') return 0;
+  if (overrides.mintCounterCount === null || overrides.vouchableMints === null) return 0;
+  return Math.max(0, overrides.mintCounterCount - overrides.vouchableMints);
+}
+
+/** What each illegible spelling MEANS, in the operator's terms and in terms of
+ *  what to do about it. Named per spelling because the three have different
+ *  causes and only one of them is a permissions problem. */
+function describeIllegibleLedger(kind: OverrideProbe['ledger']): string {
+  if (kind === 'corrupt') {
+    return 'at least one line in it is not an override record — something appended to that file, or a line '
+      + 'was edited. Lines that still parse are still honoured; what is lost is the guarantee that the file '
+      + 'lists every mint.';
+  }
+  if (kind === 'unreadable') {
+    return 'the file is there and could not be read (permissions, a directory in its place, or a symlink '
+      + 'loop). Nothing is lost by fixing that — and the repair below deliberately refuses this state for '
+      + 'exactly that reason.';
+  }
+  return 'it is larger than the reader will parse, so it is not parsed at all rather than parsed halfway. '
+    + 'Look at the file: an audit ledger this big is either junk somebody wrote into it or a genuine history '
+    + 'worth archiving by hand before it is replaced.';
 }
 
 export function buildFindings({
@@ -133,7 +369,28 @@ export function buildFindings({
   // enforcement was deliberately relaxed, and a reader who learns that after
   // scrolling past twenty toolchain findings has already drawn conclusions.
   if (overrides) {
-    if (overrides.unvouchable > 0) {
+    // The ledger's KIND, reported whether or not a reconciliation excuses it, and
+    // whether or not any line happened to parse. Two spellings used to be
+    // effectively silent: an `oversized` ledger parses no lines at all, so
+    // `unvouchable` was 0 and the only trace was an info line about the
+    // acknowledgement; and a `corrupt` one was reported as lines that "cannot be
+    // verified against this install's key", which tells an operator their key was
+    // rotated when what actually happened is that something wrote junk into an
+    // audit file. An illegible ledger is also the state that switches the orphan
+    // scan and the mint comparison off, so it is the one an operator most needs
+    // named — including while it is excused, because an acknowledged blindfold is
+    // still a blindfold.
+    if (overrides.ledger !== 'ok' && overrides.ledger !== 'absent') {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'OVERRIDE_LEDGER_ILLEGIBLE',
+        message: `The operator-override audit ledger for this project is \`${overrides.ledger}\`: `
+          + `${describeIllegibleLedger(overrides.ledger)} While it reads this way the snapshot witness and the `
+          + 'mint-count comparison are not asked, and the per-run abuse guard reads the same file, so nothing '
+          + `here can tell you which runs were overridden. ${describeOverrideEvidence(overrides)}`,
+      });
+    }
+    if (overrides.forgedLines > 0) {
       findings.push({
         severity: 'fix-needed',
         code: 'OVERRIDE_LEDGER_UNVERIFIED',
@@ -142,7 +399,7 @@ export function buildFindings({
         // way anyone learns the file was written by something that did not hold
         // the per-install key — or that the key itself was replaced, which
         // invalidates every override previously minted on this machine.
-        message: `${overrides.unvouchable} operator-override ledger line(s) cannot be verified against this install's key and are being IGNORED. Either the per-install key under the machine dir was rotated/restored from another machine, or something wrote that file directly. No enforcement is relaxed by these lines.`,
+        message: `${overrides.forgedLines} operator-override ledger line(s) parse as tokens and cannot be verified against this install's key, so they are being IGNORED. Either the per-install key under the machine dir was rotated/restored from another machine, or something signed that file with a different secret. No enforcement is relaxed by these lines.`,
       });
     }
     for (const token of overrides.active) {
@@ -157,6 +414,62 @@ export function buildFindings({
         severity: 'info',
         code: 'OPERATOR_OVERRIDE_SPENT',
         message: `${overrides.runMinted} operator override(s) were minted for this run and have expired. Enforcement is back on, but the run remains permanently ineligible for verified/shipped.`,
+      });
+    }
+    // The counts above describe what the override record SAYS. This describes
+    // whether it is still a complete account of itself — and it is the reason
+    // this block exists at all: settlement refuses the whole project on these
+    // ids, so a report that omitted them would print HEALTHY at exactly the
+    // moment nothing can be certified, which is the one outcome the record is
+    // supposed to make impossible.
+    // The mint counter, said out loud in the two states where it is the ONLY
+    // remaining witness and nothing else here would mention it: a counter that
+    // cannot be verified or read, and a counter that can never advance again. The
+    // second is the one worth a finding of its own — `schemaVersion` set to an
+    // unknown integer in `one.json` freezes it while every read reports a signed,
+    // healthy number, so the report said HEALTHY about a witness that had been
+    // switched off. Neither refuses certification (shared/override/
+    // mint-counter.ts states why); a mint is refused instead.
+    if (overrides.mintCounterWritable === false
+      || overrides.mintCounter === 'unverifiable'
+      || overrides.mintCounter === 'unreadable') {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'OVERRIDE_MINT_COUNTER_UNUSABLE',
+        message: `This project's signed operator-override mint counter is \`${overrides.mintCounter}\``
+          + `${overrides.mintCounterWritable === false ? ' and its file will not accept a write' : ''}. `
+          + 'That counter lives in the machine-wide `~/.traffic-one/one.json` and is the only witness to a '
+          + 'minted override that survives deleting the override folder, so while it reads this way an '
+          + 'erasure there would leave nothing behind. A new override cannot be minted until it is fixed. '
+          + `${describeOverrideEvidence(overrides)}`,
+      });
+    }
+    if (overrides.discrepancies.length > 0) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'OVERRIDE_EVIDENCE_INCOMPLETE',
+        message: `The operator-override record for this project no longer accounts for itself (${overrides.discrepancies.join(', ')}), so NO run in this project can settle as verified or shipped. ${describeOverrideEvidence(overrides)} This is deliberate and permanent until an operator reconciles it from a terminal; the repair records what happened, it does not erase it. BEFORE RUNNING IT: it is not free and it is not undoable — a reconciliation permanently refuses verified/shipped for EVERY run this project already has on disk (an erased line took its run id with it, so there is no way to forgive one run without forgiving all of them), and it pins this project's mint counter. Work started after it certifies normally. It refuses outright when the record is merely unreadable, which is the case worth checking first.`,
+        recommendedCommand: overrides.repairCommand,
+      });
+    }
+    if (overrides.duplicateLines > 0) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'OVERRIDE_LEDGER_DUPLICATED',
+        // Counted once by every witness, so no verdict moves — which is exactly
+        // why it has to be said out loud. No honest mint writes a line twice.
+        message: `${overrides.duplicateLines} operator-override ledger line(s) are byte-identical copies of another line. Each signed mint is counted once regardless, so nothing is relaxed by the copies, but something rewrote that file.`,
+      });
+    }
+    if (overrides.excused.length > 0) {
+      findings.push({
+        severity: 'info',
+        code: 'OVERRIDE_EVIDENCE_RECONCILED',
+        // Says WHICH state is held still, rather than "any further change refuses
+        // again" — the earlier wording promised a boundary the acknowledgement did
+        // not have, and three overrides went through underneath it. What it
+        // actually pins is enumerated because that list is the guarantee.
+        message: `An operator reconciled this project's override record: ${overrides.excused.join(', ')} ${overrides.excused.length === 1 ? 'is' : 'are'} accounted for by a signed acknowledgement, and the runs that existed when it was signed stay permanently ineligible for verified/shipped. The acknowledgement pins the exact state it forgave — the ledger's bytes, the snapshot files present, and this project's mint counter and its value — so a later mint, a new or removed snapshot, an edited ledger or a counter that disappears all refuse again. It does not cover runs started afterwards: those certify normally, which is the point of the repair. ${describeOverrideEvidence(overrides)}`,
       });
     }
   }
@@ -401,11 +714,19 @@ export function buildFindings({
     }
   }
 
-  if (Array.isArray(project.nestedTrafficOneRoots) && project.nestedTrafficOneRoots.length > 0) {
+  const nestedRoots = strayNestedTrafficOneRoots(project);
+  if (nestedRoots.strays.length > 0) {
     findings.push({
       severity: 'fix-needed',
       code: 'NESTED_TRAFFIC_ONE_ROOTS',
-      message: `Nested Traffic One state roots were found inside this workspace: ${project.nestedTrafficOneRoots.join(', ')}. Hooks will not delete them automatically; inspect them, then use the cleanup runner in apply mode only after confirming the ancestor workspace root is the real project.`,
+      message: `Nested Traffic One state roots were found inside this workspace: ${nestedRoots.strays.join(', ')}. Hooks will not delete them automatically; inspect them, then use the cleanup runner in apply mode only after confirming the ancestor workspace root is the real project.`,
+    });
+  }
+  if (nestedRoots.unknown) {
+    findings.push({
+      severity: 'info',
+      code: 'NESTED_TRAFFIC_ONE_ROOTS_MEMBERSHIP_UNKNOWN',
+      message: `This directory declares a workspace, but its member registry cannot be read (${nestedRoots.unknown.why}), so whether these nested Traffic One state roots belong to registered members is unknown: ${nestedRoots.unknown.roots.join(', ')}. No cleanup advice is offered for them, deliberately — the automatic sweep also withholds deletion under a registry it cannot enumerate, and a report that told you to delete by hand what the sweep spares would be the trap. Repair \`.one.json\` here (or restore it) and re-run doctor; the question is answerable once the registry parses.`,
     });
   }
 
@@ -457,7 +778,7 @@ export function buildFindings({
     });
   }
 
-  if (provider === 'gitnexus' && state?.mode === 'new-project' && project.nvmrc !== null && /^\d+\.\d+\.\d+$/.test(project.nvmrc) && !project.nvmrc.startsWith('22')) {
+  if (provider === 'gitnexus' && isNewProjectMode(state) && project.nvmrc !== null && /^\d+\.\d+\.\d+$/.test(project.nvmrc) && !project.nvmrc.startsWith('22')) {
     findings.push({
       severity: 'fix-needed',
       code: 'NVMRC_PINNED_TO_OLD_NODE',

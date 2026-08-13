@@ -4,7 +4,6 @@
 // token-report/parseCodexJsonlFile.cjs.
 
 import { obj, type Rec } from '../../shared/obj';
-import * as fs from 'fs';
 
 import { emptyStats } from './emptyStats';
 import { emptyTrafficOneEstimate, type TrafficOneEstimate } from './emptyTrafficOneEstimate';
@@ -16,6 +15,7 @@ import {
   estimateTrafficOneInstructionTokens,
   type Stats,
 } from './lib';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 interface CodexSession {
   id: string;
@@ -44,7 +44,7 @@ export function parseCodexJsonlFile(filePath: string): CodexParse {
 
   let text: string;
   try {
-    text = fs.readFileSync(filePath, 'utf8');
+    text = readRegularFileOrThrow(filePath);
   } catch {
     return { session, stats, trafficOne };
   }

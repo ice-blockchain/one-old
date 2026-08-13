@@ -21,6 +21,7 @@ import {
   sessionIdFromFile,
   walkJsonlFiles,
 } from './lib';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 type Rec = Record<string, unknown>;
 
 export interface CanonicalAuthProbe {
@@ -246,7 +247,7 @@ function advanceCodexHookCausalState(parsed: Rec, state: CodexHookCausalState): 
 
 export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv = process.env): SessionDiagnostics | null {
   let text: string;
-  try { text = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+  try { text = readRegularFileOrThrow(filePath); } catch { return null; }
 
   const diagnostics: SessionDiagnostics = {
     id: sessionIdFromFile(filePath),

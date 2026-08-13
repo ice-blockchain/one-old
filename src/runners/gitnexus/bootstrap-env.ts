@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { copyTreeStrict } from '../../shared/copy-tree';
 import { exec } from '../../shared/exec';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
 import { pruneTrafficOneBackups } from '../../shared/retention';
@@ -24,6 +25,7 @@ import {
   findNvmNode22,
   nvmPresent,
 } from './nvm';
+import { copyRegularFile, readRegularBytesOrThrow } from '../../shared/bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -88,7 +90,7 @@ function sha1OfPath(absPath: string): string | null {
     walk(absPath);
     return hash.digest('hex');
   }
-  return crypto.createHash('sha1').update(fs.readFileSync(absPath)).digest('hex');
+  return crypto.createHash('sha1').update(readRegularBytesOrThrow(absPath)).digest('hex');
 }
 
 // `CLAUDE.md` is a symlink to `AGENTS.md` in most Traffic One projects, and both
@@ -119,9 +121,27 @@ function copyRecursive(src: string, dst: string): void {
     }
   }
   if (fs.statSync(src).isDirectory()) {
-    fs.cpSync(src, dst, { recursive: true });
+    // `fs.cpSync` SILENTLY OMITS a FIFO or a socket inside the tree (measured on
+    // node v26.5.0: returns in ~2 ms, destination missing the entry) and ABORTS
+    // THE PROCESS on a symlink loop — exit 134, past both `try/catch` and
+    // `uncaughtException`, which the `catch { /* best-effort */ }` in
+    // `backupConflicts` cannot see. `.claude/skills` is one of CONFLICT_PATHS, so
+    // this is the ORDINARY path of the gitnexus backup and not an exotic one, and
+    // `recorded.push` runs immediately after it.
+    copyTreeStrict(src, dst);
   } else {
-    fs.copyFileSync(src, dst);
+    // The managed binary: `copyRegularFile` carries the source's mode across, so
+    // the executable bit survives a copy that `open(dst, 'w')` would have created
+    // 0o644. THE ANSWER IS RAISED, not discarded: this function is the BACKUP
+    // WRITER, and `backupConflicts` pushes `{ rel, sha }` unconditionally after
+    // it returns — the same phantom shape `git-sandbox.ts` was fixed for. What
+    // saved it from the same cost was luck (`restoreIfOverwritten` only `rmSync`s
+    // a live path that is a DIRECTORY, so a phantom file backup restored nothing
+    // rather than destroying something), and luck is not the rule
+    // `copyRegularFile`'s docblock states.
+    if (!copyRegularFile(src, dst)) {
+      throw new Error(`cannot back up ${src}: not a regular file — refusing to record a backup that is not there`);
+    }
   }
 }
 
@@ -151,7 +171,21 @@ export function backupConflicts(cwd: string, runStamp: string): Backups {
   for (const rel of CONFLICT_PATHS) {
     const src = path.join(cwd, rel);
     if (!fs.existsSync(src)) continue;
-    live.push({ rel, sha: sha1OfPath(src) });
+    // `sha1OfPath` REFUSES a non-regular file (`readRegularBytesOrThrow`), and this
+    // loop used to let that throw escape: `bootstrap.ts:266` calls
+    // `backupConflicts` unguarded, so `AGENTS.md -> /dev/zero` — mode 120000, so
+    // clone-deliverable through an ordinary pull request — turned the whole
+    // gitnexus bootstrap into a thrown error instead of a skipped backup.
+    // DRIVEN before the change: `Error: <tmp>/AGENTS.md cannot be read
+    // (not-a-regular-file)` out of `backupConflicts`, with nothing recorded.
+    // `sha: null` is the right answer and already means all the right things
+    // downstream: `snapshotMatchesLive` requires `Boolean(sha)`, so no reuse; and
+    // `restoreIfOverwritten` requires both shas, so no restore. It also means the
+    // backup WRITER is now reached for such a path, which is what makes its
+    // refusal load-bearing rather than decorative.
+    let sha: string | null = null;
+    try { sha = sha1OfPath(src); } catch { sha = null; }
+    live.push({ rel, sha });
   }
   // Skip the snapshot entirely when the newest one already holds exactly this
   // content. Bootstrap runs many times per session and each run re-snapshotted

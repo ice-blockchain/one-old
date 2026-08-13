@@ -187,6 +187,25 @@ export function refreshPendingResolution(
   observation: CursorSpawnObservation,
 ): CursorSpawnObservation {
   if (!observation.outcome || !observation.childTranscriptId) return observation;
+  // A ROW THIS RUN DID NOT OBSERVE. `traffic-one-reset` copies the spawn
+  // observations onto the successor so a child transcript stays correlatable
+  // and the retired run's prescription ("retry role R only on model X") is not
+  // refunded. Re-deriving that resolution here would re-mint its INPUTS'
+  // conclusions against the successor: the carried exhaustion entries plus a
+  // carried finalized failure resolve to `terminal` — the non-expiring marker
+  // the obligation table withholds until WIDEN_AT resets — and to
+  // `choicePrompted`, the human-reply latch the table carries only when the
+  // retired run recorded no answer. Measured at zero prior resets with nothing
+  // widened: the bound reserved for the third reset was present after the
+  // first, so the ladder was a gate on the COPY rather than on the state.
+  //
+  // Carrying the resolution and re-deriving it are different acts, and only the
+  // first is what the reset row claims: the row keeps the directive and the
+  // prescribed model it arrived with, and mints nothing. A genuinely NEW
+  // failure in the successor is a new observation with no carry stamp, resolves
+  // normally, and mints the terminal marker on its own merits — which is what
+  // keeps this from being a way to launder the bound.
+  if (observation.carriedFromRunId) return observation;
   const resolution = resolutionFor(cwd, runId, observation, observation.outcome);
   if (resolution.choicePrompted) markModelChoicePrompted(cwd, runId);
   if (resolution.terminal && !modelExhaustionTerminalForRole(cwd, runId, observation.role)) {
@@ -227,9 +246,19 @@ export function claimCursorParentPendingFollowups(
         { state, raw, nowMs: observedAtMs },
       );
       if (!selected) continue;
+      // THE SPENT-FLAGS FILTER RUNS FIRST, and the order is the property. These
+      // three are one-shot markers: whatever this head's resolution is, it has
+      // already been emitted, handled or suppressed, so no follow-up can come
+      // out of this pass. Refreshing before testing them meant a fully spent
+      // head still drove `refreshPendingResolution`'s side effects — it could
+      // mint a bound while the `continue` below suppressed the very question
+      // that would have explained it. None of the three is written by the
+      // refresh, so testing them on `selected.head` is the same answer, taken
+      // before anything can be written.
+      if (selected.head.retryHandled || selected.head.followupEmitted
+        || selected.head.followupSuppressed) continue;
       const head = refreshPendingResolution(cwd, runId, selected.head);
-      if (!head.outcome || !head.childTranscriptId || !head.directive
-        || head.retryHandled || head.followupEmitted || head.followupSuppressed) continue;
+      if (!head.outcome || !head.childTranscriptId || !head.directive) continue;
       prepared.push({
         parentSessionId,
         role,

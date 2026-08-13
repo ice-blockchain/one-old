@@ -80,7 +80,7 @@ let cachedSpec: Record<string, ToolSpec> | null = null;
 export function loadSpec(): Record<string, ToolSpec> {
   if (cachedSpec !== null) return cachedSpec;
   try {
-    const parsed = JSON.parse(fs.readFileSync(SPEC_PATH, 'utf8'));
+    const parsed = JSON.parse(readRegularFileOrThrow(SPEC_PATH));
     cachedSpec = (parsed && parsed.tools) || {};
   } catch {
     cachedSpec = {};
@@ -97,6 +97,7 @@ export function getToolSpec(toolName: string): ToolSpec | null {
 // modules can use them without importing a runner; re-exported here for the
 // runners' existing import sites.
 import { managedNpmBin } from '../../shared/toolchain-paths';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export {
   managedNpmBin,

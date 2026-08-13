@@ -21,9 +21,13 @@ import { PENDING_AGENT_CLAIM_STALE_MS, SUBAGENT_STALE_MS } from '../../config/st
 import { readJson } from '../../shared/fsjson';
 import { obj, type Rec } from '../../shared/obj';
 import {
+  SETTLEMENT_RECORD_ILLEGIBLE_CHECK,
   effectiveLegacyRunOutcome,
   effectiveLegacyRunStatus,
-  readRunSettlement,
+  readRunSettlementResult,
+  runSettlementIllegible,
+  runSettlementQuarantinePath,
+  type RunSettlementLegibility,
 } from '../../shared/run-settlement';
 import { readDecisions, type DecisionRecord } from '../../shared/state/decision-log';
 import { listClaimedAgents } from '../../shared/state/run-agent/claims-store';
@@ -64,6 +68,22 @@ export interface LedgerDiagnostic {
   readonly effectiveOutcome: string | null;
   readonly canonicalStatus: string | null;
   readonly canonicalReason: string | null;
+  // WHY `canonicalStatus` is null, which it structurally cannot say on its own:
+  // 'absent' is a legacy/V1 run that never had a canonical record, and every
+  // other non-'ok' value is a record that IS there and could not be read. The
+  // report printed "(no settlement-v2.json — legacy/V1 run)" for both, so a run
+  // whose every settlement write was being refused rendered byte-identically to
+  // a healthy legacy one. See run-settlement/io.ts's `RunSettlementLegibility`.
+  readonly canonicalLegibility: RunSettlementLegibility;
+  // Where this writer preserved the illegible bytes, when they are on disk.
+  // Non-null after the writer has rebuilt over a damaged record, which is the
+  // state in which `canonicalLegibility` has gone back to 'ok' and the only
+  // remaining traces are this file and the marker below.
+  readonly canonicalQuarantinePath: string | null;
+  // The permanent consequence, read out of the (legible) record itself: this
+  // run's canonical settlement was found damaged at least once, so it can never
+  // certify. Survives the repair, unlike `canonicalLegibility`.
+  readonly canonicalIllegibleOnce: boolean;
   readonly qaContractVersion: number | null;
   readonly statusUpdatedAt: string | null;
   // Non-null only when the V2 rollback barrier is active and the raw/effective
@@ -71,6 +91,40 @@ export interface LedgerDiagnostic {
   // run-settlement/projection.ts's header warns readers about (a run.json that
   // physically says `failed`/`agent-failed` over a run that is alive).
   readonly rollbackBarrierNote: string | null;
+}
+
+/**
+ * ABSENT vs ILLEGIBLE, in the operator's terms. `(no settlement-v2.json —
+ * legacy/V1 run)` was printed for BOTH: a hash-damaged record and a genuine
+ * legacy run rendered byte-identically, while the damaged one had every
+ * settlement write refused. The sentence a reader took away from it was the one
+ * thing that was false — that there is no file.
+ *
+ * Spelled per kind (the same shape findings.ts's `describeIllegibleLedger` uses
+ * for the override ledger) because the three causes differ and only one of them
+ * is a permissions problem.
+ *
+ * HERE rather than in the renderer, and exported, because the report and the
+ * machine-readable finding must say the same thing about the same bytes — the
+ * one-voice rule the override findings already follow. A reader who gets a
+ * different account from `doctor --run` and `doctor --bundle` has to work out
+ * which of the two is stale before they can act on either.
+ */
+export function describeSettlementLegibility(ledger: LedgerDiagnostic): string {
+  if (ledger.canonicalLegibility === 'corrupt') {
+    return 'settlement-v2.json IS PRESENT and is not JSON — a torn write, or the empty file an interrupted '
+      + 'write leaves behind. This is NOT a legacy/V1 run.';
+  }
+  if (ledger.canonicalLegibility === 'malformed') {
+    return 'settlement-v2.json IS PRESENT, parses as JSON, and is not a valid settlement for this run — a '
+      + "wrong shape, another run's record (what copying a run directory produces), or an integrity digest "
+      + 'that does not match its own contents. This is NOT a legacy/V1 run.';
+  }
+  if (ledger.canonicalLegibility === 'unreadable') {
+    return 'settlement-v2.json IS PRESENT and could not be read at all (permissions, a directory in its '
+      + 'place, or an I/O error). This is NOT a legacy/V1 run.';
+  }
+  return 'settlement-v2.json parses and names this run.';
 }
 
 export interface DenyTally {
@@ -187,6 +241,25 @@ function diagnoseLiveAgents(cwd: string, runId: string): LiveAgentDiagnostic[] {
 // say explicitly when they disagree, so this probe cannot re-create the two
 // investigations that trap already cost.
 function diagnoseLedger(cwd: string, runId: string): LedgerDiagnostic {
+  // READ BEFORE THE LEDGER IS EVEN CHECKED, because the two damaged halves
+  // travel together: the recoverability drill's wedge is a damaged settlement
+  // UNDER a corrupt or missing `run.json`, and the early return below used to
+  // leave every settlement field null for exactly that pair — the one shape
+  // where an operator most needs to be told there are two things to fix.
+  const settlementRead = readRunSettlementResult(cwd, runId);
+  const settlement = settlementRead.settlement;
+  const canonical = {
+    canonicalStatus: settlement?.status ?? null,
+    canonicalReason: settlement?.reason ?? null,
+    canonicalLegibility: settlementRead.kind,
+    canonicalQuarantinePath: fs.existsSync(runSettlementQuarantinePath(cwd, runId))
+      ? runSettlementQuarantinePath(cwd, runId)
+      : null,
+    canonicalIllegibleOnce: Boolean(
+      settlement?.incompleteChecks.includes(SETTLEMENT_RECORD_ILLEGIBLE_CHECK)
+      || runSettlementIllegible(settlementRead.kind),
+    ),
+  };
   const raw = obj(readJson(runLedgerFile(cwd, runId), null));
   if (!raw) {
     return {
@@ -195,8 +268,7 @@ function diagnoseLedger(cwd: string, runId: string): LedgerDiagnostic {
       rawOutcome: null,
       effectiveStatus: null,
       effectiveOutcome: null,
-      canonicalStatus: null,
-      canonicalReason: null,
+      ...canonical,
       qaContractVersion: null,
       statusUpdatedAt: null,
       rollbackBarrierNote: null,
@@ -204,8 +276,7 @@ function diagnoseLedger(cwd: string, runId: string): LedgerDiagnostic {
   }
   const effectiveStatus = effectiveLegacyRunStatus(raw) || null;
   const effectiveOutcome = effectiveLegacyRunOutcome(raw) || null;
-  const settlement = readRunSettlement(cwd, runId);
-  const canonicalStatus = settlement?.status ?? null;
+  const canonicalStatus = canonical.canonicalStatus;
   const rawStatus = typeof raw.status === 'string' ? raw.status : null;
   const barrierActive = Boolean(raw.runtimeV2RollbackGuard);
   const rollbackBarrierNote = barrierActive && canonicalStatus && canonicalStatus !== effectiveStatus
@@ -219,8 +290,7 @@ function diagnoseLedger(cwd: string, runId: string): LedgerDiagnostic {
     rawOutcome: typeof raw.outcome === 'string' ? raw.outcome : null,
     effectiveStatus,
     effectiveOutcome,
-    canonicalStatus,
-    canonicalReason: settlement?.reason ?? null,
+    ...canonical,
     qaContractVersion: typeof raw.qaContractVersion === 'number' ? raw.qaContractVersion : null,
     statusUpdatedAt: typeof raw.statusUpdatedAt === 'string' ? raw.statusUpdatedAt : null,
     rollbackBarrierNote,

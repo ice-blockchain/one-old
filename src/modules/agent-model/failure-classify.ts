@@ -5,18 +5,35 @@
 
 export type ModelFailureKind = 'api-limit' | 'model-unavailable' | 'generic';
 
+// `API/usage limit` is the spelling THIS PRODUCT ships — seven times in
+// record-agent.ts, once in model-rotation.ts, and in two SKILL.md documents an
+// orchestrator is told to act on. A slash is therefore not an exotic separator
+// here, it is the house one, and admitting only whitespace and hyphen meant
+// every shipped directive read as `generic`.
+//
+// The subject and the auxiliary run are shared subpatterns rather than repeated
+// spellings because the positive matcher and NEGATED_API_LIMIT_CLAIM_RE must
+// admit the SAME sentences. Widen one alone and a negative claim ("no API/usage
+// limit was reached") matches positively and goes unstripped, which condemns a
+// model that reported success — so the symmetry is the load-bearing property,
+// and a shared constant is what keeps it from being broken one site at a time.
+const API_USAGE_SUBJECT = String.raw`api(?:[\s/]+usage)?`;
+// `has been`, `have been`, `is being`: two words, where an alternation of single
+// words admits only the ungrammatical halves of each.
+const LIMIT_AUXILIARY_RUN = String.raw`(?:(?:has|have|had|was|were|is|are|been|being)\s+){0,3}`;
+
 const API_LIMIT_CODES_RE = /\b(?:api_limit_exceeded|rate_limit_exceeded|resource_exhausted|error_rate_limited_changeable)\b/i;
 const HTTP_RATE_LIMIT_RE = /\b(?:http(?:\s+status)?\s*[:=]?\s*429|status(?:\s+code)?\s*[:=]?\s*429|429\s*[-:]?\s*too\s+many\s+requests|too\s+many\s+requests)\b/i;
 const NAMED_LIMIT_RE = new RegExp(
-  String.raw`\bapi(?:\s+usage)?\s*[- ]?limit\b`
+  String.raw`\b${API_USAGE_SUBJECT}\s*[- ]?limit\b`
   + '|'
-  + String.raw`\b(?:api(?:\s+usage)?|usage|rate)\s*[- ]?limit(?:s)?\s+(?:has\s+|have\s+|was\s+|were\s+|is\s+|been\s+)?(?:exceeded|reached|hit)\b`
+  + String.raw`\b(?:${API_USAGE_SUBJECT}|usage|rate)\s*[- ]?limit(?:s)?\s+${LIMIT_AUXILIARY_RUN}(?:exceeded|reached|hit)\b`
   + '|'
-  + String.raw`\b(?:hit|exceeded|reached|reaching)\s+(?:the\s+|an\s+|your\s+|our\s+)?(?:api(?:\s+usage)?|usage|rate)\s*[- ]?limit(?:s)?\b`
+  + String.raw`\b(?:hit|exceeded|reached|reaching)\s+(?:the\s+|an\s+|your\s+|our\s+)?(?:${API_USAGE_SUBJECT}|usage|rate)\s*[- ]?limit(?:s)?\b`
   + '|'
   + String.raw`\brate[- ]limited\b`
   + '|'
-  + String.raw`\busage\s+cap\s+(?:has\s+|was\s+|is\s+)?(?:exceeded|reached|hit)\b`,
+  + String.raw`\busage\s+cap\s+${LIMIT_AUXILIARY_RUN}(?:exceeded|reached|hit)\b`,
   'i',
 );
 const QUOTA_LIMIT_RE = new RegExp(
@@ -32,15 +49,15 @@ const QUOTA_LIMIT_RE = new RegExp(
 // limit was reached"). Stripping only grammatically-negated clauses keeps a
 // later, independent positive error in the same text detectable.
 const NEGATED_API_LIMIT_CLAIM_RE = new RegExp(
-  String.raw`\bno\s+(?:api(?:\s+usage)?|usage|rate)\s*[- ]?limit(?:s)?(?:\s+(?:was|were|is|has\s+been))?(?:\s+(?:reached|hit|exceeded))?\b`
+  String.raw`\bno\s+(?:${API_USAGE_SUBJECT}|usage|rate)\s*[- ]?limit(?:s)?(?:\s+${LIMIT_AUXILIARY_RUN})?(?:\s*(?:reached|hit|exceeded))?\b`
   + '|'
-  + String.raw`\b(?:api(?:\s+usage)?|usage|rate)\s*[- ]?limit(?:s)?\s+(?:was|were|is|has\s+been)\s+not\s+(?:reached|hit|exceeded)\b`
+  + String.raw`\b(?:${API_USAGE_SUBJECT}|usage|rate)\s*[- ]?limit(?:s)?\s+${LIMIT_AUXILIARY_RUN}not\s+(?:reached|hit|exceeded)\b`
   + '|'
-  + String.raw`\b(?:did|does|do|has|have)\s+not\s+(?:reach|hit|exceed)\s+(?:the\s+|an\s+|your\s+|our\s+)?(?:api(?:\s+usage)?|usage|rate)\s*[- ]?limit(?:s)?\b`
+  + String.raw`\b(?:did|does|do|has|have)\s+not\s+(?:reach|hit|exceed)\s+(?:the\s+|an\s+|your\s+|our\s+)?(?:${API_USAGE_SUBJECT}|usage|rate)\s*[- ]?limit(?:s)?\b`
   + '|'
   + String.raw`\bnot\s+rate[- ]limited\b`
   + '|'
-  + String.raw`\bwithout\s+(?:reaching|hitting|exceeding)\s+(?:the\s+|an\s+|your\s+|our\s+)?(?:api(?:\s+usage)?|usage|rate)\s*[- ]?limit(?:s)?\b`
+  + String.raw`\bwithout\s+(?:reaching|hitting|exceeding)\s+(?:the\s+|an\s+|your\s+|our\s+)?(?:${API_USAGE_SUBJECT}|usage|rate)\s*[- ]?limit(?:s)?\b`
   + '|'
   + String.raw`\bno\s+quota(?:\s+limit)?(?:\s+(?:was|were|is|has\s+been))?(?:\s+(?:reached|hit|exceeded))?\b`
   + '|'

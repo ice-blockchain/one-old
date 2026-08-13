@@ -15,16 +15,18 @@ import {
   hasValidPerformanceState,
   hasValidProjectContext,
   hasValidTeamState,
+  isNewProjectMode,
   isTeamApproved,
   normalizeState,
 } from '../../shared/state';
 import { platformPathContains, resolvePlatformPath } from './path-identity';
+import { openRegularFd, readRegularFileOrThrow } from '../../shared/bounded-read';
 
 type Rec = Record<string, unknown>;
 export const which = exec.which;
 
 export function safeRead(filePath: string): string | null {
-  try { return fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+  try { return readRegularFileOrThrow(filePath); } catch { return null; }
 }
 
 export function safeStat(p: string): fs.Stats | null {
@@ -156,7 +158,7 @@ export function walkJsonlFiles(dir: string, out: string[] = []): string[] {
 export function readFirstJsonlObject(filePath: string): Rec | null {
   let text = '';
   try {
-    const fd = fs.openSync(filePath, 'r');
+    const fd = openRegularFd(filePath);
     try {
       const buffer = Buffer.alloc(256 * 1024);
       const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
@@ -236,9 +238,23 @@ export function onboardingStateIssues(rawState: Rec | null, state: Rec | null): 
   const issues: string[] = [];
   if (!state || typeof state !== 'object') return ['state file is not a JSON object'];
   const mode = state.mode || rawState?.projectMode;
-  if (mode !== 'new-project') return issues;
+  // WHETHER these checks apply, asked through the predicate every other consumer
+  // of the mode asks (state/lifecycle.ts): a hand-edited ` New-Project ` is a
+  // scaffolded project to the gates, to materialization and to skill filtering,
+  // and it must not be a project this report declines to inspect. The legacy
+  // `projectMode` fallback is preserved by handing the resolved value to the
+  // predicate rather than the record.
+  if (!isNewProjectMode({ mode })) return issues;
   const persistedState = rawState && typeof rawState === 'object' ? rawState : state;
 
+  // …and WHETHER THE PERSISTED SPELLING IS CANONICAL, which is a different
+  // question and is deliberately still raw. The issue this pushes is literally
+  // named `mode`, and the finding's advice is that the state file is
+  // noncanonical — so routing it through the tolerant predicate would declare
+  // ` New-Project ` canonical and take away the one report that names the drift.
+  // normalizeState only fills a BLANK mode (state/normalize.ts), so a padded
+  // spelling survives to here untouched, and the pair now reads correctly: the
+  // checks apply, and the spelling is reported.
   if (state.mode !== 'new-project') issues.push('mode');
   if (typeof state.stack !== 'string' || !STACK_IDS.has(state.stack)) issues.push('stack');
   if (state.codeGraphProvider !== 'gitnexus' && state.codeGraphProvider !== 'graphify') {

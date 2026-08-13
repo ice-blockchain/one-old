@@ -96,14 +96,20 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
       };
       const codexValidationDeny = (): HookResult | null => {
         if (!codexValidation || (codexValidation.status !== 'unverified' && codexValidation.status !== 'conflict')) return null;
+        // No verbatim copy here any more. The transcription had drifted into a
+        // paraphrase 400 characters shorter than the block: it dropped the exact
+        // task-name contract a replacement spawn has to use, and the reason a
+        // prompt cannot substitute for it (Codex encrypts spawn-message
+        // content). An agent that read the short version and decided to replace
+        // the child had nothing to act on. The generated table renders the
+        // SHIPPED paragraph when SKILL.md is unreadable, so both paths say it.
         return deny(block('agent-reuse-await-codex-meta', {
           ROLE: role,
           RUN_ID: runId,
           AGENT_ID: codexValidation.entry.agentId,
           REASON: codexValidation.reason,
           MARKER: REPLACE_AGENT_MARKER,
-        }, `Agent-reuse gate: run ${runId} has a fresh Codex ${role} registry row for ${codexValidation.entry.agentId}, but Traffic One cannot verify that child's role from line-zero session metadata (${codexValidation.reason}). It will not route continuation to an unverified child or start a duplicate. Retry: the reason above names what is being waited on — a child rollout that has not flushed yet, or a registry row another process held while this hook ran — and both clear without your intervention. Use ${REPLACE_AGENT_MARKER} only when the child is genuinely unusable.`),
-          { denyId: 'agent-reuse-await-codex-meta', denyTarget: role });
+        }), { denyId: 'agent-reuse-await-codex-meta', denyTarget: role });
       };
       // The duplicate spawn is refused either way — a regrant widens the LIVE
       // agent's contract, it never authorises a second agent. What changes is

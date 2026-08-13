@@ -5,18 +5,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SUBAGENT_STALE_MS } from '../../../config/state';
+import { selectAdapter } from '../../../adapters/select';
+import { TOOL_INPUT_KEYS, toolResultPayload } from '../../../shared/tool-result';
 import { agentModelGate } from '../handler';
 import { classifySubagentStop, extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
 import { subagentStartBind } from '../subagent-bind';
 import { opencodeSubagentBind } from '../opencode-subagent-bind';
-import { inferTrafficOneSpawnRole, inferTrafficOneSpawnRoleEvidence } from '../role-infer';
+import { SPAWN_BRIEF_KEYS, inferTrafficOneSpawnRole, inferTrafficOneSpawnRoleEvidence } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted, markVerifyGateDenied } from '../../../shared/opencode-roles';
-import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext, runLedgerAdmitsClaims, transitionRunStatus } from '../../../shared/state';
+import { REPLACE_AGENT_MARKER, claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, observeCodexChildModel, readCodexModelObservation, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext, runLedgerAdmitsClaims, subagentContinuationAvailable, transitionRunStatus } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, HookResult, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
@@ -2910,6 +2912,23 @@ function postSpawnCtx(
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+// The same PostToolUse spawn context, but with the RESULT placed wherever the
+// host under test actually puts it. `postSpawnCtx` above always writes the
+// `tool_response` wrapper, which only three of the seven hosts send.
+function postSpawnCtxRawResult(
+  cwd: string,
+  raw: Record<string, unknown>,
+  host: 'claude' | 'cursor' | 'copilot',
+  rawName = 'Task',
+): Ctx {
+  const input: HookInput = {
+    event: 'PostToolUse', host, cwd,
+    raw: { tool_name: rawName, session_id: 'parent-1', ...raw },
+    tool: { class: 'spawn-agent' as ToolClass, rawName },
+  };
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
+}
+
 function observeCursorSpawn(
   cwd: string,
   runId: string,
@@ -3061,6 +3080,2189 @@ test('mid-run API-limit stop anchors fallback on the role original tier, not the
     } finally {
       if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN; else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     }
+  });
+});
+
+/**
+ * The wrapper key is not where a result lives on most hosts. Cursor spreads it
+ * across flat top-level fields, and reading only `tool_response`/`toolResponse`/
+ * `tool_result`/`toolResult` saw NOTHING there — so a subagent that had already
+ * died was re-recorded as live (Cursor prints `Agent ID:` for a stopped run too)
+ * and the reuse gate then demanded continuation of a dead agent.
+ *
+ * Same fixture as the wrapper test above; only the PLACE the result arrives in
+ * differs.
+ */
+test('a dead subagent is retired from a flat payload that names no wrapper key', () => {
+  withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
+    const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    try {
+      setCurrentRunId(cwd, 'run-flat-stop');
+      freezeRunPolicy(cwd, 'cursor', 'run-flat-stop');
+      observeCursorSpawn(
+        cwd,
+        'run-flat-stop',
+        'senior-frontend',
+        'gpt-5.6-terra-medium',
+        'highest',
+        CURSOR_HIGHEST_FAMILY,
+        'tool_77777777-7777-4777-8777-777777777777',
+      );
+      recordRunAgent(cwd, 'run-flat-stop', 'senior-frontend', {
+        agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+        toolCallId: 'tool_77777777-7777-4777-8777-777777777777',
+        parentSessionId: 'parent-1',
+      });
+
+      const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+        tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: 'build the UI' },
+        // Flat: the status and the text are siblings of the tool name, with no
+        // container naming either of them.
+        status: 'error',
+        output: 'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 — stopped: you have hit your API usage limit.',
+        exit_code: 1,
+      }, 'cursor'));
+      assert.equal(result.kind, 'noop', 'Cursor PostTool persists; parent reconciliation owns delivery');
+
+      const registry = readRunAgentRegistry(cwd, 'run-flat-stop');
+      assert.equal(registry['senior-frontend']?.replaced, true, 'the dead agent is retired from a flat result too');
+      const durable = listCursorSpawnObservations(cwd, 'run-flat-stop')[0];
+      assert.equal(durable?.outcome, 'api-limit', 'the flat result is correlated with the same outcome as a wrapped one');
+      assert.match(durable?.directive || '', /Retry the same role now/i);
+    } finally {
+      if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN; else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    }
+  });
+});
+
+/**
+ * Copilot's result key is not established anywhere in this tree, so the shape it
+ * arrives in is the one case no key list could have covered. Reading the payload
+ * rather than a named wrapper is what keeps a stop signal legible there — the
+ * classifier's own evidence rules are unchanged, it is only no longer looking in
+ * a field this host never sends.
+ */
+test('a dead subagent is retired when the result sits in an envelope nothing names (Copilot)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-copilot-stop');
+    freezeRunPolicy(cwd, 'copilot', 'run-copilot-stop');
+    recordRunAgent(cwd, 'run-copilot-stop', 'senior-frontend', {
+      agentId: 'copilotchild12345',
+      resumeId: 'copilotchild12345',
+      parentSessionId: 'parent-1',
+    });
+
+    const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: { agent_type: 'traffic-one:senior-frontend', model: 'composer-2.5-fast', prompt: 'build the UI' },
+      execution_record: { status: 'stopped', text: 'API usage limit reached.' },
+    }, 'copilot'));
+
+    assert.equal(result.kind, 'context', 'the orchestrator is told to respawn instead of waiting on a dead agent');
+    if (result.kind === 'context') {
+      assert.match(result.context, /senior-frontend/);
+      assert.match(result.context, /API\/usage limit/i);
+    }
+    const registry = readRunAgentRegistry(cwd, 'run-copilot-stop');
+    assert.equal(registry['senior-frontend']?.replaced, true, 'dead agent retired from the reuse registry');
+  });
+});
+
+/**
+ * P1, in both directions: the structured verdict is read wherever a host wrapped
+ * it, and only there.
+ *
+ * `toolResultPayload` unwraps the four WRAPPER spellings and never a container,
+ * so a result reporting `status:'error'` while naming no incident vocabulary was
+ * legible under `tool_response` and INVISIBLE under every other envelope — the
+ * classifier answered null, `recordSpawnedAgent` fell through to the id branch,
+ * and the dead child was written back as this run's live reusable agent. The
+ * end-to-end row below is that defect; this row is the classification underneath
+ * it, over every envelope the tree either names as a container or constructs as
+ * a guess.
+ *
+ * Constructed directly rather than through an adapter, deliberately: the question
+ * is the envelope's NAME, and no host lift is involved in answering it. Two of the
+ * five (`output`, `tool_info`) are containers this tree names from host
+ * documentation and installed wrappers rather than from a guess, which is what
+ * makes this independent of the Copilot guess. It is NOT a claim of observed
+ * shapes: no recorded tool-result payload exists in this tree for any of the seven
+ * hosts, so every payload here is constructed.
+ *
+ * The bound is pinned with it. One level, because an envelope is a container and
+ * not a tree: a verdict two levels down belongs to some nested child.
+ *
+ * And WHAT is read at each depth is pinned beside WHERE, because widening the
+ * where without narrowing the what introduced a new false positive in the
+ * live-agent-retiring direction. The `metadata`/`results`/`child_reports` rows
+ * below are that defect: a flat "every record child is a verdict source" list read
+ * a nested `error` as THIS tool call's failure, and made the answer depend on which
+ * child the host serialized first.
+ */
+test('the structured verdict is read one level into an envelope, and no further', () => {
+  const ENVELOPES = ['tool_response', 'execution_record', 'tool_output', 'output', 'tool_info'];
+  const LIMIT = 'you have hit your API usage limit';
+  const rows: { label: string; response: unknown; strict: boolean; expected: string | null }[] = [
+    // The flat payload has no envelope at all: the verdict is the payload's own
+    // top level, and a reader that only looked one level DOWN would lose it.
+    { label: 'flat payload: status error', response: { status: 'error', output: 'the child crashed.' }, strict: true, expected: 'stopped' },
+    { label: 'flat payload: status completed beside limit prose', response: { status: 'completed', output: LIMIT }, strict: false, expected: null },
+    // Success is decided before failure WITHIN a source, and the payload's own
+    // verdict is decided before any envelope's. Both orders are the behaviour
+    // that shipped; neither is incidental.
+    { label: 'flat payload: a success status outranks a non-empty error beside it', response: { status: 'completed', error: 'a handled glitch' }, strict: false, expected: null },
+    { label: 'the payload own verdict outranks an envelope it carries', response: { status: 'completed', execution_record: { status: 'error' } }, strict: false, expected: null },
+    // A nested child's `error` is that CHILD'S. Read as the tool's own it retires
+    // a live agent over a warning, a partial result, or a grandchild's death —
+    // measured, all three of these classified `stopped` under the flat list.
+    { label: 'a nested metadata warning is not this tool call failing', response: { metadata: { error: 'a deprecation warning' }, execution_record: { status: 'completed' } }, strict: true, expected: null },
+    { label: 'the same payload with the envelope FIRST in key order', response: { execution_record: { status: 'completed' }, metadata: { error: 'a deprecation warning' } }, strict: true, expected: null },
+    { label: 'a nested partial result is not this tool call failing', response: { results: { error: '1 file skipped' } }, strict: true, expected: null },
+    { label: 'a sub-sub agent death is not this tool call failing', response: { child_reports: { error: 'the sub-sub agent died' } }, strict: true, expected: null },
+    // At the result's OWN top level a bare `error` IS the tool reporting failure,
+    // which is the asymmetry the depth split exists to express.
+    { label: 'a bare error at the payload own top level is a failure', response: { error: 'the child crashed.' }, strict: true, expected: 'stopped' },
+    // Two envelopes DISAGREEING is the only shape that can pin how children are
+    // resolved, and the flat list resolved it by serialization order: whichever
+    // child the host happened to write first decided whether a run kept its agent.
+    // Success outranks failure, in both key orders, because the wrong direction
+    // here retires a live agent.
+    {
+      label: 'two envelopes disagree: success outranks failure',
+      response: { results: { status: 'completed' }, execution_record: { status: 'failed' } },
+      strict: true,
+      expected: null,
+    },
+    {
+      label: 'the same disagreement in the other key order',
+      response: { execution_record: { status: 'failed' }, results: { status: 'completed' } },
+      strict: true,
+      expected: null,
+    },
+  ];
+  for (const envelope of ENVELOPES) {
+    rows.push(
+      {
+        label: `${envelope}: a status-only failure, no incident vocabulary anywhere`,
+        response: { [envelope]: { status: 'error', text: 'the child crashed.' } },
+        strict: true,
+        expected: 'stopped',
+      },
+      {
+        label: `${envelope}: the same failure naming a limit in the RESULT`,
+        response: { [envelope]: { status: 'error', text: LIMIT } },
+        strict: true,
+        expected: 'api-limit',
+      },
+      {
+        label: `${envelope}: an explicit success envelope still wins over limit prose inside the report`,
+        response: { [envelope]: { status: 'completed', text: `Report: ${LIMIT} was handled.` } },
+        strict: false,
+        expected: null,
+      },
+      {
+        label: `${envelope}: is_error rather than a word status`,
+        response: { [envelope]: { is_error: true, text: 'the child crashed.' } },
+        strict: true,
+        expected: 'stopped',
+      },
+      {
+        label: `${envelope}: a verdict TWO levels down is some nested child's, not the tool's`,
+        response: { [envelope]: { child: { status: 'error' } } },
+        strict: true,
+        expected: null,
+      },
+      {
+        label: `${envelope}: a success status inside it outranks a non-empty error beside it`,
+        response: { [envelope]: { status: 'completed', error: 'a handled glitch' } },
+        strict: false,
+        expected: null,
+      },
+      // What refusing a nested bare `error` costs, stated where it is paid: an
+      // envelope whose ONLY signal is an `error` field no longer counts as a
+      // structured failure. On the hosts that send envelopes the text fallback
+      // still reads it, so a real incident is still classified; under Cursor's
+      // structured-failure requirement it is not — and Cursor sends no envelope.
+      {
+        label: `${envelope}: a bare error inside it is still read as TEXT`,
+        response: { [envelope]: { error: 'you have hit your API usage limit' } },
+        strict: false,
+        expected: 'api-limit',
+      },
+      {
+        label: `${envelope}: but a bare error inside it is not a STRUCTURED failure`,
+        response: { [envelope]: { error: 'the child crashed.' } },
+        strict: true,
+        expected: null,
+      },
+    );
+  }
+  // Key order is not evidence. The same logical payload serialized with its
+  // children in different orders must classify identically — measured, the flat
+  // every-record-child list answered `failure` or `success` depending only on
+  // which child the host happened to put first.
+  const children: [string, unknown][] = [
+    ['metadata', { error: 'a deprecation warning' }],
+    ['execution_record', { status: 'completed' }],
+    ['child_reports', { error: 'the sub-sub agent died' }],
+  ];
+  const byOrder = new Set([[0, 1, 2], [2, 1, 0], [1, 0, 2], [1, 2, 0]].map((order) => String(
+    classifySubagentStop(Object.fromEntries(order.map((index) => children[index]!)), true),
+  )));
+  assert.deepEqual([...byOrder], ['null'], 'the verdict changed with the order the host serialized its children in');
+  const misread = rows
+    .filter((row) => classifySubagentStop(row.response, row.strict) !== row.expected)
+    .map((row) => `${row.label} → ${String(classifySubagentStop(row.response, row.strict))}`);
+  assert.deepEqual(misread, [], 'these envelopes were classified wrongly');
+});
+
+/**
+ * A SUCCESS MARKER IS A SUCCESS IN EVERY SPELLING THIS READER READS — and the set
+ * it reads is now bounded by evidence rather than by symmetry.
+ *
+ * `status` and `state` are read as the same field, so a child reporting SUCCESS in
+ * either cannot fall through to the bare-error arm and then to the text — and a
+ * successful report that MENTIONS an incident ("I backed off after an API usage
+ * limit and finished the settings screen") is the ordinary way an agent describes
+ * having handled one. Both directions are driven, because a spelling read for
+ * success must be read for failure too or the gap simply moves.
+ *
+ * `resultType`/`result_type` WERE in that set for one round and are not any more.
+ * Measured: the two spellings appear nowhere in this tree but their own reader and
+ * this test, and nowhere in the host wrappers installed on the machine either, so
+ * the arm decided 8 rows in the whole suite — all of them its own — and closed a
+ * case that previously classified. A row built from a guess is held to the same
+ * standard as the constructed Copilot shapes, so it is gone, and the COST of
+ * declining it is pinned below rather than argued: in that spelling a success
+ * marker is unread, and a non-empty `error` beside it reads as this tool call
+ * failing. Those two rows are what redden the day a real payload grounds the key,
+ * which is the day to put the arm back.
+ *
+ * What none of this rests on is a claim about which spelling a given host really
+ * sends: no recorded tool-result payload exists in this tree for any host (see the
+ * disclosure in shared/tool-result.ts).
+ */
+test('a success marker is read as success in every spelling of the same field', () => {
+  const HANDLED = 'I backed off after an API usage limit and finished the settings screen';
+  const rows: { label: string; response: unknown; strict: boolean; expected: string | null }[] = [
+    // The declined spelling, in both directions, priced as a cost rather than
+    // asserted as safety.
+    {
+      label: 'COST result_type: an ungrounded success spelling is not read as success',
+      response: { result_type: 'success', error: HANDLED },
+      strict: false,
+      expected: 'api-limit',
+    },
+    {
+      label: 'COST resultType: nor is it read as a failure when it names one',
+      response: { resultType: 'failed', text: 'the child crashed.' },
+      strict: true,
+      expected: null,
+    },
+  ];
+  for (const key of ['status', 'state']) {
+    rows.push(
+      {
+        label: `${key}: success at the payload own level, a limit quoted in the report`,
+        response: { [key]: 'success', error: HANDLED },
+        strict: false,
+        expected: null,
+      },
+      {
+        label: `${key}: success one record in, a limit quoted in the report`,
+        response: { execution_record: { [key]: 'success', error: HANDLED } },
+        strict: false,
+        expected: null,
+      },
+      {
+        label: `${key}: a failure word in the same field is still a failure`,
+        response: { [key]: 'failed', text: 'the child crashed.' },
+        strict: true,
+        expected: 'stopped',
+      },
+    );
+  }
+  const misread = rows
+    .filter((row) => (classifySubagentStop(row.response, row.strict) ?? null) !== row.expected)
+    .map((row) => `${row.label} → ${String(classifySubagentStop(row.response, row.strict))}`);
+  assert.deepEqual(misread, [], 'a spelling of the outcome field was read differently from its synonyms');
+});
+
+/**
+ * The same defect end to end, on the host it lands on. Byte-identical payloads,
+ * one under the wrapper spelling and one under an envelope nothing names: before
+ * the fix the first retired the dead agent and told the orchestrator to respawn,
+ * while the second recorded the corpse as the run's LIVE `senior-frontend` and
+ * returned noop — the hook doing nothing at all where it exists to intervene.
+ */
+test('an envelope nothing names retires the dead subagent, exactly as the wrapper spelling does', () => {
+  for (const envelope of ['tool_response', 'execution_record', 'tool_output', 'output', 'tool_info']) {
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      setCurrentRunId(cwd, 'run-envelope-stop');
+      freezeRunPolicy(cwd, 'copilot', 'run-envelope-stop');
+      recordRunAgent(cwd, 'run-envelope-stop', 'senior-frontend', {
+        agentId: 'copilotchild12345', resumeId: 'copilotchild12345', parentSessionId: 'parent-1',
+      });
+
+      const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+        tool_input: { agent_type: 'traffic-one:senior-frontend', model: 'composer-2.5-fast', prompt: 'build the UI' },
+        // A stopped child that still reports its id — which is precisely why the
+        // id branch was reached and the corpse re-registered.
+        [envelope]: { status: 'error', agent_id: 'senior-frontend' },
+      }, 'copilot', 'task'));
+
+      assert.equal(result.kind, 'context', `${envelope}: the orchestrator is told to respawn`);
+      const row = readRunAgentRegistry(cwd, 'run-envelope-stop')['senior-frontend'];
+      assert.equal(row?.replaced, true, `${envelope}: the dead agent is retired from the reuse registry`);
+      assert.equal(row?.agentId, 'copilotchild12345', `${envelope}: and the failed result never overwrites it with a live row`);
+    });
+  }
+});
+
+/**
+ * A LIST IS A POSITION A RESULT REALLY ARRIVES IN, driven to the two pieces of
+ * disk state the classification decides — the run agent REGISTRY and the run's
+ * EXHAUSTION LEDGER — because that is where the cost of getting it wrong is paid
+ * and a unit answer cannot show either.
+ *
+ * `content[]` is Claude's own result shape and `steps[]` is one of Copilot's, and
+ * for as long as `toolResultVerdictSources` refused an array no member of either
+ * was a verdict source. Measured on this fixture before the list rule:
+ * `{ content: [{ status: 'error', message: '…API usage limit' }] }` returned noop,
+ * the dead child stayed registered as this run's LIVE `senior-frontend`, and the
+ * ledger stayed empty — while the byte-identical payload spelling the limit
+ * `text` retired the agent and condemned its model. A bare top-level list did the
+ * same. That asymmetry was never a second defect: `text` is not a brief spelling
+ * and the value walk has always recursed lists, so the two observations are one
+ * rule seen from the structure side and from the text side.
+ *
+ * THE CONTROLS ARE THE POINT OF THE ROW, not decoration. The list rule is a
+ * widening, and the widening it must not become is the one that let an echoed
+ * spawn brief retire a LIVE agent: a member of an own-level list is a NESTED
+ * source, which is exactly the depth at which a bare `error` is refused, so a
+ * first-spawn brief inside a step list is still not evidence and a
+ * `[t1-replace-agent]` brief is still barred by the marker from every position.
+ * Each of those is driven here to the same two files.
+ */
+test('a limit inside a list retires the dead child and condemns its model, and a brief in one still cannot', () => {
+  const LIMIT = 'you have hit your API usage limit';
+  const ROWS: {
+    label: string;
+    result: Record<string, unknown>;
+    retired: boolean;
+    condemned: boolean;
+  }[] = [
+    {
+      label: 'Claude own result shape: content[] reporting a failure and the limit under `message`',
+      result: { content: [{ status: 'error', message: LIMIT }] },
+      retired: true,
+      condemned: true,
+    },
+    {
+      label: 'the same limit one key over, which always worked and must keep working',
+      result: { content: [{ status: 'error', text: LIMIT }] },
+      retired: true,
+      condemned: true,
+    },
+    {
+      label: 'a bare top-level list, the degenerate position of the same class',
+      result: { tool_response: [{ status: 'error', message: LIMIT }] },
+      retired: true,
+      condemned: true,
+    },
+    {
+      label: "Copilot's step list at the payload top level",
+      result: { steps: [{ is_error: true, message: LIMIT }] },
+      retired: true,
+      condemned: true,
+    },
+    // CONTROL — the fail-open direction, priced end to end. A bare `error` is
+    // refused at a nested source, so nothing in this payload is a verdict and an
+    // ordinary first-spawn product brief beside it is not evidence.
+    {
+      label: 'CONTROL a first-spawn brief inside a list whose only signal is a bare error',
+      result: { content: [{ error: 'a deprecation warning', message: FIRST_SPAWN_BRIEF }], execution_record: { status: 'running' } },
+      retired: false,
+      condemned: false,
+    },
+    {
+      label: 'CONTROL a first-spawn brief inside execution_record.steps[], below the sources',
+      result: { execution_record: { status: 'running', steps: [{ status: 'error', message: FIRST_SPAWN_BRIEF }] } },
+      retired: false,
+      condemned: false,
+    },
+    {
+      label: 'CONTROL a first-spawn brief in a top-level step list with no verdict of its own',
+      result: { steps: [{ message: FIRST_SPAWN_BRIEF }], execution_record: { status: 'running' } },
+      retired: false,
+      condemned: false,
+    },
+    // CONTROL — the replacement brief the product itself prescribes, which quotes
+    // the previous incident by design. The marker keeps it out even where it is
+    // co-located with a real failure: the child is retired by the RESULT saying
+    // error, and no model is condemned by the brief.
+    {
+      label: 'CONTROL a [t1-replace-agent] brief inside a failing list member condemns nothing',
+      result: { content: [{ status: 'error', message: REPLACEMENT_BRIEF }] },
+      retired: true,
+      condemned: false,
+    },
+    {
+      label: 'CONTROL the same replacement brief in a bare top-level list',
+      result: { tool_response: [{ status: 'error', message: REPLACEMENT_BRIEF }] },
+      retired: true,
+      condemned: false,
+    },
+  ];
+
+  const wrong: string[] = [];
+  for (const row of ROWS) {
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      const runId = 'run-list-stop';
+      setCurrentRunId(cwd, runId);
+      freezeRunPolicy(cwd, 'copilot', runId);
+      recordRunAgent(cwd, runId, 'senior-frontend', {
+        agentId: 'copilotchild12345', resumeId: 'copilotchild12345', parentSessionId: 'parent-1',
+      });
+      recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+        tool_input: { agent_type: 'traffic-one:senior-frontend', model: 'composer-2.5-fast', prompt: 'build the UI' },
+        ...row.result,
+      }, 'copilot', 'task'));
+      const registered = readRunAgentRegistry(cwd, runId)['senior-frontend'];
+      const retired = registered?.replaced === true;
+      const condemned = exhaustedModelsForRole(cwd, runId, 'senior-frontend').includes('composer-2.5-fast');
+      if (retired !== row.retired) wrong.push(`${row.label}: registry retired=${retired}, wanted ${row.retired}`);
+      if (condemned !== row.condemned) wrong.push(`${row.label}: ledger condemned=${condemned}, wanted ${row.condemned}`);
+      assert.equal(registered?.agentId, 'copilotchild12345', `${row.label}: the result must never overwrite the row with a live one`);
+    });
+  }
+  assert.deepEqual(wrong, [], 'a list position wrote the wrong registry or ledger state');
+});
+
+/**
+ * THE DISCRIMINATOR'S WIRING, PINNED IN BOTH DIRECTIONS. A peer counted 23 calls in
+ * this suite that pass no spawn input and read that as the discriminator being
+ * "unwired by omission" at the public API. Optionality is real — those rows ask what
+ * a RESULT alone supports, which is the question everywhere except the recorder — and
+ * the answer chosen here is to pin the WIRING behaviourally rather than to require
+ * the parameter and spell `undefined` at ~30 unit rows. `record-agent.ts` records
+ * that decision and its residual.
+ *
+ * The negative direction was already covered: the `echoed from the spawn input` cell
+ * of the crash-brief row below fails if the recorder stops passing its tool input
+ * (measured: deleting that argument at the call site reds this row and that one, and
+ * nothing else). What was missing is the POSITIVE control, which is what makes the
+ * suppression evidence about a discriminator rather than about a deaf classifier: an
+ * echo-suppressed row proves nothing on its own if the same result condemns nothing
+ * either. This row drives both halves of one payload — same result, two spawn briefs
+ * — to the run's exhaustion LEDGER, so an echo that suppresses everything and an echo
+ * that suppresses nothing are each red.
+ */
+test('the recorder hands the classifier the spawn input, so an echoed brief condemns no model', () => {
+  const rows: { label: string; prompt: string; condemned: boolean }[] = [
+    {
+      label: 'the host echoes this spawn own brief beside a real failure',
+      prompt: FIRST_SPAWN_BRIEF,
+      condemned: false,
+    },
+    {
+      // The CONTROL, and what makes the row above evidence about the wiring
+      // rather than about the classifier being deaf: the same result beside a
+      // spawn that never mentioned a limit still condemns the model.
+      label: 'CONTROL the same result, a spawn brief that names no limit',
+      prompt: 'Build the billing screen.',
+      condemned: true,
+    },
+  ];
+  const wrong: string[] = [];
+  for (const row of rows) {
+    withMaterialized({ teamApproved: true }, (cwd) => {
+      const runId = 'run-echo-wiring';
+      setCurrentRunId(cwd, runId);
+      freezeRunPolicy(cwd, 'copilot', runId);
+      recordRunAgent(cwd, runId, 'senior-frontend', {
+        agentId: 'copilotchild12345', resumeId: 'copilotchild12345', parentSessionId: 'parent-1',
+      });
+      recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+        tool_input: { agent_type: 'traffic-one:senior-frontend', model: 'composer-2.5-fast', prompt: row.prompt },
+        status: 'error',
+        message: FIRST_SPAWN_BRIEF,
+        exit_code: 1,
+      }, 'copilot', 'task'));
+      const registered = readRunAgentRegistry(cwd, runId)['senior-frontend'];
+      const condemned = exhaustedModelsForRole(cwd, runId, 'senior-frontend').includes('composer-2.5-fast');
+      // Retired either way: the result reports a failure of its own, and the echo
+      // decides the KIND, never whether the child is dead.
+      if (registered?.replaced !== true) wrong.push(`${row.label}: the failed child was not retired`);
+      if (condemned !== row.condemned) wrong.push(`${row.label}: ledger condemned=${condemned}, wanted ${row.condemned}`);
+    });
+  }
+  assert.deepEqual(wrong, [], 'the recorder stopped handing the classifier its spawn input');
+});
+
+/**
+ * A spawn prompt is not a result. Reading the payload rather than a named wrapper
+ * is what made a stop signal legible on the hosts that name none — and it also put
+ * the SPAWN PROMPT into the text being classified, because the payload carries
+ * both. Measured on each host's real adapter, a live Copilot agent whose prompt
+ * merely mentioned an API limit read as dead, and a genuinely crashed Cursor child
+ * whose prompt mentioned one was upgraded from `stopped` to `api-limit` — which
+ * condemns a model that never hit a limit.
+ *
+ * Built through `selectAdapter(host).parse` deliberately: Copilot's adapter parses
+ * `tool_args` (a JSON STRING on the CLI) and lifts it into `tool_input`, so a
+ * hand-written record would not be the payload the hook actually receives.
+ */
+function rawFromHost(
+  host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' | 'windsurf',
+  argv: readonly string[],
+  stdin: Record<string, unknown>,
+): unknown {
+  return selectAdapter(host).parse({ argv, stdin: JSON.stringify(stdin) }).raw;
+}
+
+const LIMIT_IN_PROMPT = 'Build billing. If the provider returns an API usage limit error, show a retry banner.';
+
+/**
+ * THE TWO POSITIONS, driven for every row rather than for whichever one the last
+ * reader happened to discover.
+ *
+ * This is the harness half of a defect that was not a missing row. The corpus
+ * already carried "a spawn prompt that names an API limit does not make a live
+ * agent dead", in this exact text — but only NESTED under the host's input key.
+ * The TOP-LEVEL position was discovered while fixing the id extractor and never
+ * carried back to the classifier row that already existed for the other position,
+ * so an ordinary first-spawn product brief at the top level went on retiring live
+ * agents through a corpus that looked complete. Patching that one row would have
+ * been the denylist move; this crosses the axis instead, so a THIRD position (or a
+ * fifth brief spelling) discovered by one reader cannot leave the other's corpus
+ * behind.
+ *
+ * `tool_args` is a JSON STRING on the Copilot CLI and the adapter lifts it into
+ * `tool_input`, so the nested position must be built through the adapter to be the
+ * payload a hook really sees.
+ */
+/**
+ * THE THIRD POSITION, added for exactly the reason the axis exists and after it
+ * failed at that job. Two positions were enumerated because two were the ones a
+ * reader had discovered; a peer review found a third by reading the WALKS instead
+ * of the corpus, and every payload it built leaked at the unit level while the
+ * same payloads at these two positions were clean. The three narrowing walks
+ * recursed through `obj()`, which refuses an array, so a brief-named key reached
+ * through an array was excluded by nothing — while `briefSubtree` and
+ * `toolResultText`'s `collect`, the inner halves of the same two mechanisms, have
+ * always mapped into arrays. The corpus could not see it: the brief SHAPES put an
+ * array under the key (the brief's own value) and never above it.
+ */
+type BriefPosition = 'nested under the input key' | 'at the payload top level' | 'behind an array';
+const BRIEF_POSITIONS: readonly BriefPosition[] = ['nested under the input key', 'at the payload top level', 'behind an array'];
+
+/**
+ * The second axis, for the same reason as the first: a brief is not always a
+ * string. The id extractor learned that the hard way — its exclusion fired on
+ * `typeof child === 'string'` and every structured respelling walked around it —
+ * and the classifier's exclusion is a different function with the same shape of
+ * hole. So every classifier row is driven in each spelling a host uses for a
+ * text field, not only the flat one.
+ */
+type BriefShape = { label: string; spell: (brief: string) => unknown };
+const BRIEF_SHAPES: readonly BriefShape[] = [
+  { label: 'a string', spell: (brief) => brief },
+  { label: 'an object with .text', spell: (brief) => ({ text: brief }) },
+  { label: 'an array of strings', spell: (brief) => [brief] },
+  { label: 'content blocks', spell: (brief) => [{ type: 'text', text: brief }] },
+  { label: 'nested one deeper', spell: (brief) => ({ content: [{ text: brief }] }) },
+];
+
+function briefAt(
+  host: 'copilot' | 'cursor',
+  position: BriefPosition,
+  key: string,
+  brief: unknown,
+  result: Record<string, unknown>,
+): unknown {
+  const nested = position === 'nested under the input key';
+  // `steps[]` rather than a bare `[{…}]` because the array must sit ABOVE the
+  // brief key inside the result, which is the position no exclusion reached:
+  // Cursor's adapter passes `raw: data` through verbatim and `content[]` is the
+  // one array shape this tree documents arriving there.
+  const echoed = position === 'at the payload top level' ? { [key]: brief }
+    : position === 'behind an array' ? { steps: [{ [key]: brief }] }
+      : {};
+  if (host === 'copilot') {
+    return rawFromHost('copilot', ['after-tool-use'], {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'task',
+      tool_args: JSON.stringify({
+        agent_type: 'traffic-one:senior-frontend',
+        mode: 'background',
+        ...(nested ? { [key]: brief } : {}),
+      }),
+      ...echoed,
+      ...result,
+    });
+  }
+  return rawFromHost('cursor', ['after-tool-use'], {
+    tool_name: 'Task',
+    tool_input: {
+      subagent_type: 'senior-frontend',
+      model: 'gpt-5.6-terra-medium',
+      ...(nested ? { [key]: brief } : {}),
+    },
+    ...echoed,
+    ...result,
+  });
+}
+
+const CRASHED_NO_LIMIT = {
+  status: 'error',
+  output: 'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 — the child crashed.',
+  exit_code: 1,
+};
+const REPLACEMENT_BRIEF = `${REPLACE_AGENT_MARKER}\nThe previous senior-frontend hit an API usage limit. Continue its work.`;
+const FIRST_SPAWN_BRIEF = 'Build the billing screen. If the provider returns an API usage limit error, show a retry banner and back off.';
+
+/**
+ * A spawn brief is not a result, at EITHER position.
+ *
+ * Reading the payload rather than a named wrapper is what made a stop signal
+ * legible on the hosts that name none — and it also put the spawn BRIEF into the
+ * text being classified, because the payload carries both. Measured end to end on
+ * materialized fixtures before this round:
+ *
+ *   - Copilot, first-spawn product brief, NO marker, the result explicitly
+ *     reporting `execution_record: { status: 'running' }` → `api-limit`. The LIVE
+ *     subagent was retired from the run registry, the orchestrator was told to
+ *     respawn while the real child kept burning tokens, and `composer-2.5-fast`
+ *     went into the run's exhaustion ledger having never hit a limit. Four of the
+ *     five spellings fired; only `prompt` was already covered, by name, in
+ *     `TOOL_INPUT_KEYS`;
+ *   - Cursor, the same brief, into the DURABLE observation ledger: two runs
+ *     byte-identical but for the brief's position classified `generic` nested and
+ *     `api-limit` at the top level, condemning `gpt-5.6-terra-medium`.
+ *
+ * The RESIDUAL is a row here rather than a paragraph elsewhere, and it is one
+ * spelling at one position in one SHAPE: a marker-free flat-string brief under
+ * `message` at a FLAT host's top level, where the result ALREADY reports a
+ * decisive failure, is still read as evidence. `{ status: 'error', message: '<brief naming a limit>' }` is
+ * byte-identical to the failure envelope every host spells that way once the
+ * wrapper is off. Bounded: a decisive failure is required, so no LIVE agent can be
+ * retired by a brief any more — what it still costs is `stopped` upgraded to
+ * `api-limit`, which condemns the dead agent's model. If a later round closes it,
+ * this row reddens; that is a FIX, and the expectation moves to 'stopped'.
+ *
+ * AND ITS PREMISE IS NARROWER THAN THIS FIXTURE, which is worth stating exactly,
+ * because the fixture is what a future reader will take the residual to be. These
+ * payloads put the brief at the top level and NOT in the tool input, isolating the
+ * position — but the reason a brief is at the top level at all is that the host
+ * ECHOED it, and an echo has an original in the same payload. Where it does, the
+ * recorder now separates the two (`classifySubagentStop`'s third argument, pinned
+ * in its own row below), and this cell classifies `stopped`. What survives here is
+ * the shape with no second copy anywhere: reachable only if a host invents brief
+ * prose the spawn never sent.
+ *
+ * The bound is now a PROPERTY rather than a hope, and it did not hold when it was
+ * first written: brief prose survives only in a record whose verdict
+ * `structuredOutcome` itself reads, so a surviving brief only ever reaches the
+ * text classifier on a payload whose structured outcome is `failure`. The row
+ * below asserts that directly, over every position and shape.
+ */
+test('a spawn brief that names an API limit does not make a live agent dead, at either position', () => {
+  const rows: {
+    label: string;
+    host: 'copilot' | 'cursor';
+    brief: string;
+    result: Record<string, unknown>;
+    strict: boolean;
+    expected: string | null;
+    /** The one measured exception, at the one position it applies to. */
+    residual?: { key: string; position: BriefPosition; expected: string };
+  }[] = [
+    {
+      label: 'copilot: a first-spawn brief naming a limit, result says running',
+      host: 'copilot', brief: FIRST_SPAWN_BRIEF, strict: false, expected: null,
+      result: { execution_record: { status: 'running', text: 'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 — shipped the settings page.' } },
+    },
+    {
+      label: 'copilot: a replacement brief quoting the previous limit, result says running',
+      host: 'copilot', brief: REPLACEMENT_BRIEF, strict: false, expected: null,
+      result: { execution_record: { status: 'running', text: 'The background task started.' } },
+    },
+    {
+      // Cursor's structured-failure requirement decides WHETHER to classify, never
+      // WHAT the text is: once the result is genuinely failed, the brief was still
+      // deciding the kind — and the kind is what rotates models.
+      label: 'cursor: a first-spawn brief naming a limit, a real crash naming none',
+      host: 'cursor', brief: FIRST_SPAWN_BRIEF, strict: true, expected: 'stopped',
+      result: CRASHED_NO_LIMIT,
+      residual: { key: 'message', position: 'at the payload top level', expected: 'api-limit' },
+    },
+    {
+      label: 'cursor: a replacement brief quoting the previous limit, a real crash naming none',
+      host: 'cursor', brief: REPLACEMENT_BRIEF, strict: true, expected: 'stopped',
+      result: CRASHED_NO_LIMIT,
+    },
+    // The CONTROLS: this narrows where the classifier looks, not what counts as
+    // evidence. A limit in the RESULT still fires at both positions.
+    {
+      label: 'cursor CONTROL: the limit is in the result, not the brief',
+      host: 'cursor', brief: FIRST_SPAWN_BRIEF, strict: true, expected: 'api-limit',
+      result: { status: 'error', output: 'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 — you have hit your API usage limit.', exit_code: 1 },
+    },
+    {
+      label: 'copilot CONTROL: the limit is in the envelope, not the brief',
+      host: 'copilot', brief: FIRST_SPAWN_BRIEF, strict: false, expected: 'api-limit',
+      result: { execution_record: { status: 'stopped', text: 'you have hit your API usage limit.' } },
+    },
+  ];
+
+  const misread: string[] = [];
+  const positionDisagreement: string[] = [];
+  for (const row of rows) {
+    for (const key of SPAWN_BRIEF_KEYS) {
+      for (const shape of BRIEF_SHAPES) {
+        // The residual is a STRING-only cost: a structured brief keeps no string
+        // leaf at all, so the one spelling that still reads as evidence cannot be
+        // reached through any of the other four.
+        const residual = shape.label === 'a string' && row.residual?.key === key ? row.residual : undefined;
+        const answers = new Map<BriefPosition, string | null>();
+        for (const position of BRIEF_POSITIONS) {
+          const brief = shape.spell(row.brief);
+          const got = classifySubagentStop(briefAt(row.host, position, key, brief, row.result), row.strict) ?? null;
+          answers.set(position, got);
+          const expected = residual?.position === position ? residual.expected : row.expected;
+          if (got !== expected) {
+            misread.push(`${row.label} [${key} as ${shape.label}, ${position}] → ${String(got)}, wanted ${String(expected)}`);
+          }
+        }
+        // The axis crossing itself: unless a residual is DECLARED for this cell,
+        // EVERY position must agree — not just the two a past reader happened to
+        // know about. A position discovered by one reader reddens here even if
+        // every aimed row above still passes.
+        const distinct = new Set([...answers.values()].map((answer) => String(answer)));
+        if (!residual && distinct.size > 1) {
+          const spread = BRIEF_POSITIONS.map((position) => `${position} ${String(answers.get(position))}`).join(', ');
+          positionDisagreement.push(`${row.label} [${key} as ${shape.label}] → ${spread}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(misread, [], 'a brief was read as the result, or a result was no longer read');
+  assert.deepEqual(positionDisagreement, [], 'the same brief classified differently depending only on where it sat');
+});
+
+/**
+ * THE INVARIANT, asserted as one, rather than argued in a paragraph beside the
+ * rows that happen to demonstrate it.
+ *
+ * "A decisive failure is required, so no LIVE agent can be retired by a brief"
+ * was recorded as an invariant while being false in two ways at once, both found
+ * by a peer driving the real recorder. The classifier's brief exclusion admitted
+ * a bare nested `error` as decisive at EVERY depth, while `structuredOutcome` one
+ * function down refuses one at every depth but the payload's own — so
+ * `{ metadata: { error: 'a deprecation warning', message: '<a first-spawn
+ * brief>' }, execution_record: { status: 'running' } }` retired a live Copilot
+ * agent and condemned `composer-2.5-fast`, with nothing failed anywhere. And no
+ * exclusion reached through an array, so the same brief inside `steps[]` did the
+ * same thing from a second position.
+ *
+ * The property that makes the sentence true is structural: brief prose survives
+ * only in a record whose verdict `structuredOutcome` reads — the payload's own
+ * top level, or one record in — so a brief can only ever be read on a payload
+ * that already classifies as a structured failure. This drives the observable
+ * form of that: where the result reports no failure of its own, NO brief, in any
+ * spelling, shape or position, may produce a classification at all.
+ *
+ * Copilot, so `requireStructuredFailure` is false and the text fallback really
+ * does run — on Cursor the strict gate would answer null without consulting the
+ * text, which would make this row pass for the wrong reason.
+ */
+test('a brief cannot retire an agent the result never reported dead, at any position', () => {
+  const LIVE_RESULTS: { label: string; result: Record<string, unknown> }[] = [
+    { label: 'the child is explicitly running', result: { execution_record: { status: 'running' } } },
+    { label: 'the child completed', result: { execution_record: { status: 'completed', text: 'shipped the settings page.' } } },
+    { label: 'the result reports nothing at all', result: { output: 'The subagent started.' } },
+    // The three the depth mirror closed: a nested BARE error is some child's, and
+    // `structuredOutcome` has always refused it. Now both halves agree.
+    { label: 'a nested deprecation warning beside a running child', result: { metadata: { error: 'a deprecation warning' }, execution_record: { status: 'running' } } },
+    { label: 'a nested partial result', result: { results: { error: '1 file skipped' } } },
+    { label: 'a sub-sub agent death', result: { child_reports: { error: 'the sub-sub agent died' } } },
+    // Below the verdict sources: a failure two levels down is not this tool's, so
+    // a brief co-located with it is not evidence either.
+    { label: 'a failure two levels down', result: { output: { metadata: { status: 'error' } } } },
+  ];
+  const retired: string[] = [];
+  for (const context of LIVE_RESULTS) {
+    for (const key of SPAWN_BRIEF_KEYS) {
+      for (const shape of BRIEF_SHAPES) {
+        for (const position of BRIEF_POSITIONS) {
+          const payload = briefAt('copilot', position, key, shape.spell(FIRST_SPAWN_BRIEF), context.result);
+          const got = classifySubagentStop(payload, false);
+          if (got !== null) retired.push(`${context.label} [${key} as ${shape.label}, ${position}] → ${String(got)}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(retired, [], 'a spawn brief classified a failure on a payload that reported none');
+});
+
+/**
+ * The depth mirror, at the unit, and what it COSTS — priced here rather than
+ * asserted as free.
+ *
+ * The classifier reads a verdict at two positions and admits different evidence
+ * at each: a bare `error` is the tool reporting failure at its OWN top level and
+ * is some child's one level in. The brief exclusion is the same classifier's
+ * other half and used to admit a bare error everywhere, which is mutant M7 —
+ * killed in `structuredOutcome` by the strict rows above — shipping unmutated one
+ * function up.
+ *
+ * The cost of narrowing it is real and one-directional: limit vocabulary that
+ * lives ONLY under a `message` key below the verdict sources is no longer read,
+ * so a genuine limit reported that way rotates no model. The same text one key
+ * over survives at every depth, and the containers that nest that deep belong to
+ * hosts that never reach this recorder. Under-condemning is the side to be wrong
+ * on: a wrongly exhausted model can terminate a role outright.
+ */
+test('a bare error is a verdict at the payload own level only, in BOTH halves of the classifier', () => {
+  const LIMIT = 'you have hit your API usage limit';
+  const rows: { label: string; response: unknown; strict: boolean; expected: string | null }[] = [
+    // Closed: a nested bare error no longer makes brief prose decisive.
+    { label: 'nested bare error + brief, child running', strict: false, expected: null,
+      response: { metadata: { error: 'a deprecation warning', message: FIRST_SPAWN_BRIEF }, execution_record: { status: 'running' } } },
+    { label: 'nested bare error + brief, nothing else', strict: false, expected: null,
+      response: { results: { error: '1 file skipped', message: FIRST_SPAWN_BRIEF } } },
+    // Unchanged: the OWN level still admits one, which is the asymmetry itself.
+    { label: 'own bare error + a real limit message', strict: true, expected: 'api-limit',
+      response: { error: 'the child died', message: LIMIT } },
+    { label: 'own status failure + a real limit message', strict: true, expected: 'api-limit',
+      response: { status: 'error', message: LIMIT } },
+    // Unchanged: a nested record with a STATUS is a verdict source at that depth,
+    // so its own message is still its own error text.
+    { label: 'nested status failure + a real limit message', strict: false, expected: 'api-limit',
+      response: { execution_record: { status: 'error', message: LIMIT } } },
+    // The COST, pinned so it cannot be rediscovered as a surprise.
+    { label: 'COST: nested bare error, the limit only in its message', strict: false, expected: null,
+      response: { execution_record: { error: 'the child stopped', message: LIMIT } } },
+    { label: 'COST: below the sources, the limit only in a message', strict: false, expected: null,
+      response: { output: { metadata: { status: 'error', message: LIMIT } } } },
+    { label: 'COST: a failing step in an array, the limit only in its message', strict: false, expected: 'stopped',
+      response: { execution_record: { status: 'error', steps: [{ status: 'error', message: LIMIT }] } } },
+    // And what does NOT move with it: the same evidence under any other key.
+    { label: 'the same limit under `text`, below the sources', strict: false, expected: 'api-limit',
+      response: { output: { metadata: { status: 'error', text: LIMIT } } } },
+    { label: 'the same limit under `error`, one level in', strict: false, expected: 'api-limit',
+      response: { execution_record: { error: LIMIT, message: FIRST_SPAWN_BRIEF } } },
+  ];
+  const misread = rows
+    .filter((row) => (classifySubagentStop(row.response, row.strict) ?? null) !== row.expected)
+    .map((row) => `${row.label} → ${String(classifySubagentStop(row.response, row.strict))}`);
+  assert.deepEqual(misread, [], 'the two halves of the classifier disagreed about what a verdict is');
+});
+
+/**
+ * THE RULE ITSELF, as an equivalence over positions, rather than three cost rows
+ * that happen to demonstrate it.
+ *
+ * The rows above price what dropping a brief-named `message` costs at three
+ * positions. They cannot state WHY those three and not others, so the next edit
+ * can move the boundary — make a bare error decisive at every depth, or move a
+ * list member's depth — and stay green, which is exactly what a peer review
+ * found: mutating the array arm to keep its parent's depth added zero red while
+ * moving real classifications.
+ *
+ * Which is the rule, and it is one sentence: a record's `message` is read as this
+ * tool's failure text exactly where that record's own failure SIGNAL is read as
+ * this tool's verdict. Same positions, same evidence, one direction each way — so
+ * a limit under `message` is lost precisely where a `status: 'error'` beside it
+ * would also have been ignored, and attributing a nested child's limit to the
+ * parent is refused in the KIND dimension for the same reason it is refused in
+ * the RETIREMENT dimension.
+ *
+ * THE EQUIVALENCE SURVIVED A BOUNDARY MOVE, and that is what this round did to
+ * it. A list used to be a position of its own that no verdict could be read at,
+ * so `content[]` — Claude's own result shape — read neither the verdict nor the
+ * message: consistent, and consistently blind. A list costs no level now, so a
+ * member of an own-level list is a nested source in both halves at once, and the
+ * `inside content[]` / `inside steps[]` / `the payload IS an array` cells below
+ * now read BOTH where they used to read NEITHER. Measured over a 1,680-row corpus
+ * (position × verdict signal × limit carrier × sibling verdict × strictness — the
+ * construction is in the driver, and the count is a count of that product, not of
+ * anything more general), 140 rows moved: 135 gained a classification, every one
+ * of them on a payload whose own list member reports a failure of its own
+ * (`status`, `is_error` or `ok:false` — never a bare `error`), and 5 moved the
+ * other way, from `api-limit` to null, because a `status:'completed'` inside a
+ * list is now read as the success it is. No row where any source reported success
+ * gained a retirement.
+ *
+ * `requireStructuredFailure` is false throughout so the text fallback really
+ * runs; on the strict path a payload with no readable verdict answers null
+ * without reading any text, and every cell would agree for the wrong reason.
+ */
+test('a message is read as evidence exactly where its record is read as a verdict', () => {
+  const LIMIT = 'you have hit your API usage limit';
+  const POSITIONS: { label: string; at: (fields: Record<string, unknown>) => unknown }[] = [
+    { label: 'the payload own top level', at: (fields) => ({ ...fields }) },
+    { label: 'one record in, execution_record', at: (fields) => ({ execution_record: { ...fields } }) },
+    { label: 'one record in, an envelope nothing names', at: (fields) => ({ tool_output: { ...fields } }) },
+    { label: 'two records in', at: (fields) => ({ output: { metadata: { ...fields } } }) },
+    { label: 'inside content[]', at: (fields) => ({ content: [{ ...fields }] }) },
+    { label: 'inside steps[]', at: (fields) => ({ steps: [{ ...fields }] }) },
+    { label: 'the payload IS an array', at: (fields) => [{ ...fields }] },
+  ];
+  const SIGNALS: { label: string; fields: Record<string, unknown> }[] = [
+    { label: 'status error', fields: { status: 'error' } },
+    { label: 'a bare error', fields: { error: 'boom' } },
+    { label: 'is_error', fields: { is_error: true } },
+  ];
+  const broken: string[] = [];
+  for (const position of POSITIONS) {
+    for (const signal of SIGNALS) {
+      const verdictRead = classifySubagentStop(position.at(signal.fields), false) === 'stopped';
+      const messageRead = classifySubagentStop(position.at({ ...signal.fields, message: LIMIT }), false) === 'api-limit';
+      if (verdictRead !== messageRead) {
+        broken.push(`${position.label} | ${signal.label} | verdict read=${verdictRead}, message read=${messageRead}`);
+      }
+    }
+  }
+  assert.deepEqual(broken, [], 'the classifier read a message from a record whose verdict it refuses, or the reverse');
+  // Not vacuous in either direction: one cell reads both, one reads neither.
+  assert.equal(classifySubagentStop({ status: 'error', message: LIMIT }, false), 'api-limit', 'a decisive record own message is evidence');
+  assert.equal(
+    classifySubagentStop({ output: { metadata: { status: 'error', message: LIMIT } } }, false),
+    null,
+    'a record below the verdict sources is decisive nowhere, so neither is its message',
+  );
+  // The equivalence held over a boundary that was in the WRONG PLACE, and this
+  // assertion used to pin the wrong side of it: `an array member is a verdict
+  // source nowhere` expected null here. A list costs no level now, so a member of
+  // an own-level list is a nested source and its `message` is read exactly there
+  // — which is the same one sentence, at a position it used to exclude.
+  assert.equal(
+    classifySubagentStop({ content: [{ status: 'error', message: LIMIT }] }, false),
+    'api-limit',
+    'a member of an own-level list is a nested source, and its message is read there',
+  );
+  // And the three WRONG versions of that widening, which the equivalence above
+  // cannot distinguish on its own because each keeps both halves in step.
+  //  1. a list member promoted to the OWN level, where a bare `error` counts.
+  //     That is the fail-open the position rule exists for.
+  assert.equal(
+    classifySubagentStop({ content: [{ error: 'a deprecation warning', message: LIMIT }] }, false),
+    null,
+    'a bare error inside a list is not a verdict, so a brief beside it is not evidence',
+  );
+  assert.equal(
+    classifySubagentStop([{ error: 'a deprecation warning', message: LIMIT }], false),
+    null,
+    'and a member of a bare top-level list is not the own level either',
+  );
+  //  2. transparency that recurses: a list inside a list.
+  assert.equal(
+    classifySubagentStop({ content: [[{ status: 'error', message: LIMIT }]] }, false),
+    null,
+    'a list inside a list is below the sources',
+  );
+  //  3. transparency that ignores the one-level bound: a list inside an envelope.
+  assert.equal(
+    classifySubagentStop({ execution_record: { steps: [{ status: 'error', message: LIMIT }] } }, false),
+    null,
+    'a step list inside an envelope is below the sources',
+  );
+});
+
+/**
+ * THE ECHO, which is what closes the last cell the position corpus still declares
+ * as a residual — and the reason the previous round's irreducibility argument was
+ * wrong rather than merely unlucky.
+ *
+ * That argument was: in this cell the brief appears in exactly one place, so no
+ * discriminator can exist. It appears in one place IN THE RESULT. The payload
+ * also carries the tool INPUT, which the recorder reads one line above the
+ * classify call to infer the role and never handed the classifier — and the very
+ * premise that puts a brief in the result is that the host ECHOED it, so a second
+ * copy is not a lucky coincidence but a consequence of the shape being reachable
+ * at all. This is the same principle as the `[t1-replace-agent]` marker:
+ * evidence from OUTSIDE the ambiguous string.
+ *
+ * THE PREMISE SURVIVED PEER REVIEW AND THE INSTRUMENT DID NOT, so this file
+ * records both versions. What shipped was CONTAINMENT over every string in
+ * `tool_input` to depth 4, pinned here as "a TRUNCATED echo still matches" and
+ * defended in prose as only ever suppressing a message "the prompt already
+ * contained verbatim". Measured, it suppressed genuine host messages from nine
+ * normalized characters up (`API limit` inside 'Refactor the API limit banner
+ * component.'), out of `model`, `agent_type`, an unnamed key and a nested object
+ * three and four levels down, and — the blocker — on the respawn the product
+ * itself prescribes, where the prompt quotes the incident by design.
+ *
+ * So the test is IDENTITY and the haystack is the BRIEF: a result string is an
+ * echo when it equals, normalized, one of the strings `role-infer.ts` reads as
+ * this spawn's brief. A re-indented, re-cased echo still matches (each string is
+ * whitespace-folded and case-folded); a truncated one no longer does, and that
+ * row is below with its new answer rather than deleted.
+ */
+test('a brief the spawn input already carries is an echo, not the result reporting a limit', () => {
+  const LIMIT = 'you have hit your API usage limit';
+  const CRASH = { status: 'error', output: 'the child crashed.', exit_code: 1 };
+  const rows: { label: string; message: string; input: Record<string, unknown>; expected: string }[] = [
+    {
+      label: 'the residual cell: the host echoes the brief beside a real crash',
+      message: FIRST_SPAWN_BRIEF,
+      input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: FIRST_SPAWN_BRIEF },
+      expected: 'stopped',
+    },
+    {
+      label: 're-indented and re-cased by the host',
+      message: `\n   ${FIRST_SPAWN_BRIEF.replace('. ', '.\n   ').toUpperCase()}\n`,
+      input: { prompt: FIRST_SPAWN_BRIEF },
+      expected: 'stopped',
+    },
+    {
+      label: 'the brief nested one deeper in the input, as role-infer reads it',
+      message: FIRST_SPAWN_BRIEF,
+      input: { payload: { description: FIRST_SPAWN_BRIEF } },
+      expected: 'stopped',
+    },
+    // The controls, which are what keep this from being a way to lose evidence.
+    {
+      label: 'CONTROL a genuine limit message the input never mentions',
+      message: LIMIT,
+      input: { subagent_type: 'senior-frontend', prompt: 'Build the billing screen.' },
+      expected: 'api-limit',
+    },
+    {
+      label: 'CONTROL no input at all: the result alone still decides',
+      message: LIMIT,
+      input: {},
+      expected: 'api-limit',
+    },
+    {
+      label: 'CONTROL an echoed brief does not hide a limit the RESULT reports',
+      message: FIRST_SPAWN_BRIEF,
+      input: { prompt: FIRST_SPAWN_BRIEF },
+      expected: 'api-limit',
+    },
+    // WHAT IDENTITY COSTS, and the row that used to pin the opposite. Under
+    // containment this answered `stopped`; a truncated echo is now read as a
+    // result. The trade is deliberate: a prefix or substring test is what let a
+    // brief mentioning a limit disable classification for the child's whole life,
+    // and this direction costs the KIND on a child already reported dead.
+    {
+      label: 'COST an echo the host truncated is no longer detected',
+      message: FIRST_SPAWN_BRIEF.slice(0, 70),
+      input: { prompt: FIRST_SPAWN_BRIEF },
+      expected: 'api-limit',
+    },
+    {
+      label: 'COST an echo the host appended a suffix to, unchanged from before',
+      message: `${FIRST_SPAWN_BRIEF} [truncated]`,
+      input: { prompt: FIRST_SPAWN_BRIEF },
+      expected: 'api-limit',
+    },
+  ];
+  const misread: string[] = [];
+  for (const row of rows) {
+    const result = row.label.includes('does not hide a limit')
+      ? { ...CRASH, output: `Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 — ${LIMIT}.` }
+      : CRASH;
+    const got = classifySubagentStop({ ...result, message: row.message }, true, row.input);
+    if (got !== row.expected) misread.push(`${row.label} → ${String(got)}, wanted ${row.expected}`);
+  }
+  assert.deepEqual(misread, [], 'the echo discriminator read a brief as a result, or a result as a brief');
+  // The discriminator is OPTIONAL and its absence must not change anything: a
+  // caller with no spawn call to compare against gets the result-only answer.
+  assert.equal(
+    classifySubagentStop({ status: 'error', message: FIRST_SPAWN_BRIEF, exit_code: 1 }, true),
+    'api-limit',
+    'without the input, this is the documented residual and stays it',
+  );
+});
+
+/**
+ * WHAT MAY SUPPRESS A GENUINE LIMIT, driven as the two axes the containment
+ * version failed on rather than as the one row that discovered it.
+ *
+ * A discriminator that reads the spawn input has to answer where it reads and
+ * how it compares, and getting either wrong turns evidence into a denylist. Both
+ * were wrong, and each cell here is a measured suppression under containment:
+ *
+ *   - POSITION. The input was walked for every string to depth 4, so `model`,
+ *     `agent_type`, a key no reader names, a nested context object and an array
+ *     member could all suppress. Only the brief positions `role-infer.ts` reads
+ *     may, because only a brief has an echo;
+ *   - COMPARISON. Containment fires on nine normalized characters, so an
+ *     ordinary product brief that merely NAMES an incident code disabled that
+ *     code for the child's whole life. Identity cannot: a host sentence is never
+ *     equal to a whole brief.
+ *
+ * Both evidence kinds are driven, not just `api-limit` — `model-unavailable`
+ * routes to Cursor's Settings flow and was suppressible on the same rule.
+ */
+test('only a brief can be an echo, and only by being the whole brief', () => {
+  const CRASH = { status: 'error', output: 'the child crashed.', exit_code: 1 };
+  const classify = (message: string, input: Record<string, unknown>) =>
+    String(classifySubagentStop({ ...CRASH, message }, true, input));
+
+  // AXIS 1 — the input position the same needle sits in. A brief suppresses; no
+  // other field may, however deep the walk that finds it.
+  const NEEDLE = 'you have hit your API usage limit';
+  const POSITIONS: { label: string; input: Record<string, unknown>; suppresses: boolean }[] = [
+    { label: 'prompt (a brief role-infer reads)', input: { prompt: NEEDLE }, suppresses: true },
+    { label: 'payload.description (the other brief position)', input: { payload: { description: NEEDLE } }, suppresses: true },
+    { label: 'model', input: { model: NEEDLE }, suppresses: false },
+    { label: 'agent_type', input: { agent_type: NEEDLE }, suppresses: false },
+    { label: 'a key no reader names', input: { note: NEEDLE }, suppresses: false },
+    { label: 'a nested object two levels in', input: { context: { note: NEEDLE } }, suppresses: false },
+    { label: 'four levels in', input: { a: { b: { c: { d: NEEDLE } } } }, suppresses: false },
+    { label: 'inside an array', input: { files: [NEEDLE] }, suppresses: false },
+  ];
+  const wrongPosition = POSITIONS
+    .map((row) => ({ row, got: classify(NEEDLE, row.input) }))
+    .filter(({ row, got }) => got !== (row.suppresses ? 'stopped' : 'api-limit'))
+    .map(({ row, got }) => `${row.label} → ${got}`);
+  assert.deepEqual(wrongPosition, [], 'a field that is not a brief suppressed a limit the result reported');
+
+  // AXIS 2 — the needle. Every one of these is a host message a real incident
+  // arrives as, beside a brief that merely mentions the same words. Containment
+  // suppressed all of them; the shortest is nine characters.
+  const NEEDLES: { message: string; brief: string; kind: string }[] = [
+    { message: 'API limit', brief: 'Refactor the API limit banner component.', kind: 'api-limit' },
+    { message: 'API usage limit', brief: FIRST_SPAWN_BRIEF, kind: 'api-limit' },
+    { message: 'rate_limit_exceeded', brief: 'Add a retry with backoff when the API returns rate_limit_exceeded.', kind: 'api-limit' },
+    { message: 'quota exceeded', brief: 'Warn the user when their quota exceeded the plan allowance.', kind: 'api-limit' },
+    { message: 'rate-limited', brief: 'Write the tests for the rate-limited branch of the client.', kind: 'api-limit' },
+    { message: 'too many requests', brief: 'Handle too many requests from the payments provider.', kind: 'api-limit' },
+    { message: 'model not enabled', brief: 'Hide the selector when the model not enabled error comes back.', kind: 'model-unavailable' },
+  ];
+  const swallowed = NEEDLES
+    .map((row) => ({ row, got: classify(row.message, { prompt: row.brief, model: 'composer-2.5-fast' }) }))
+    .filter(({ row, got }) => got !== row.kind)
+    .map(({ row, got }) => `${JSON.stringify(row.message)} inside ${JSON.stringify(row.brief)} → ${got}`);
+  assert.deepEqual(swallowed, [], 'a brief that merely names an incident disabled that incident');
+
+  // And the whole brief still is an echo, in both spellings of the same word, so
+  // the rows above are not passing because the mechanism stopped working.
+  assert.equal(classify(FIRST_SPAWN_BRIEF, { prompt: FIRST_SPAWN_BRIEF }), 'stopped', 'the echo itself is still read as an echo');
+  assert.equal(
+    classify('The model gpt-5.6-terra-medium is not enabled', { prompt: 'The model gpt-5.6-terra-medium is not enabled' }),
+    'stopped',
+    'a model-availability brief the host echoed is an echo too',
+  );
+});
+
+/**
+ * WHAT CLOSING THE BRIEF LEAK COST, which the round that closed it recorded as
+ * "no evidence path was deleted". That was false, and this is the tenth path: a
+ * failure record with NO status field, whose only content is a `message`.
+ *
+ * Before the exclusion, `{ message: 'you have hit your API usage limit' }`
+ * classified `api-limit`; it now answers null, so a child that died that way
+ * stays registered as LIVE and no rotation happens. The trade is kept — the
+ * alternative is to read a status-less `message` as evidence, which is precisely
+ * the first-spawn brief that retired live agents and condemned models — but it is
+ * a TRADE, not the absence of one, and the sentence that justified it ("there is
+ * nothing for a `message` to be the message OF") is deleted rather than defended.
+ *
+ * The bound on it: every other spelling of a status-less failure still fires, so
+ * a host has to report failure through `message` ALONE to be lost.
+ */
+test('a status-less failure record under `message` alone is the disclosed cost of the brief exclusion', () => {
+  const LIMIT = 'you have hit your API usage limit';
+  assert.equal(classifySubagentStop({ message: LIMIT }, false), null, 'the cost: read as a brief, not as a failure');
+  assert.equal(classifySubagentStop({ message: LIMIT, output: 'the run ended' }, false), null, 'and prose beside it does not rescue it');
+  // The bound. Every one of these is a status-less failure that still classifies.
+  for (const [label, response] of [
+    ['a bare failure STRING', `run_subagent failed: ${LIMIT}`],
+    ['{ text: … }', { text: LIMIT }],
+    ['{ error: … } at the own level', { error: LIMIT }],
+    ['{ stdout: … }', { stdout: LIMIT }],
+    ['vocabulary carried by a KEY', { rate_limit_exceeded: true }],
+  ] as const) {
+    assert.equal(classifySubagentStop(response, false), 'api-limit', `${label}: still read as the failure it is`);
+  }
+});
+
+/**
+ * The two evidence paths that separate this from the one-line version. Handing the
+ * classifier the leaf's existing input-excluding WALK closes the rows above and
+ * silently drops both of these: the walk starts by demanding a record, so a bare
+ * failure string answers '', and it collects VALUES, so vocabulary carried by a key
+ * is never seen. Both are failure detections that ship today.
+ */
+test('excluding the input keeps a legacy host unstructured failure string', () => {
+  const legacyString = rawFromHost('claude', [], {
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Task',
+    tool_input: { subagent_type: 'senior-frontend', prompt: 'build the UI' },
+    tool_response: 'run_subagent failed: you have hit your API usage limit.',
+  });
+  assert.equal(
+    classifySubagentStop(toolResultPayload(legacyString), false),
+    'api-limit',
+    'a host that answers with nothing but a failure string still gets the documented text fallback',
+  );
+});
+
+/**
+ * Separate from the row above on purpose: the two paths die to the same one-line
+ * shortcut for different reasons, and folded into one test the first assertion
+ * would abort before the second could redden.
+ */
+test('excluding the input keeps limit vocabulary carried by a key rather than a value', () => {
+  const keyOnly = rawFromHost('claude', [], {
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Task',
+    tool_input: { subagent_type: 'senior-frontend', prompt: 'build the UI' },
+    tool_response: { rate_limit_exceeded: true },
+  });
+  assert.equal(
+    classifySubagentStop(toolResultPayload(keyOnly), false),
+    'api-limit',
+    'the limit is the KEY; only the serialized form carries it',
+  );
+
+  // The same evidence inside the envelope Copilot-shaped payloads use, where no
+  // wrapper narrows anything and the projection is doing all the work.
+  const copilotKeyOnly = rawFromHost('copilot', ['after-tool-use'], {
+    hook_event_name: 'PostToolUse',
+    tool_name: 'task',
+    tool_args: JSON.stringify({ agent_type: 'traffic-one:senior-frontend', prompt: 'build the UI' }),
+    execution_record: { rate_limit_exceeded: true },
+  });
+  assert.equal(classifySubagentStop(toolResultPayload(copilotKeyOnly), false), 'api-limit');
+});
+
+/**
+ * The MIRROR of the rows above, and the reason this round could not hold agent
+ * ids constant the way the previous one did. `extractSpawnedAgentId` was left
+ * scanning the whole payload on the argument that its regex is anchored on a
+ * labelled `agent[_ ]id:` form, so only text that literally quotes a labelled id
+ * could false-positive. That text exists, and it is the single worst place for it
+ * to: a `[t1-replace-agent]` prompt quotes the id the orchestrator was just told
+ * to retire. Extracting it re-registers the corpse as the run's live agent, and
+ * combined with the fail-open the first round closed, the same id is then vouched
+ * for as alive.
+ *
+ * Every row is built the way its host sends it and pushed through THAT host's
+ * adapter, because the lifts decide what a hook sees: Copilot parses `tool_args`
+ * from a JSON string into both `tool_input` and `toolInput`, Cascade copies
+ * `tool_info`, and OpenCode/Kilo lift `output.args`. The DEFECT rows are the nine
+ * measured movements; the CONTROL rows are the other direction, that a result
+ * genuinely reporting an id still yields it on every family. Copilot and Cursor
+ * cannot be driven from this environment, so every payload here is CONSTRUCTED,
+ * not observed.
+ */
+const SPAWNED_ID_ROWS: {
+  host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' | 'windsurf';
+  argv: readonly string[];
+  label: string;
+  stdin: Record<string, unknown>;
+  /** The id the RESULT reports. Null when only the prompt names one. */
+  expected: string | null;
+}[] = (() => {
+  const LIVE = 'bff46cd7-3681-4cf0-adcf-263bf55cc301';
+  const DEAD = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const RETIRE = `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${DEAD} was retired. Continue the work.`;
+  const RETIRE_COPILOT = `${REPLACE_AGENT_MARKER}\nContinue the run. agent_id: senior-frontend-old was retired.`;
+  return [
+    {
+      host: 'claude', argv: [], label: 'claude wrapper, CONTROL: structured agentId in the result',
+      expected: 'add5367d74354d9b3',
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', prompt: RETIRE },
+        tool_response: { status: 'completed', agentId: 'add5367d74354d9b3', content: [{ type: 'text', text: 'done' }] },
+      },
+    },
+    {
+      host: 'claude', argv: [], label: 'claude wrapper, CONTROL: the `agentId:` footer as text only',
+      expected: 'add5367d74354d9b3',
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', prompt: RETIRE },
+        tool_response: { content: [{ type: 'text', text: "READY\nagentId: add5367d74354d9b3 (use SendMessage with to: 'add5367d74354d9b3')" }] },
+      },
+    },
+    {
+      host: 'claude', argv: [], label: 'claude wrapper: the wrapper never contained the prompt, so nothing moved here',
+      expected: null,
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', prompt: RETIRE },
+        tool_response: { status: 'completed', content: [{ type: 'text', text: 'The agent finished.' }] },
+      },
+    },
+    {
+      host: 'codex', argv: [], label: 'codex wrapper, CONTROL: snake_case agent_id in the result',
+      expected: '019ebb7f-0691-7281-b686-27e7fe6b393f',
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'spawn_agent',
+        tool_input: { task_name: 'senior-frontend', prompt: 'Retire agent_id: 019ebb7f-dead-7281-b686-27e7fe6b393f first.' },
+        tool_response: { agent_id: '019ebb7f-0691-7281-b686-27e7fe6b393f', nickname: 'Volta' },
+      },
+    },
+    {
+      host: 'cursor', argv: ['after-tool-use'], label: 'cursor flat, CONTROL: the `Agent ID:` line in the top-level output',
+      expected: LIVE,
+      stdin: {
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: 'Build the settings page.' },
+        output: `Agent ID: ${LIVE} — shipped the settings page.`, exit_code: 0,
+      },
+    },
+    {
+      host: 'cursor', argv: ['after-tool-use'], label: 'cursor flat, DEFECT: the replace prompt quotes the retired id and the result reports none',
+      expected: null,
+      stdin: {
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: RETIRE },
+        output: 'The subagent started.', exit_code: 0,
+      },
+    },
+    {
+      host: 'cursor', argv: ['after-tool-use'], label: 'cursor flat, DEFECT: the prompt quotes the corpse, the result reports the replacement',
+      expected: LIVE,
+      stdin: {
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', prompt: RETIRE },
+        output: `Agent ID: ${LIVE} — replacement running.`,
+      },
+    },
+    {
+      host: 'cursor', argv: ['after-tool-use'], label: 'cursor flat, DEFECT: the markdown-link id form, quoted in the prompt only',
+      expected: null,
+      stdin: {
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', prompt: `See the prior run [senior-frontend](${DEAD}) for context.` },
+        output: 'The subagent started.',
+      },
+    },
+    {
+      host: 'cursor', argv: ['after-tool-use'], label: 'cursor flat, CONTROL: a `resume` continuation whose result reports the id',
+      expected: LIVE,
+      stdin: {
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', resume: LIVE, prompt: 'Only the new task.' },
+        output: `Agent ID: ${LIVE} — continued.`,
+      },
+    },
+    {
+      // Cursor's continuation field is `resume`, a spelling the extractor's
+      // vocabulary never matched. Measured null BEFORE this change too, so
+      // narrowing takes nothing away here — this is not a host that reports a
+      // spawned id only in its input.
+      host: 'cursor', argv: ['after-tool-use'], label: 'cursor flat: a `resume` continuation whose result reports nothing was already silent',
+      expected: null,
+      stdin: {
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend', resume: LIVE, prompt: 'Only the new task.' },
+        output: 'Continued the agent.',
+      },
+    },
+    {
+      host: 'copilot', argv: ['after-tool-use'], label: 'copilot CLI, CONTROL: agent_id in the telemetry record',
+      expected: 'senior-frontend',
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'task',
+        tool_args: JSON.stringify({ agent_type: 'traffic-one:senior-frontend', name: 'senior-frontend', mode: 'background', prompt: 'Build the settings page.' }),
+        toolTelemetry: { restrictedProperties: { agent_id: 'senior-frontend', agent_name: 'traffic-one:senior-frontend' } },
+      },
+    },
+    {
+      host: 'copilot', argv: ['after-tool-use'], label: 'copilot CLI, DEFECT: the replace prompt quotes the retired agent_id',
+      expected: null,
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'task',
+        tool_args: JSON.stringify({ agent_type: 'traffic-one:senior-frontend', mode: 'background', prompt: RETIRE_COPILOT }),
+        execution_record: { status: 'running', text: 'The background task started.' },
+      },
+    },
+    {
+      host: 'copilot', argv: ['after-tool-use'], label: 'copilot CLI, DEFECT: the prompt quotes the corpse, the result reports the replacement',
+      expected: 'senior-frontend-2',
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'task',
+        tool_args: JSON.stringify({ agent_type: 'traffic-one:senior-frontend', prompt: RETIRE_COPILOT }),
+        toolTelemetry: { restrictedProperties: { agent_id: 'senior-frontend-2' } },
+      },
+    },
+    {
+      // The one input field on any reachable host that really does carry an agent
+      // id: Copilot's `task` continuation primitive. It is an id the prompt
+      // REQUESTS — handed back out of the registry the reuse gate has just read —
+      // not one the result reports, and taking it is exactly how a row retired by
+      // the marker comes back to life. Losing it costs nothing: the row it names
+      // is either already recorded or deliberately retired, and Copilot's
+      // SubagentStart display-name bind records the live one independently.
+      host: 'copilot', argv: ['after-tool-use'], label: 'copilot CLI, DEFECT: the continuation input carries agent_id and the result reports none',
+      expected: null,
+      stdin: {
+        hook_event_name: 'PostToolUse', tool_name: 'task',
+        tool_args: JSON.stringify({ agent_type: 'traffic-one:senior-frontend', agent_id: 'senior-frontend', prompt: 'Only the new fix task.' }),
+        execution_record: { status: 'running' },
+      },
+    },
+    {
+      host: 'copilot', argv: ['after-tool-use'], label: 'copilot VS Code, CONTROL: the object (not JSON-string) tool_args surface',
+      expected: 'senior-backend',
+      stdin: {
+        hookSpecificOutput: { hookEventName: 'PostToolUse' },
+        hook_event_name: 'PostToolUse', tool_name: 'task',
+        tool_args: { agent_type: 'traffic-one:senior-backend', prompt: 'Build the settings page.' },
+        toolTelemetry: { restrictedProperties: { agent_id: 'senior-backend' } },
+      },
+    },
+    {
+      host: 'opencode', argv: ['after-tool-use'], label: 'opencode output container, CONTROL: the id in output.output',
+      expected: 'ses_opencode12345',
+      stdin: {
+        event: 'tool.execute.after', tool_name: 'task',
+        output: { title: 'task', args: { subagent_type: 'senior-frontend', prompt: 'Build the settings page.' }, output: 'agent_id: ses_opencode12345' },
+      },
+    },
+    {
+      host: 'opencode', argv: ['after-tool-use'], label: 'opencode output container, DEFECT: the prompt lifted out of output.args quotes a retired id',
+      expected: null,
+      stdin: {
+        event: 'tool.execute.after', tool_name: 'task',
+        output: { title: 'task', args: { subagent_type: 'senior-frontend', prompt: 'Retire agent_id: ses_opencodeDEAD1 and restart.' }, output: 'task complete' },
+      },
+    },
+    {
+      host: 'kilo', argv: ['after-tool-use'], label: 'kilo output container, CONTROL: the id in output.output',
+      expected: 'kilo-task-99887',
+      stdin: {
+        event: 'tool.execute.after', tool_name: 'task',
+        output: { title: 'task', args: { subagent_type: 'senior-tester', prompt: 'Build the settings page.' }, output: 'agent_id: kilo-task-99887' },
+      },
+    },
+    {
+      host: 'kilo', argv: ['after-tool-use'], label: 'kilo output container, DEFECT: the prompt lifted out of output.args quotes a retired id',
+      expected: null,
+      stdin: {
+        event: 'tool.execute.after', tool_name: 'task',
+        output: { title: 'task', args: { subagent_type: 'senior-tester', prompt: 'Retire agent_id: kilo-task-DEAD11 and restart.' }, output: 'task complete' },
+      },
+    },
+    {
+      host: 'windsurf', argv: ['post_mcp_tool_use'], label: 'cascade tool_info, CONTROL: the id beside the prompt in the same record',
+      expected: 'devin-agent-77123',
+      stdin: {
+        agent_action_name: 'post_mcp_tool_use',
+        tool_info: {
+          mcp_server_name: 'devin', mcp_tool_name: 'run_subagent',
+          profile: 'senior-frontend', prompt: 'Build the settings page.', output: 'agent_id: devin-agent-77123',
+        },
+      },
+    },
+    {
+      host: 'windsurf', argv: ['post_mcp_tool_use'], label: 'cascade tool_info, DEFECT: tool_info.prompt quotes a retired id',
+      expected: null,
+      stdin: {
+        agent_action_name: 'post_mcp_tool_use',
+        tool_info: {
+          mcp_server_name: 'devin', mcp_tool_name: 'run_subagent',
+          profile: 'senior-frontend', prompt: 'Retire agent_id: devin-agent-DEAD11 and restart.', output: 'the subagent started',
+        },
+      },
+    },
+    {
+      host: 'windsurf', argv: ['post_mcp_tool_use'], label: 'Devin Local (Claude-shaped), CONTROL: the wrapper reports agent_id',
+      expected: 'devin-local-55321',
+      stdin: {
+        agent_action_name: 'post_mcp_tool_use',
+        tool_input: { profile: 'senior-frontend', prompt: RETIRE },
+        tool_response: { agent_id: 'devin-local-55321' },
+      },
+    },
+  ];
+})();
+
+test('the extracted spawn id is the one the RESULT reports, never one the prompt quotes', () => {
+  for (const row of SPAWNED_ID_ROWS) {
+    assert.equal(
+      extractSpawnedAgentId(toolResultPayload(rawFromHost(row.host, row.argv, row.stdin))),
+      row.expected,
+      row.label,
+    );
+  }
+});
+
+/**
+ * A brief spelled outside the SHARED input vocabulary, which is a different
+ * question from a brief this reader can see. `tool_info` is a RESULT container,
+ * not an input key, so `tool_info.message` survives `toolResultWithoutInput` —
+ * and this leak was left open on the argument that the only host shaped that way
+ * (legacy Cascade) never reaches the recorder anyway.
+ *
+ * That argument covered the wrong half. The same residual is reachable at the
+ * payload's TOP LEVEL on Cursor and on the Copilot envelope family, both of which
+ * DO reach the recorder, so the extractor now carries its own exclusion
+ * (`withoutSpawnBrief`) rather than relying on a host stand-down. Cascade closes
+ * with them, for free. Admitting `message` to `TOOL_INPUT_KEYS` was and remains
+ * refused — it would delete failure evidence from three readers at once — and the
+ * private list does not drift, because it IS `role-infer.ts`'s.
+ */
+test('a brief spelled outside the shared input vocabulary no longer leaks its quoted id', () => {
+  const cascade = extractSpawnedAgentId(toolResultPayload(rawFromHost('windsurf', ['post_mcp_tool_use'], {
+    agent_action_name: 'post_mcp_tool_use',
+    tool_info: {
+      mcp_server_name: 'devin', mcp_tool_name: 'run_subagent',
+      profile: 'senior-frontend', message: 'Retire agent_id: devin-agent-DEAD22 and restart.',
+      output: 'the subagent started',
+    },
+  })));
+  assert.equal(cascade, null, 'the brief is excluded by this reader even where the shared vocabulary cannot');
+  assert.equal(
+    subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'windsurf'),
+    false,
+    'and the host was never reached in the first place — which is why this row was not the one that mattered',
+  );
+  // The other half of the same object: a RESULT that really does report the id in
+  // the same container still yields it. The exclusion is by key and by string,
+  // not a refusal to read `tool_info`.
+  assert.equal(
+    extractSpawnedAgentId(toolResultPayload(rawFromHost('windsurf', ['post_mcp_tool_use'], {
+      agent_action_name: 'post_mcp_tool_use',
+      tool_info: {
+        mcp_server_name: 'devin', mcp_tool_name: 'run_subagent',
+        profile: 'senior-frontend', message: 'Retire agent_id: devin-agent-DEAD22 and restart.',
+        output: 'agent_id: devin-agent-77123',
+      },
+    }))),
+    'devin-agent-77123',
+  );
+});
+
+/**
+ * P2, end to end and in both directions: a spawn BRIEF at the payload's TOP
+ * LEVEL, on the two flat hosts that reach this recorder.
+ *
+ * `TOOL_INPUT_KEYS` deliberately refuses these spellings (a `message` in a status
+ * envelope is ordinary failure evidence), and the disclosure used to call the gap
+ * "closed in practice" because the three reachable hosts nest a brief under
+ * `tool_input`/`tool_args`. The nested half is true. The FLAT half was not:
+ * `adapters/cursor.ts` and `adapters/copilot.ts` each read a top-level `message`
+ * as prompt text and Cursor passes `raw: data` through verbatim, and measured
+ * before the fix every one of these rows returned the id the replacement prompt
+ * was quoting as RETIRED — which `recordSpawnedAgent` then wrote into the
+ * registry as this run's live agent, `isResumeCapableAgentId` waving it through.
+ *
+ * Still UNOBSERVED: no fixture or corpus entry in this tree puts a brief at the
+ * top level on either host, and neither host can be driven from here, so every
+ * payload below is CONSTRUCTED. Iterating `SPAWN_BRIEF_KEYS` rather than a
+ * literal is what keeps the extractor's private exclusion tied to the spellings
+ * `role-infer.ts` actually reads: a spelling added there is covered here without
+ * a second edit, and one removed reddens.
+ */
+test('a brief at the payload top level is input, on every flat host that reaches the recorder', () => {
+  const DEAD_UUID = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const LIVE_UUID = 'bff46cd7-3681-4cf0-adcf-263bf55cc301';
+  const leaked: string[] = [];
+  const lost: string[] = [];
+  for (const key of SPAWN_BRIEF_KEYS) {
+    const cursor = (brief: Record<string, unknown>, output: string): unknown => rawFromHost('cursor', ['after-tool-use'], {
+      tool_name: 'Task',
+      tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium' },
+      ...brief,
+      output,
+    });
+    const copilot = (brief: Record<string, unknown>, record: Record<string, unknown>): unknown => rawFromHost('copilot', ['after-tool-use'], {
+      hook_event_name: 'PostToolUse', tool_name: 'task',
+      tool_args: JSON.stringify({ agent_type: 'traffic-one:senior-frontend' }),
+      ...brief,
+      execution_record: record,
+    });
+    const rows: { label: string; raw: unknown; expected: string | null }[] = [
+      {
+        label: `cursor, top-level ${key}: the replace brief quotes the retired id and the result reports none`,
+        raw: cursor({ [key]: `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${DEAD_UUID} was retired.` }, 'The subagent started.'),
+        expected: null,
+      },
+      {
+        label: `cursor, top-level ${key}: the brief quotes the corpse, the result reports the replacement`,
+        raw: cursor({ [key]: `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${DEAD_UUID} was retired.` }, `Agent ID: ${LIVE_UUID} — replacement running.`),
+        expected: LIVE_UUID,
+      },
+      {
+        label: `copilot, top-level ${key}: the replace brief quotes the retired agent_id`,
+        raw: copilot({ [key]: `${REPLACE_AGENT_MARKER}\nagent_id: senior-frontend-old was retired.` }, { status: 'running', text: 'The background task started.' }),
+        expected: null,
+      },
+    ];
+    // A record is an envelope, not a brief — Copilot's own tool is called `task`,
+    // so a `task: { … }` result must stay readable. Asserted only for the four
+    // spellings the SHARED vocabulary refuses: `prompt` is an argument spelling
+    // in that closed set, dropped by name whatever its value, and this reader
+    // must not quietly resurrect it.
+    if (!TOOL_INPUT_KEYS.has(key)) {
+      rows.push({
+        label: `copilot, top-level ${key}: a record under the same name is an envelope, not a brief`,
+        raw: copilot({ [key]: { agent_id: 'senior-frontend-2' } }, { status: 'running' }),
+        expected: 'senior-frontend-2',
+      });
+    } else {
+      rows.push({
+        label: `copilot, top-level ${key}: the shared vocabulary owns this spelling, record or string`,
+        raw: copilot({ [key]: { agent_id: 'senior-frontend-2' } }, { status: 'running' }),
+        expected: null,
+      });
+    }
+    for (const row of rows) {
+      const extracted = extractSpawnedAgentId(toolResultPayload(row.raw));
+      if (extracted === row.expected) continue;
+      (row.expected === null ? leaked : lost).push(`${row.label} → ${String(extracted)}`);
+    }
+  }
+  assert.deepEqual(leaked, [], 'an id only a brief quotes was read as one the result reported');
+  assert.deepEqual(lost, [], 'and closing that must not cost an id a result really does report');
+});
+
+/**
+ * A brief that is not a STRING is still a brief — the respelling that reopened
+ * the row above, and the one place a naive fix for it breaks something real.
+ *
+ * `withoutSpawnBrief` used to drop the four spellings only when the value was a
+ * string. A non-string brief did not fire the exclusion, the projection recursed
+ * into it, and `collectResponseText`'s `JSON.stringify` handed the quoted id
+ * straight to `AGENT_ID_RE`. Measured, ALL SIXTEEN combinations of the four
+ * spellings against `{ text }`, an array of strings, `content[]` blocks and one
+ * record deeper leaked the retired id — which `recordSpawnedAgent` then writes
+ * into `.traffic-one/runs/<runId>/agents.json` as the run's live reusable
+ * `senior-frontend`, so the reuse gate demands continuation of an agent that no
+ * longer exists.
+ *
+ * Both obvious remedies were measured and both break the LAST row here. Dropping
+ * the subtree regardless of type loses `task: { agent_id: … }`; stripping only its
+ * string leaves loses it too, because that id IS a string leaf. What separates
+ * them is not the type: an id a result REPORTS arrives under a key that names it,
+ * an id a brief QUOTES arrives inside prose. So the exclusion keeps a structured
+ * `agent_id`/`agentId` key at any depth inside a brief-named subtree and drops
+ * every other leaf.
+ */
+test('a brief that is not a string still leaks nothing, and a structured id inside one is still read', () => {
+  const DEAD_UUID = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const brief = `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${DEAD_UUID} was retired. Continue.`;
+  const shapes: { label: string; value: (text: string) => unknown }[] = [
+    { label: 'object with .text', value: (text) => ({ text }) },
+    { label: 'array of strings', value: (text) => [text] },
+    { label: 'content blocks', value: (text) => ({ content: [{ type: 'text', text }] }) },
+    { label: 'nested one record deeper', value: (text) => ({ detail: { body: text } }) },
+  ];
+  const leaked: string[] = [];
+  for (const key of SPAWN_BRIEF_KEYS.filter((spelling) => !TOOL_INPUT_KEYS.has(spelling))) {
+    for (const shape of shapes) {
+      const raw = rawFromHost('cursor', ['after-tool-use'], {
+        tool_name: 'Task',
+        tool_input: { subagent_type: 'senior-frontend' },
+        [key]: shape.value(brief),
+        output: 'The subagent started.',
+      });
+      const extracted = extractSpawnedAgentId(toolResultPayload(raw));
+      if (extracted !== null) leaked.push(`top-level ${key} (${shape.label}) → ${extracted}`);
+    }
+  }
+  assert.deepEqual(leaked, [], 'a brief spelled as anything but a string leaked the id it quoted');
+
+  // The row both naive remedies break. Copilot's tool is itself called `task`, so
+  // a record under a brief name is an envelope and a structured id in it is the
+  // RESULT's. Driven through the adapter, which lifts `tool_args` from a JSON
+  // string.
+  assert.equal(
+    extractSpawnedAgentId(toolResultPayload(rawFromHost('copilot', ['after-tool-use'], {
+      hook_event_name: 'PostToolUse', tool_name: 'task',
+      tool_args: JSON.stringify({ agent_type: 'traffic-one:senior-frontend' }),
+      task: { agent_id: 'senior-frontend-2' },
+      execution_record: { status: 'running' },
+    }))),
+    'senior-frontend-2',
+    'a structured id key inside a brief-named subtree is the result reporting one',
+  );
+  // Both halves of the discriminator in one object, so neither can be satisfied
+  // by refusing the whole subtree or by keeping all of it.
+  assert.equal(
+    extractSpawnedAgentId({ task: { agent_id: 'senior-frontend-2', note: `Retire agent_id: ${DEAD_UUID} first.` } }),
+    'senior-frontend-2',
+    'the structured key wins over prose quoting another id in the same subtree',
+  );
+  assert.equal(
+    extractSpawnedAgentId({ description: { note: `Retire agent_id: ${DEAD_UUID} first.` } }),
+    null,
+    'and with no structured key there is nothing in a brief to read',
+  );
+});
+
+/**
+ * Why the two exclusions stay SEPARATE, and what each still admits.
+ *
+ * This row used to assert that "the classifier keeps the brief spellings the id
+ * extractor drops", on the argument that no position rule separates a `message` in
+ * a status envelope from a brief naming a limit. That argument was about DEPTH, and
+ * it was refuted by measurement: an ordinary first-spawn brief at the payload top
+ * level retired a live Copilot agent and condemned its model. The rule that
+ * separates them is CO-LOCATION — a record either reports a decisive verdict of its
+ * own or it does not — so the classifier now has its own exclusion too, a
+ * different one. The two readers still want different things from the same key,
+ * which is still why neither list may be promoted into `TOOL_INPUT_KEYS`.
+ *
+ * Both directions remain load-bearing: a mutant admitting `message` to the shared
+ * set, and a mutant handing the classifier the ID extractor's exclusion, both
+ * downgrade the first row here from `api-limit` to `stopped`. That is the
+ * model-rotation signal, not a nicety — `api-limit` records the model as exhausted
+ * for the run and rotates off it.
+ */
+test('the classifier reads a message co-located with a verdict, and drops every brief that is not', () => {
+  assert.equal(
+    classifySubagentStop({ status: 'error', message: 'you have hit your API usage limit' }, true),
+    'api-limit',
+    'a `message` inside a status envelope is ordinary failure evidence, at the payload top level',
+  );
+  assert.equal(
+    classifySubagentStop({ execution_record: { status: 'error', message: 'you have hit your API usage limit' } }, true),
+    'api-limit',
+    'and inside an envelope nothing names, which is where the structured read now also looks',
+  );
+  // The three spellings nothing in this tree reports a failure through are dropped
+  // even beside a decisive verdict. Defaulting to DROP is the point: a fifth
+  // spelling added to `role-infer.ts` is closed here without a second edit.
+  for (const key of ['task', 'instructions', 'description']) {
+    assert.equal(
+      classifySubagentStop({ status: 'error', [key]: 'you have hit your API usage limit' }, true),
+      'stopped',
+      `${key}: a brief spelling is never the failure's own text, verdict beside it or not`,
+    );
+  }
+  // A `message` with nothing to be the message OF is a brief.
+  assert.equal(
+    classifySubagentStop({ message: 'you have hit your API usage limit', execution_record: { status: 'running' } }, false),
+    null,
+    'no decisive verdict in the record carrying it, so it is not that record reporting a failure',
+  );
+  // And Traffic One's own spawn markers are content Traffic One owns: no host
+  // result contains one, so a string carrying one is a brief wherever it sits.
+  for (const marker of [REPLACE_AGENT_MARKER, '[t1-role: senior-frontend]']) {
+    assert.equal(
+      classifySubagentStop({ status: 'error', message: `${marker}\nThe previous agent hit an API usage limit. Continue.` }, true),
+      'stopped',
+      `${marker}: a brief carrying a Traffic One spawn marker is never result evidence`,
+    );
+  }
+  // The id extractor's half of the same key, unchanged.
+  assert.equal(
+    extractSpawnedAgentId({ status: 'error', message: 'agent_id: senior-frontend-old was retired.' }),
+    null,
+    'the same field, same position, is never an id source — no reachable host reports one there',
+  );
+  assert.equal(
+    extractSpawnedAgentId({ status: 'error', text: 'agent_id: senior-frontend-2 started.' }),
+    'senior-frontend-2',
+    'and the result field beside it still reports one',
+  );
+});
+
+/**
+ * The harm the row above prevents, driven through the recorder onto a
+ * materialized project rather than asserted at the unit. Before the fix this
+ * wrote `aaaaaaaa-…` — the id the `[t1-replace-agent]` brief was quoting as
+ * retired — into `.traffic-one/runs/<runId>/agents.json` as the run's live,
+ * reusable `senior-frontend`, so the reuse gate went on to demand continuation of
+ * an agent that no longer existed.
+ */
+test('a top-level brief quoting a retired id registers nothing, and a real result still registers', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-top-level-brief');
+    const dead = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+    const live = 'bff46cd7-3681-4cf0-adcf-263bf55cc301';
+    const brief = `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${dead} was retired. Resume from what it finished.`;
+
+    const leaked = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium' },
+      description: brief,
+      output: 'The subagent started.',
+    }, 'cursor'));
+    assert.equal(leaked.kind, 'noop');
+    assert.equal(
+      readRunAgentRegistry(cwd, 'run-top-level-brief')['senior-frontend'],
+      undefined,
+      'the id the top-level brief quoted must not become this run live agent',
+    );
+
+    recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium' },
+      description: brief,
+      output: `Agent ID: ${live} — replacement running.`,
+    }, 'cursor'));
+    assert.equal(
+      readRunAgentRegistry(cwd, 'run-top-level-brief')['senior-frontend']?.agentId,
+      live,
+      'and the replacement the RESULT reports is still recorded, brief or no brief',
+    );
+  });
+});
+
+/**
+ * The FIRST-SPAWN case, end to end, on the host where every consequence lands at
+ * once. No marker, no dead agent, no incident anywhere — an ordinary product brief
+ * that happens to describe what the UI should do when the provider rate-limits it,
+ * and a result that says in so many words that the child is RUNNING.
+ *
+ * Measured before this round, for four of the five brief spellings (`prompt` was
+ * already covered by name in `TOOL_INPUT_KEYS`): the live subagent was marked
+ * `replaced` in `.traffic-one/runs/<runId>/agents.json`, the hook returned a
+ * respawn directive while the real child kept working, and `composer-2.5-fast` was
+ * written into the run's exhaustion ledger — so model rotation moved off a model
+ * that never hit a limit. Three harms from one misread string.
+ */
+test('an ordinary first-spawn brief that mentions an API limit retires nothing and condemns no model', () => {
+  const retired: string[] = [];
+  // Every POSITION, not only the one this test was written for. Driven end to end
+  // because the unit answer and the harm are two different measurements: the
+  // array position classified `api-limit` at the unit AND, through the recorder,
+  // marked the live agent replaced and wrote `composer-2.5-fast` into the run's
+  // exhaustion ledger. The nested position is the control that was always green.
+  for (const position of BRIEF_POSITIONS) {
+    for (const key of SPAWN_BRIEF_KEYS) {
+      withMaterialized({ teamApproved: true }, (cwd) => {
+        setCurrentRunId(cwd, 'run-first-spawn-brief');
+        freezeRunPolicy(cwd, 'copilot', 'run-first-spawn-brief');
+        recordRunAgent(cwd, 'run-first-spawn-brief', 'senior-frontend', {
+          agentId: 'copilotchild12345', resumeId: 'copilotchild12345', parentSessionId: 'parent-1',
+        });
+
+        const nested = position === 'nested under the input key';
+        const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+          tool_input: {
+            agent_type: 'traffic-one:senior-frontend',
+            model: 'composer-2.5-fast',
+            ...(nested ? { [key]: FIRST_SPAWN_BRIEF } : {}),
+          },
+          ...(position === 'at the payload top level' ? { [key]: FIRST_SPAWN_BRIEF } : {}),
+          ...(position === 'behind an array' ? { steps: [{ [key]: FIRST_SPAWN_BRIEF }] } : {}),
+          execution_record: { status: 'running' },
+        }, 'copilot', 'task'));
+
+        const row = readRunAgentRegistry(cwd, 'run-first-spawn-brief')['senior-frontend'];
+        const exhausted = exhaustedModelsForRole(cwd, 'run-first-spawn-brief', 'senior-frontend');
+        if (result.kind !== 'noop' || row?.replaced || exhausted.length) {
+          retired.push(`${position} ${key} → ${result.kind}, replaced=${String(row?.replaced)}, exhausted=${JSON.stringify(exhausted)}`);
+        }
+        assert.equal(row?.agentId, 'copilotchild12345', `${position} ${key}: the live agent keeps its row`);
+      });
+    }
+  }
+  assert.deepEqual(retired, [], 'a live agent was retired, or a model condemned, by a product brief');
+});
+
+/**
+ * The two harms an array position reached that no exclusion covered, end to end
+ * on the hosts they land on, and the one a nested BARE error reached with nothing
+ * failed anywhere. All three were measured through this recorder by a peer review
+ * of the previous round; each writes to a different durable place.
+ */
+test('a brief behind an array registers no corpse, and a nested warning condemns no model', () => {
+  const DEAD = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+
+  // 1. The id, from a Cursor `content[]` tool_use block — the one array shape
+  //    this tree documents arriving there, since the adapter passes `raw: data`
+  //    through verbatim. Before this round the registry held the retired id.
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-array-brief-cursor');
+    const brief = `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${DEAD} was retired. Resume from what it finished.`;
+    const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium' },
+      content: [{ type: 'tool_use', name: 'Task', input: { prompt: brief } }],
+      output: 'The subagent started.',
+    }, 'cursor'));
+    assert.equal(result.kind, 'noop');
+    assert.equal(
+      readRunAgentRegistry(cwd, 'run-array-brief-cursor')['senior-frontend'],
+      undefined,
+      'an id quoted inside a content[] block is still an id the brief is retiring',
+    );
+  });
+
+  // 2. The id again, from a Copilot step list.
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-array-brief-copilot');
+    const brief = `${REPLACE_AGENT_MARKER}\nThe previous agent (agent_id: senior-frontend-old, Agent ID: ${DEAD}) was retired. Continue.`;
+    recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: { agent_type: 'traffic-one:senior-frontend', model: 'composer-2.5-fast' },
+      execution_record: { status: 'running', steps: [{ message: brief }] },
+    }, 'copilot', 'task'));
+    assert.equal(
+      readRunAgentRegistry(cwd, 'run-array-brief-copilot')['senior-frontend'],
+      undefined,
+      'nor may a step list hand the corpse back as this run live agent',
+    );
+  });
+
+  // 3. The nested bare error: nothing failed, the child is explicitly running,
+  //    and a live agent was retired while an innocent model was condemned.
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-bare-error');
+    freezeRunPolicy(cwd, 'copilot', 'run-bare-error');
+    recordRunAgent(cwd, 'run-bare-error', 'senior-frontend', {
+      agentId: 'copilotchild12345', resumeId: 'copilotchild12345', parentSessionId: 'parent-1',
+    });
+    const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: { agent_type: 'traffic-one:senior-frontend', model: 'composer-2.5-fast' },
+      metadata: { error: 'a deprecation warning', message: FIRST_SPAWN_BRIEF },
+      execution_record: { status: 'running' },
+    }, 'copilot', 'task'));
+    const row = readRunAgentRegistry(cwd, 'run-bare-error')['senior-frontend'];
+    assert.equal(result.kind, 'noop', 'a deprecation warning is not the tool call failing');
+    assert.notEqual(row?.replaced, true, 'the live agent keeps its registry row');
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, 'run-bare-error', 'senior-frontend'),
+      [],
+      'and a model that never hit a limit is not written into the exhaustion ledger',
+    );
+  });
+});
+
+/**
+ * The Cursor mirror of the row above, which lands in the DURABLE observation
+ * ledger rather than in a per-run registry — the `cursor-crash-misclassified`
+ * defect this lane already closed once, arriving from the other side.
+ *
+ * The child really did crash, and nothing in the RESULT names a limit. Measured
+ * before this round, two runs byte-identical but for where the brief sat recorded
+ * `generic` with the brief nested and `api-limit` with it at the top level, and the
+ * second wrote `gpt-5.6-terra-medium` into the exhaustion ledger.
+ */
+test('a crash whose brief mentions a limit is not an API limit, wherever the brief sits', () => {
+  const wrong: string[] = [];
+  // The fourth case is not a position but the ECHO, and it is here because this
+  // is where the wiring lands: `recordSpawnedAgent` is the only caller that has
+  // the spawn input to compare the result against, so dropping that argument at
+  // the call site would leave every unit row green. The brief sits under
+  // `message`, the one spelling a decisive record keeps, beside a real crash —
+  // the residual cell exactly — and the input carries it because the host echoed
+  // it. Without the echo read, this run records `api-limit` and condemns
+  // `gpt-5.6-terra-medium` in the durable ledger for a crash that named no limit.
+  for (const position of [...BRIEF_POSITIONS, 'echoed from the spawn input'] as const) {
+    const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    try {
+      withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
+        setCurrentRunId(cwd, 'run-brief-crash');
+        freezeRunPolicy(cwd, 'cursor', 'run-brief-crash');
+        const toolCallId = 'tool_11111111-1111-4111-8111-111111111111';
+        observeCursorSpawn(cwd, 'run-brief-crash', 'senior-frontend', 'gpt-5.6-terra-medium', 'highest', CURSOR_HIGHEST_FAMILY, toolCallId);
+        recordRunAgent(cwd, 'run-brief-crash', 'senior-frontend', {
+          agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc301', toolCallId, parentSessionId: 'parent-1',
+        });
+
+        const nested = position === 'nested under the input key';
+        const echoed = position === 'echoed from the spawn input';
+        recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+          tool_call_id: toolCallId,
+          tool_input: {
+            subagent_type: 'senior-frontend',
+            model: 'gpt-5.6-terra-medium',
+            ...(nested || echoed ? { description: FIRST_SPAWN_BRIEF } : {}),
+          },
+          ...(position === 'at the payload top level' ? { description: FIRST_SPAWN_BRIEF } : {}),
+          ...(position === 'behind an array' ? { steps: [{ description: FIRST_SPAWN_BRIEF }] } : {}),
+          ...(echoed ? { message: FIRST_SPAWN_BRIEF } : {}),
+          ...CRASHED_NO_LIMIT,
+        }, 'cursor'));
+
+        const durable = listCursorSpawnObservations(cwd, 'run-brief-crash')[0];
+        const exhausted = exhaustedModelsForRole(cwd, 'run-brief-crash', 'senior-frontend');
+        if (durable?.outcome !== 'generic' || exhausted.length) {
+          wrong.push(`[${position}] outcome=${String(durable?.outcome)} exhausted=${JSON.stringify(exhausted)}`);
+        }
+        // The crash itself is still a crash: the agent is retired either way, and
+        // only the KIND — which is what rotates models — was at stake.
+        assert.equal(readRunAgentRegistry(cwd, 'run-brief-crash')['senior-frontend']?.replaced, true, `${position}: the dead agent is still retired`);
+      });
+    } finally {
+      if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+      else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    }
+  }
+  assert.deepEqual(wrong, [], 'the durable ledger condemned a model over a spawn brief');
+});
+
+/**
+ * TWO ROTATIONS, which is the shape a discriminator reading the spawn input can
+ * break — and did.
+ *
+ * The recorder's own api-limit directive tells the orchestrator to re-send the
+ * task with the replacement marker, and a respawn prompt therefore names the
+ * incident it is respawning from; `REPLACEMENT_BRIEF` above is this suite's
+ * standing example and `replacementJustified` in model-rotation.ts accepts a
+ * prompt on that vocabulary. So limit #2 always arrives with limit vocabulary in
+ * the INPUT. Measured end to end before this round, with the echo discriminator
+ * comparing the result string against every input string by containment: limit #1
+ * classified `api-limit` and wrote its model into the ledger, and limit #2 — same
+ * host, byte-identical result — classified `stopped` and wrote nothing, so the
+ * next fallback was chosen as if only one model had ever been exhausted. It
+ * degraded once per rotation, in the direction that re-picks a model already out
+ * of budget.
+ *
+ * Driven through `recordSpawnedAgent` rather than the unit, because the wiring is
+ * half the defect: the recorder is the only caller that has a spawn input to
+ * compare against, and the ledger is where the damage shows.
+ */
+test('a second API limit condemns its own model, even when the respawn brief quotes the first', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const runId = 'run-rotate-twice';
+    setCurrentRunId(cwd, runId);
+    freezeRunPolicy(cwd, 'copilot', runId);
+    // The host's own limit envelope, unchanged between the two rotations.
+    const limit = {
+      status: 'error',
+      message: 'API usage limit',
+      execution_record: { status: 'error', agent_id: 'copilotchild12345' },
+    };
+    const rotate = (brief: string, model: string): HookResult => {
+      recordRunAgent(cwd, runId, 'senior-frontend', {
+        agentId: 'copilotchild12345', resumeId: 'copilotchild12345', parentSessionId: 'parent-1', model,
+      });
+      return recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+        tool_input: { agent_type: 'traffic-one:senior-frontend', model, prompt: brief },
+        ...limit,
+      }, 'copilot', 'task'));
+    };
+
+    const first = rotate('Build the billing screen and wire the checkout button.', 'composer-2.5-fast');
+    assert.equal(first.kind, 'context', 'the first limit tells the orchestrator to respawn');
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, runId, 'senior-frontend'),
+      ['composer-2.5-fast'],
+      'the first limit condemns the model that hit it',
+    );
+
+    const second = rotate(REPLACEMENT_BRIEF, 'gpt-5.6-terra-medium');
+    assert.equal(second.kind, 'context', 'the second limit tells the orchestrator to respawn too');
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, runId, 'senior-frontend').slice().sort(),
+      ['composer-2.5-fast', 'gpt-5.6-terra-medium'],
+      'the ledger stopped growing on the respawn the product prescribes',
+    );
+  });
+});
+
+/**
+ * The harm, end to end, on the host where the defect lands hardest. No registry
+ * row exists for the role; the orchestrator re-sends the task with the
+ * replacement marker, quoting the id it was told to retire, and the result names
+ * no agent at all. Before the narrowing the recorder read the quoted corpse out
+ * of the prompt and wrote it as this run's LIVE senior-frontend, so the reuse gate
+ * went on to demand continuation of a dead agent.
+ */
+test('a replacement spawn whose prompt quotes the retired id registers nothing', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-quoted-corpse');
+    const dead = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+    const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: {
+        subagent_type: 'senior-frontend',
+        model: 'gpt-5.6-terra-medium',
+        prompt: `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${dead} was retired. Resume from what it finished.`,
+      },
+      output: 'The subagent started.',
+    }, 'cursor'));
+    assert.equal(result.kind, 'noop');
+    assert.equal(
+      readRunAgentRegistry(cwd, 'run-quoted-corpse')['senior-frontend'],
+      undefined,
+      'the id the prompt quoted must not become this run live agent',
+    );
+
+    // Same spawn, same prompt, and this time the result really does report the
+    // replacement: the row is written, from the result.
+    const live = 'bff46cd7-3681-4cf0-adcf-263bf55cc301';
+    recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: {
+        subagent_type: 'senior-frontend',
+        model: 'gpt-5.6-terra-medium',
+        prompt: `${REPLACE_AGENT_MARKER}\nThe previous Agent ID: ${dead} was retired. Resume from what it finished.`,
+      },
+      output: `Agent ID: ${live} — replacement running.`,
+    }, 'cursor'));
+    assert.equal(readRunAgentRegistry(cwd, 'run-quoted-corpse')['senior-frontend']?.agentId, live);
+  });
+});
+
+/**
+ * Copilot's result field is an ASSUMPTION — the disclosure at the head of
+ * shared/tool-result.ts records what that rests on. Four constructions exist
+ * across this tree spanning three incompatible envelope families (the fourth,
+ * the bare `toolTelemetry` in the extractor's own unit row above, is a direct
+ * call rather than a host payload, so it implies no fourth family), and that
+ * spread is the evidence that nobody knows. This does not promote one; it pins
+ * that the extractor cannot tell them apart, which is what makes the guess
+ * survivable: the reader excludes the input by name and takes whatever remains,
+ * so the envelope's name is never consulted.
+ */
+test('the three constructed Copilot result shapes are indistinguishable to the id extractor', () => {
+  const telemetry = { toolTelemetry: { restrictedProperties: { agent_id: 'senior-frontend' } } };
+  const shapes: { label: string; envelope: Record<string, unknown> }[] = [
+    { label: 'tool_response wrapper (this file Copilot reuse test)', envelope: { tool_response: telemetry } },
+    { label: 'execution_record envelope (this file Copilot stop tests)', envelope: { execution_record: telemetry } },
+    { label: 'flat tool_output key (tool-result.test.ts, page-speed.test.ts)', envelope: { tool_output: telemetry } },
+  ];
+  for (const shape of shapes) {
+    const raw = rawFromHost('copilot', ['after-tool-use'], {
+      hook_event_name: 'PostToolUse', tool_name: 'task',
+      tool_args: JSON.stringify({
+        agent_type: 'traffic-one:senior-frontend',
+        prompt: `${REPLACE_AGENT_MARKER}\nagent_id: senior-frontend-old was retired.`,
+      }),
+      ...shape.envelope,
+    });
+    assert.equal(extractSpawnedAgentId(toolResultPayload(raw)), 'senior-frontend', shape.label);
+  }
+});
+
+/**
+ * The same contamination one layer down. The Cursor branch persists the classified
+ * text as the observation's `error`, and the durable ledger re-runs
+ * classifyModelFailureText over it whenever the row has no outcome yet — so a
+ * prompt reaching THAT text condemns the model in the ledger even after the
+ * classifier itself answered `stopped`.
+ */
+test('the durable Cursor observation records the result kind, not the prompt kind', () => {
+  withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-prompt-kind');
+    freezeRunPolicy(cwd, 'cursor', 'run-prompt-kind');
+    observeCursorSpawn(
+      cwd,
+      'run-prompt-kind',
+      'senior-frontend',
+      'gpt-5.6-terra-medium',
+      'highest',
+      CURSOR_HIGHEST_FAMILY,
+      'tool_88888888-8888-4888-8888-888888888888',
+    );
+    recordRunAgent(cwd, 'run-prompt-kind', 'senior-frontend', {
+      agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+      toolCallId: 'tool_88888888-8888-4888-8888-888888888888',
+      parentSessionId: 'parent-1',
+    });
+
+    const result = recordSpawnedAgent(postSpawnCtxRawResult(cwd, {
+      tool_input: { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: LIMIT_IN_PROMPT },
+      status: 'error',
+      output: 'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 — the child crashed.',
+      exit_code: 1,
+    }, 'cursor'));
+    assert.equal(result.kind, 'noop');
+
+    const durable = listCursorSpawnObservations(cwd, 'run-prompt-kind')[0];
+    assert.equal(durable?.outcome, 'generic', 'a crash whose PROMPT mentions a limit is not an API-limit outcome');
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, 'run-prompt-kind', 'senior-frontend'),
+      [],
+      'and no model is retired from the run on the strength of its own task brief',
+    );
+    assert.ok(
+      !(durable?.error || '').includes('retry banner'),
+      'the persisted failure text is the result, not the spawn prompt',
+    );
   });
 });
 
@@ -4335,7 +6537,20 @@ test('reuse: the replace marker retires the recorded agent and lets ONE replacem
   });
 });
 
-test('reuse: replace marker without a failure reason is denied while a healthy agent exists', () => {
+// Each of the three protections below is asserted with the EXIT that ends it.
+// They used to stop at the refusal, which is the half that reads as a deadlock:
+// "the marker is refused while an agent is live" is also what a gate with no
+// way out looks like from the inside, and the orchestrator that hit 9ec3325c
+// had no failure vocabulary for the state it was in and no other move to try.
+// A protection is only correct if it is bounded, so each row now names the
+// bound and drives the identical spawn across it — three of them, which is a
+// correction: the round that wrote this comment delivered two and retitled the
+// third. The exhaustive product of
+// (liveness x structural ground) is enumerated in structural-replacement.test.ts;
+// what these three add is that each individual refusal an orchestrator can
+// actually hit has a reachable exit at GATE level.
+
+test('reuse: a replace marker without a failure reason is denied — until it carries one', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     withTeamsEnv(() => {
       setCurrentRunId(cwd, 'run-reuse-marker-guard');
@@ -4355,6 +6570,29 @@ test('reuse: replace marker without a failure reason is denied while a healthy a
         assert.ok(duplicate.reason.includes('frontend11aa22bb33'), 'still points at the live agent');
       }
       assert.equal(readRunAgentRegistry(cwd, 'run-reuse-marker-guard')['senior-frontend']?.replaced, false);
+
+      // THE BOUND. What is missing is the reason, and nothing else: the same
+      // marker, the same live agent, the same fresh row, plus the failure the
+      // gate is asking to be told about, is admitted. Without this the row
+      // above cannot tell "the marker needs a reason" apart from "the marker
+      // never works while an agent is recorded", and the second is the state
+      // that stranded the build.
+      const described = agentModelGate(spawnCtxWithSession(
+        cwd,
+        {
+          subagent_type: 'senior-frontend',
+          model: 'opus',
+          prompt: 'fresh copy [t1-replace-agent] — its replies show context exhaustion',
+        },
+        'parent-1',
+      ));
+      // `equal(…, 'noop')`, not `notEqual(…, 'deny')`: the sibling row above
+      // asserts the exit by name, and the loose form admits `context` — a
+      // verdict that attaches advice and lets the spawn through is a DIFFERENT
+      // exit from a clean one, and an orchestrator reading this row needs to
+      // know which of the two it gets.
+      assert.equal(described.kind, 'noop', 'a described failure is the exit this refusal is asking for');
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-marker-guard')['senior-frontend']?.replaced, true);
     });
   });
 });
@@ -4390,7 +6628,17 @@ test('reuse: a live agent that never bound a claim in a closed run may be replac
   });
 });
 
-test('reuse: a claimless agent in a HEALTHY run is still protected (it may just be starting up)', () => {
+// The old title for this one — "is still protected (it may just be starting
+// up)" — stated the refusal as the whole specification, which is how a cell with
+// no exit comes to look intended.
+//
+// AND FOR ONE ROUND THAT IS ALL THAT CHANGED. This row was retitled and its
+// assertions were left byte-identical, so it went on asserting only the refusal
+// while the summary said three rows had gained bounds; the true number was two.
+// Measured: under the mutation that restores 9ec3325c — the reuse gate never
+// honouring a replace marker — three of the five rows in this cluster go red and
+// this one stayed green.
+test('reuse: a claimless agent in a HEALTHY run is protected while startup is still plausible', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     withTeamsEnv(() => {
       setCurrentRunId(cwd, 'run-reuse-startup');
@@ -4413,11 +6661,38 @@ test('reuse: a claimless agent in a HEALTHY run is still protected (it may just 
         assert.ok(duplicate.reason.includes('frontend44cc55dd66'), 'denied BY THE REUSE GATE, not another gate');
       }
       assert.equal(readRunAgentRegistry(cwd, 'run-reuse-startup')['senior-frontend']?.replaced, false);
+
+      // THE BOUND, and deliberately not the staleness one. The staleness row
+      // below covers the same release over a fixture identical to this one down
+      // to the aging step, so re-deriving it here would be that test written
+      // twice under another role name. What this cell needs, and had nothing
+      // for, is the exit an orchestrator can reach IMMEDIATELY: "it may just be
+      // starting up" is answered by saying what went wrong instead of waiting
+      // out a window, and that has to work while the ledger is still open and
+      // the row is seconds old — which is the entire cell this test is about,
+      // and the one cell where `structuralReplacementGround` returns nothing.
+      const described = agentModelGate(spawnCtxWithSession(
+        cwd,
+        {
+          subagent_type: 'senior-frontend',
+          model: 'opus',
+          prompt: 'fresh copy [t1-replace-agent] — its replies show context exhaustion',
+        },
+        'parent-1',
+      ));
+      assert.equal(described.kind, 'noop', 'a described failure releases the slot without waiting out staleness');
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-startup')['senior-frontend']?.replaced, true);
+      // The control, same as the staleness row's: the ledger is STILL OPEN, so
+      // it was the described failure that released the slot and not the run
+      // closing underneath the fixture — a different mechanism with the same
+      // visible outcome.
+      assert.equal(runLedgerAdmitsClaims(cwd, 'run-reuse-startup'), true,
+        'it is the described failure that released the role, not the run closing underneath the test');
     });
   });
 });
 
-test('reuse: a BOUND agent in a closed run is still protected (only unbindable ones are replaceable)', () => {
+test('reuse: a BOUND agent in a closed run is protected by its claim, not by the closed ledger', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     withTeamsEnv(() => {
       setCurrentRunId(cwd, 'run-reuse-bound');
@@ -4444,6 +6719,26 @@ test('reuse: a BOUND agent in a closed run is still protected (only unbindable o
         assert.ok(duplicate.reason.includes('backend77ee88ff99'), 'denied BY THE REUSE GATE, not another gate');
       }
       assert.equal(readRunAgentRegistry(cwd, 'run-reuse-bound')['senior-backend']?.replaced, false);
+
+      // THE BOUND, and the reason this row is no longer titled "only unbindable
+      // ones are replaceable": that was never true, and stating it here is what
+      // made the deadlock look like the specification. A bound claim in a closed
+      // run is the WORST cell to be wrong about — the child can never act again
+      // and the ledger can never admit a successor — so it has an exit that does
+      // not require the marker's prose. Durable evidence that the model itself
+      // is spent, written by the recorder rather than claimed by the prompt,
+      // retires the row.
+      recordExhaustedModel(cwd, 'run-reuse-bound', 'senior-backend', 'opus');
+      const condemned = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(condemned.kind, 'noop',
+        'a bound agent on a model the run has recorded as spent is not worth protecting');
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-bound')['senior-backend']?.replaced, true);
+      assert.deepEqual(exhaustedModelsForRole(cwd, 'run-reuse-bound', 'senior-backend'), ['opus'],
+        'and the ground was the ledger this test wrote, not an accident of the prompt');
     });
   });
 });
@@ -4491,7 +6786,13 @@ test('reuse: protection is bounded — a role whose agent went silent past the s
         { subagent_type: 'senior-backend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
         'parent-1',
       ));
-      assert.notEqual(whileStale.kind, 'deny', 'a silent agent must not hold its role slot for the rest of the run');
+      assert.equal(whileStale.kind, 'noop', 'a silent agent must not hold its role slot for the rest of the run');
+      // The control the release needs to mean anything: the ledger is STILL
+      // OPEN. Without it this row passes just as happily if the run closed
+      // underneath the fixture and some other gate let the spawn through, which
+      // is a different mechanism with the same visible outcome.
+      assert.equal(runLedgerAdmitsClaims(cwd, 'run-reuse-stale'), true,
+        'it is the staleness that released the role, not the run closing underneath the test');
     });
   });
 });

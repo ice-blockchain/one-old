@@ -12,7 +12,7 @@ import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-c
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import { obj } from '../../shared/obj';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
-import {   readEffectiveState } from '../../shared/state';
+import {  isNewProjectMode, readEffectiveState } from '../../shared/state';
 import {  readRunModelPolicy } from '../../shared/run-model-policy';
 
 function claudeAgentToolAlias(modelId: string): string {
@@ -27,7 +27,7 @@ function claudeAgentToolAlias(modelId: string): string {
 function claudeSpawnModelDirective(cwd: string): string {
   try {
     const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: 'claude' }) as Record<string, unknown>;
-    if (!state || state.mode !== 'new-project') return '';
+    if (!state || !isNewProjectMode(state)) return '';
     const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
     const policy = runId ? readRunModelPolicy(cwd, runId) : null;
     if (!policy || policy.host !== 'claude') return '';
@@ -56,7 +56,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
   if (host !== 'cursor') return '';
   try {
     const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: host }) as Record<string, unknown>;
-    if (!state || state.mode !== 'new-project') return '';
+    if (!state || !isNewProjectMode(state)) return '';
     const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
     const policy = runId ? readRunModelPolicy(cwd, runId) : null;
     if (runId && (!policy || policy.host !== 'cursor')) {

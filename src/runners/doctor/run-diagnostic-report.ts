@@ -6,6 +6,8 @@
 // and decisions.jsonl by hand.
 
 import { doctorBundleCommand } from '../../shared/doctor-command';
+import { bothRunRecordsRemedy } from '../../shared/run-settlement';
+import { describeSettlementLegibility } from './run-diagnostic';
 import type { ClaimDiagnostic, DenyTally, LedgerDiagnostic, LiveAgentDiagnostic, RunDiagnosticProbe } from './run-diagnostic';
 
 function formatDuration(ms: number): string {
@@ -45,15 +47,36 @@ function renderClaims(claims: readonly ClaimDiagnostic[]): string[] {
   });
 }
 
-function renderLedger(ledger: LedgerDiagnostic): string[] {
-  if (!ledger.exists) return ['  no run.json for this run id — the run was never minted (or the id is wrong)'];
-  const lines = [
-    `  raw:       status=${ledger.rawStatus ?? '(none)'} outcome=${ledger.rawOutcome ?? '(none)'}`,
-    `  effective: status=${ledger.effectiveStatus ?? '(none)'} outcome=${ledger.effectiveOutcome ?? '(none)'}`,
-    `  canonical: status=${ledger.canonicalStatus ?? '(no settlement-v2.json — legacy/V1 run)'}`
-      + (ledger.canonicalReason ? ` reason=${ledger.canonicalReason}` : ''),
-    `  qaContractVersion=${ledger.qaContractVersion ?? '(none)'} statusUpdatedAt=${ledger.statusUpdatedAt ?? '(none)'}`,
-  ];
+function renderLedger(ledger: LedgerDiagnostic, runId: string): string[] {
+  const lines: string[] = [];
+  if (!ledger.exists) {
+    lines.push('  no run.json for this run id — the run was never minted (or the id is wrong)');
+  } else {
+    lines.push(`  raw:       status=${ledger.rawStatus ?? '(none)'} outcome=${ledger.rawOutcome ?? '(none)'}`);
+    lines.push(`  effective: status=${ledger.effectiveStatus ?? '(none)'} outcome=${ledger.effectiveOutcome ?? '(none)'}`);
+  }
+  lines.push(`  canonical: status=${ledger.canonicalStatus
+    ?? (ledger.canonicalLegibility === 'absent'
+      ? '(no settlement-v2.json — legacy/V1 run)'
+      : `ILLEGIBLE [${ledger.canonicalLegibility}] — ${describeSettlementLegibility(ledger)}`)}`
+    + (ledger.canonicalReason ? ` reason=${ledger.canonicalReason}` : ''));
+  if (ledger.exists) {
+    lines.push(`  qaContractVersion=${ledger.qaContractVersion ?? '(none)'} statusUpdatedAt=${ledger.statusUpdatedAt ?? '(none)'}`);
+  }
+  if (ledger.canonicalQuarantinePath) {
+    lines.push(`  preserved: the damaged bytes were moved aside to ${ledger.canonicalQuarantinePath} before the`);
+    lines.push('             record was rebuilt — nothing was destroyed, and that file is what to read to see');
+    lines.push('             what the record used to claim.');
+  }
+  if (ledger.canonicalIllegibleOnce) {
+    lines.push('  ⚠ This run\'s canonical settlement was found DAMAGED at least once. The run stays drivable and');
+    lines.push('    can still settle failed/blocked and be reset, but it can never certify as verified/shipped:');
+    lines.push('    nothing on disk can now say what the record used to claim. Start a fresh run for work that');
+    lines.push('    needs to certify.');
+  }
+  if (ledger.canonicalLegibility !== 'ok' && ledger.canonicalLegibility !== 'absent') {
+    lines.push(`  ⚠ ${bothRunRecordsRemedy(runId)}`);
+  }
   if (ledger.rollbackBarrierNote) lines.push(`  ⚠ ${ledger.rollbackBarrierNote}`);
   return lines;
 }
@@ -90,7 +113,7 @@ export function formatRunDiagnosticReport(diagnostic: RunDiagnosticProbe): strin
   lines.push(...renderClaims(diagnostic.claims));
   lines.push('');
   lines.push('Run ledger:');
-  lines.push(...renderLedger(diagnostic.ledger));
+  lines.push(...renderLedger(diagnostic.ledger, diagnostic.runId));
   lines.push('');
   lines.push(`Decision log: ${diagnostic.decisionCount} decisions, ${diagnostic.denyCount} denies (${diagnostic.decisionLogPath})`);
   lines.push('Top repeated deny ids:');

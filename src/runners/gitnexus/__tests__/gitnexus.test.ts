@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 
 import {
   GITNEXUS_MIN_NODE_MAJOR,
@@ -14,7 +15,7 @@ import {
   nodeVersionMismatchMessage,
   nvmPresent,
 } from '../index';
-import { backupConflicts } from '../bootstrap-env';
+import { backupConflicts, restoreIfOverwritten } from '../bootstrap-env';
 
 // Run a fn with a fake $HOME pointing at a temp dir (synchronous; restored after).
 function withHome(setup: (home: string) => void, fn: () => void): void {
@@ -133,6 +134,97 @@ test('backupConflicts skips an unchanged snapshot and links CLAUDE.md instead of
     const third = backupConflicts(dir, '2026-01-01T00-02-00Z');
     assert.equal(path.basename(third.backupRoot), '2026-01-01T00-02-00Z');
     assert.equal(fs.readFileSync(path.join(third.backupRoot, 'AGENTS.md'), 'utf8'), 'agent context v2\n');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── the conflict-directory backup, pinned by its OUTCOME ─────────────────────
+// `.claude/skills` is one of CONFLICT_PATHS, so the DIRECTORY arm of
+// `copyRecursive` is the ordinary gitnexus path. It was `fs.cpSync(src, dst,
+// { recursive: true })`, which SILENTLY OMITS a FIFO or a socket inside the tree
+// (measured on node v26.5.0: returns in ~2 ms, destination missing the entry) —
+// and `recorded.push` runs immediately after it, so the snapshot was recorded as
+// taken. `restoreIfOverwritten` then `rmSync`s a live DIRECTORY before copying
+// the snapshot back, which is how an omission becomes a deletion.
+//
+// The assertion is therefore the ENTRY SET after the restore, not the record: a
+// pin that re-states "a recorded backup exists on disk" holds in both branches.
+function entriesWithKinds(dir: string): string[] {
+  return fs.readdirSync(dir).sort().map((name) => {
+    const stat = fs.lstatSync(path.join(dir, name));
+    return `${name}:${stat.isFile() ? 'file' : stat.isDirectory() ? 'dir' : stat.isFIFO() ? 'fifo' : 'other'}`;
+  });
+}
+
+test('backupConflicts REFUSES a conflict directory holding a non-regular entry, and the restore leaves it INTACT', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gnfifo-'));
+  try {
+    const skills = path.join(dir, '.claude', 'skills');
+    fs.mkdirSync(skills, { recursive: true });
+    fs.writeFileSync(path.join(skills, 'keep.md'), 'ORIGINAL BYTES\n', 'utf8');
+    // A FIFO needs a local process, so this is not clone-deliverable; it is the
+    // cheapest object whose omission cpSync does not report. A socket behaves the
+    // same way and a device node needs root, which is why the arm uses a FIFO.
+    const made = spawnSync('mkfifo', [path.join(skills, 'pipe')], { timeout: 5_000, killSignal: 'SIGKILL' });
+    if (made.status !== 0 || !fs.existsSync(path.join(skills, 'pipe'))) {
+      // VISIBLE. A bare `return` here reports `ok` with `# skipped 0`, which is
+      // byte-identical to a pass in the counts a reviewer is asked to check.
+      t.skip(`no FIFO available: mkfifo status=${String(made.status)} ${made.error ? String(made.error.message) : ''}`);
+      return;
+    }
+    const before = entriesWithKinds(skills);
+    assert.ok(before.includes('pipe:fifo'), `FIXTURE the FIFO must be planted (got ${before.join(', ')})`);
+
+    const backups = backupConflicts(dir, '2026-01-01T00-00-00Z');
+    assert.equal(backups.recorded.some((r) => r.rel === '.claude/skills'), false,
+      'a directory whose snapshot cannot hold every entry must NOT be recorded as backed up — the record is what '
+      + 'licenses the remove-then-restore rollback');
+
+    // The clobber the backup exists for: same path, different bytes (and size, so
+    // the directory hash moves).
+    fs.writeFileSync(path.join(skills, 'keep.md'), 'CLOBBERED BY GITNEXUS\n', 'utf8');
+    const restored = restoreIfOverwritten(dir, backups);
+
+    assert.equal(restored.includes('.claude/skills'), false,
+      'nothing was recorded, so nothing may be claimed as restored');
+    assert.deepEqual(entriesWithKinds(skills), before,
+      'THE ENTRY SET MUST BE INTACT. With cpSync here the FIFO was missing from the snapshot, the restore removed '
+      + 'the live directory and copied the incomplete snapshot back, and the FIFO was gone.');
+    // The honest price of the refusal, stated so it cannot be mistaken for a bug:
+    // we decline to restore rather than restoring an incomplete tree.
+    assert.equal(fs.readFileSync(path.join(skills, 'keep.md'), 'utf8'), 'CLOBBERED BY GITNEXUS\n',
+      'a refused backup restores nothing at all — that is the cost, and it is smaller than a deletion');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a NON-REGULAR conflict path is skipped, not thrown, and the backup writer refuses it', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gnfile-'));
+  try {
+    // A FIFO stands in for the clone-deliverable shape: `AGENTS.md -> /dev/zero`
+    // is mode 120000 and arrives through a pull request, and `sha1OfPath` refuses
+    // both the same way (`readRegularBytesOrThrow` fstats the descriptor). The
+    // FIFO is used because a test may not assume a `/dev/zero` on the host.
+    const made = spawnSync('mkfifo', [path.join(dir, 'AGENTS.md')], { timeout: 5_000, killSignal: 'SIGKILL' });
+    if (made.status !== 0 || !fs.existsSync(path.join(dir, 'AGENTS.md'))) {
+      t.skip(`no FIFO available: mkfifo status=${String(made.status)}`);
+      return;
+    }
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'ordinary\n', 'utf8');
+
+    // BEFORE this round the next line threw out of `backupConflicts`, and
+    // `bootstrap.ts:266` does not guard it.
+    const backups = backupConflicts(dir, '2026-01-01T00-00-00Z');
+    assert.deepEqual(backups.recorded.map((r) => r.rel), ['CLAUDE.md'],
+      'the ordinary sibling must still be recorded — a refusal on one conflict path may not cost the others — and '
+      + 'the refused path must not appear, because the record is what licenses the restore');
+    assert.equal(fs.existsSync(path.join(backups.backupRoot, 'AGENTS.md')), false,
+      'and the writer must have refused it rather than recording a phantom: copyRegularFile answers false for a '
+      + 'FIFO and that answer is raised, not discarded');
+    assert.equal(fs.readFileSync(path.join(backups.backupRoot, 'CLAUDE.md'), 'utf8'), 'ordinary\n');
+    assert.equal(fs.lstatSync(path.join(dir, 'AGENTS.md')).isFIFO(), true, 'the live object is untouched');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

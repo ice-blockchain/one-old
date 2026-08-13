@@ -6,7 +6,7 @@
 // Read-only, like every other doctor probe: this module only ASSEMBLES and
 // REDACTS data other probes already produced; it never writes anywhere.
 
-import type { Finding } from './findings';
+import type { DoctorSummary, Finding } from './findings';
 import type {
   CanonicalAuthProbe,
   CodexHooksProbe,
@@ -18,6 +18,7 @@ import type {
   ProjectProbe,
   SessionDiagnosticsResult,
 } from './probes';
+import type { OverrideProbe } from './override-probe';
 import type { PluginIdentity } from './plugin-identity';
 import type { PluginRootProbe } from './plugin-root-probe';
 import type { RunDiagnosticProbe } from './run-diagnostic';
@@ -267,6 +268,15 @@ const BUNDLE_DECISION_LIMIT = 300;
 
 export interface DoctorBundle {
   readonly generatedAt: string;
+  /**
+   * The same one-word verdict plain `doctor` prints (findings.ts's
+   * doctorSummary), and it was missing here: the bundle carried the findings and
+   * every probe but no verdict, so the one artifact designed to be attached to an
+   * issue was the only view of this report that did not say whether the machine
+   * was healthy. Derived from `findings` rather than recomputed, so the two
+   * cannot disagree.
+   */
+  readonly summary: DoctorSummary;
   readonly plugin: PluginIdentity;
   readonly redaction: {
     readonly policy: string;
@@ -284,6 +294,18 @@ export interface DoctorBundle {
     readonly openCodeMcp: OpenCodeMcpProbe | null;
     readonly pluginRoot: PluginRootProbe;
     readonly sessionDiagnostics: SessionDiagnosticsResult;
+    /**
+     * The operator-override probe. Optional only because callers that predate
+     * it pass this input positionally by name; a bundle assembled without it
+     * says `null`, which is honest, rather than the clean install.
+     *
+     * Not redacted and nothing to redact: counts, status words, check ids,
+     * runtime-minted token ids and timestamps. It is in the bundle because the
+     * state it describes — a project whose override record cannot account for
+     * itself — is precisely the state someone opens an issue about, and it is
+     * invisible in every other probe here.
+     */
+    readonly overrides: OverrideProbe | null;
   };
   readonly findings: Finding[];
   readonly runId: string | null;
@@ -296,6 +318,7 @@ export interface DoctorBundle {
 }
 
 export interface BuildDoctorBundleInput {
+  summary: DoctorSummary;
   plugin: PluginIdentity;
   node: NodeProbe;
   nvm: NvmProbe;
@@ -307,6 +330,7 @@ export interface BuildDoctorBundleInput {
   openCodeMcp: OpenCodeMcpProbe | null;
   pluginRoot: PluginRootProbe;
   sessionDiagnostics: SessionDiagnosticsResult;
+  overrides?: OverrideProbe | null;
   findings: Finding[];
   runId: string | null;
   runDiagnostic: RunDiagnosticProbe | null;
@@ -317,6 +341,7 @@ export function buildDoctorBundle(input: BuildDoctorBundleInput): DoctorBundle {
   const decisions = input.decisions.slice(-BUNDLE_DECISION_LIMIT);
   return {
     generatedAt: new Date().toISOString(),
+    summary: input.summary,
     plugin: input.plugin,
     redaction: {
       policy: 'projectContext.{originalPrompt,summary,answers} are redacted; any prompt-named key '
@@ -346,6 +371,7 @@ export function buildDoctorBundle(input: BuildDoctorBundleInput): DoctorBundle {
       openCodeMcp: input.openCodeMcp,
       pluginRoot: input.pluginRoot,
       sessionDiagnostics: input.sessionDiagnostics,
+      overrides: input.overrides ?? null,
     },
     findings: input.findings,
     runId: input.runId,

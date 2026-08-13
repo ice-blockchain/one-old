@@ -13,6 +13,7 @@ import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import {
   ensureRunAgentClaimResult,
+  isNewProjectMode,
   isTeamApproved,
   readEffectiveState,
   retryWhileUnavailable,
@@ -24,7 +25,6 @@ import { openCodeGlobalAgentName } from '../../shared/materialize/opencode-asset
 import { acceptableSpawnTypes } from '../../shared/host/spawn-types';
 import {
   AGENT_MATERIALIZATION_MISSING_FALLBACK,
-  ARCHITECT_PHASE_INCOMPLETE_FALLBACK,
   SPAWN_CLAIM_UNAVAILABLE_FALLBACK,
   block,
   isPlanBatchGatedRole,
@@ -111,7 +111,7 @@ export function modelEnforcementGates(g: GateContext): HookResult {
     return allowSpawn(noop());
   }
 
-  const isNewProject = state.mode === 'new-project';
+  const isNewProject = isNewProjectMode(state);
   if (isNewProject && !isCompletedTrafficOneMaterialization(cwd, state)) {
     // The stamp's own answer, and it deliberately does NOT vote on which deny.
     // The read-back below is strictly stronger for that: it also catches a stamp
@@ -166,11 +166,16 @@ export function modelEnforcementGates(g: GateContext): HookResult {
   if (isPlanBatchGatedRole(role)) {
     const incomplete = architectPhaseIncompleteReasons(cwd, state);
     if (incomplete.length > 0) {
+      // The block must LEAD with the exact next action: observed 8c, the
+      // orchestrator mis-read this deny as a Step-0 request and burned a second
+      // dead spawn. It carried a hand-transcribed copy of that paragraph here
+      // until the two drifted; the generated table (shared/skill-fallbacks.generated.ts)
+      // now renders the shipped wording on a torn install, so there is one text.
       return deny(block('architect-phase-incomplete', {
         ROLE: role,
         RUN_ID: spawnRunId,
         MISSING: incomplete.join('; '),
-      }, ARCHITECT_PHASE_INCOMPLETE_FALLBACK), { denyId: 'architect-phase-incomplete', denyTarget: role });
+      }), { denyId: 'architect-phase-incomplete', denyTarget: role });
     }
   }
 

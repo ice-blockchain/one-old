@@ -23,7 +23,7 @@ import * as fs from 'fs';
 
 import { bootstrap as graphifyBootstrap, ensureGraphifyTool } from '../graphify';
 import { bootstrap as gitnexusBootstrap, ensureGitnexusTool } from '../gitnexus';
-import { readEffectiveState, writeGlobalCodeGraphProvider, mergeProjectPrefs, stateTimestamp } from '../../shared/state';
+import { isExistingProjectMode, readEffectiveState, writeGlobalCodeGraphProvider, mergeProjectPrefs, stateTimestamp } from '../../shared/state';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { reconcileManagedToolStamp, toolRuntime } from '../toolchain';
 import { ensureOpenCodeTool } from '../toolchain/onboarding';
@@ -166,10 +166,9 @@ function safeWriteProvider(provider: GraphProvider): void {
 export function ensureOnboardingToolchain(cwd: string = process.cwd(), onProgress?: ProgressSink): OnboardingToolchainResult {
   const state = readEffectiveState(cwd);
   const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
-  const mode = typeof state.mode === 'string' ? state.mode : '';
   // Existing codebases have code to index now and no later reliable trigger, so
   // the first scan is REQUIRED before "Setup complete"; new/empty projects defer.
-  const requireScan = mode === 'existing-codebase' || mode === 'existing-with-supabase';
+  const requireScan = isExistingProjectMode(state);
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   const host = detectHost();
   const openCodeEnabled = !hostFlags(host).opencodeSelfHosted && openCode?.enabled === true;

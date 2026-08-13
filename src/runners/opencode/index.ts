@@ -28,7 +28,7 @@ import {
   touchOpenCodeUnitRunning,
   unsafeAllowedFilePatterns,
 } from '../../shared/opencode-queue';
-import {  readEffectiveState } from '../../shared/state';
+import {  isNewProjectMode, readEffectiveState } from '../../shared/state';
 import { recordDelegatedModelObservation } from '../../shared/state/delegated-model-observation';
 import {  reconcileManagedToolStamp } from '../toolchain';
 
@@ -176,9 +176,18 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     // version control — read WITHOUT Traffic One's managed region, which
     // materialization has already written by the time any delegation runs and
     // which would otherwise veto every genuinely greenfield project too.
+    //
+    // `null` is a `.gitignore` that is THERE and cannot be read — a non-regular
+    // path, a directory, mode 000 — and it vetoes exactly like owner lines do.
+    // Anything else spends an unreadable file as "the project stated nothing"
+    // and hands this branch the unasked `git init` on the strength of a file it
+    // could not see. See `projectOwnedGitignore`, which used to hang outright on
+    // that shape rather than answer.
+    const ownedGitignore = projectOwnedGitignore(cwd);
     ensureInitialCommit(cwd, {
-      initIfNeeded: state.mode === 'new-project'
-        && greenfieldEvidence(cwd, projectOwnedGitignore(cwd)),
+      initIfNeeded: isNewProjectMode(state)
+        && ownedGitignore !== null
+        && greenfieldEvidence(cwd, ownedGitignore),
     });
     head = git(cwd, ['rev-parse', '--verify', 'HEAD']);
     if (head.status !== 0) {
@@ -438,7 +447,7 @@ export function main(): number {
 
   const taskFile = get('--task-file');
   let task = get('--task');
-  if (!task && taskFile && fs.existsSync(taskFile)) task = fs.readFileSync(taskFile, 'utf8');
+  if (!task && taskFile && fs.existsSync(taskFile)) task = readRegularFileOrThrow(taskFile);
 
   const result = delegate(process.cwd(), {
     role: get('--role'),
@@ -463,4 +472,5 @@ export { normalizeOpenCodeI18nScope, normalizePlanI18nUnits } from './i18n';
 export { resetOpenCodeModelMemo } from './models';
 export { snapshotWorkingTree, stageExcludePathspecs } from './git-sandbox';
 import { normalizePlanRole } from './diff-policy';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 export { normalizePlanRole };

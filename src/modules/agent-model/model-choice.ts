@@ -19,6 +19,7 @@ import { isNonProjectRoot } from '../../shared/authoring-root';
 import { writeJson } from '../../shared/fsjson';
 import { cursorUnavailablePicks } from '../../shared/materialize/cursor-eligibility';
 import { ensureCurrentRunId } from '../../shared/state';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export type ModelChoiceStatus = 'use-fallback' | 'enable-retry';
 const VALID: ReadonlySet<string> = new Set<string>(['use-fallback', 'enable-retry']);
@@ -60,7 +61,7 @@ export function modelChoiceReplyPending(cwd: string, state: Record<string, unkno
 export function readModelChoice(cwd: string, runId: string): ModelChoiceStatus | null {
   if (!runId) return null;
   try {
-    const raw = JSON.parse(fs.readFileSync(choicePath(cwd, runId), 'utf8')) as { status?: unknown };
+    const raw = JSON.parse(readRegularFileOrThrow(choicePath(cwd, runId))) as { status?: unknown };
     const s = typeof raw?.status === 'string' ? raw.status : '';
     return VALID.has(s) ? (s as ModelChoiceStatus) : null;
   } catch {
@@ -154,7 +155,7 @@ export function modelGatePromptFresh(
 ): boolean {
   if (!runId) return false;
   try {
-    const raw = JSON.parse(fs.readFileSync(modelGatePromptPath(cwd, runId), 'utf8')) as { promptedAt?: unknown };
+    const raw = JSON.parse(readRegularFileOrThrow(modelGatePromptPath(cwd, runId))) as { promptedAt?: unknown };
     const t = typeof raw?.promptedAt === 'string' ? Date.parse(raw.promptedAt) : NaN;
     return Number.isFinite(t) && nowMs - t >= 0 && nowMs - t <= ttlMs;
   } catch {

@@ -26,6 +26,7 @@ import {
   windsurfUserHookCommand,
 } from '../../shared/windsurf-hook-command';
 import { uncertifiedHostInstallRefusal } from '../../shared/host/tiers';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -78,7 +79,7 @@ function runtimePluginRoot(env: NodeJS.ProcessEnv = process.env): string {
 
 function readJsonObject(file: string): Rec {
   if (!fs.existsSync(file)) return {};
-  const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+  const parsed = JSON.parse(readRegularFileOrThrow(file)) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${file} must contain a JSON object`);
   }
@@ -106,7 +107,7 @@ function writeWindsurfPluginRootStamp(pluginRoot: string, env: NodeJS.ProcessEnv
 
 function readWindsurfPluginRootStamp(env: NodeJS.ProcessEnv = process.env): string | null {
   try {
-    const value = fs.readFileSync(windsurfPluginRootStamp(env), 'utf8').trim();
+    const value = readRegularFileOrThrow(windsurfPluginRootStamp(env)).trim();
     return value && path.isAbsolute(value) ? path.normalize(value) : null;
   } catch {
     return null;
@@ -287,7 +288,7 @@ function replaceOwnedBlock(existing: string, block: string): string {
 
 function ensureGlobalRules(file: string, pluginRoot: string): { changed: boolean; skipped: boolean } {
   let existing = '';
-  try { existing = fs.readFileSync(file, 'utf8'); } catch { existing = ''; }
+  try { existing = readRegularFileOrThrow(file); } catch { existing = ''; }
   const next = replaceOwnedBlock(existing, globalRulesBlock(pluginRoot));
   if (next.length > GLOBAL_RULE_LIMIT) return { changed: false, skipped: true };
   if (next === existing) return { changed: false, skipped: false };
@@ -298,7 +299,7 @@ function ensureGlobalRules(file: string, pluginRoot: string): { changed: boolean
 
 function removeGlobalRules(file: string): boolean {
   if (!fs.existsSync(file)) return false;
-  const existing = fs.readFileSync(file, 'utf8');
+  const existing = readRegularFileOrThrow(file);
   const start = existing.indexOf(OWNER_START);
   const end = existing.indexOf(OWNER_END);
   if (start < 0 || end < start) return false;
@@ -392,7 +393,7 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
   }
   let global = 'missing';
   try {
-    global = fs.readFileSync(rulesFile, 'utf8').includes(OWNER_START) ? 'ok' : 'missing';
+    global = readRegularFileOrThrow(rulesFile).includes(OWNER_START) ? 'ok' : 'missing';
   } catch {
     global = 'missing';
   }

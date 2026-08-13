@@ -23,6 +23,60 @@ function fakeNow(step: number): () => number {
   return () => (t += step);
 }
 
+/**
+ * The ask-first question, DECLARED for the tests that read the consent record
+ * instead of inherited from `src/build/test-preload.mjs`'s suite-wide '0' —
+ * `shared/__tests__/durable-writer-rule.test.ts` enforces that whoever asks the
+ * fence something names the value they ask under.
+ *
+ * BOTH values, per test, rather than a module-scope pin, and both halves of that
+ * are load-bearing:
+ *
+ *   - Both, because these commands (`--use`, decline, reconsider) are the ask-first
+ *     flow's own surface and what they assert is that the answer is DURABLE and
+ *     readable before the sync callback observes it. That answer lives in the
+ *     per-user machine bucket, which the fence never governs, so it must read the
+ *     same under the shipped default and under the legacy wizard flow. Pinning one
+ *     would have hidden that behind a choice; the loop asserts it.
+ *   - Per test, because 7 of this file's other tests stage a project with NO
+ *     recorded answer and then write through the fence (`preSpawnRunIdDirective`
+ *     minting `currentRunId`, the nudge markers): measured, a module-scope '1'
+ *     turns them red. The fence is doing its job there; those fixtures simply mean
+ *     "a project the user already said yes to", which is what the preload's '0'
+ *     says for them.
+ */
+async function underBothAskFirstValues(
+  body: (askFirst: string) => Promise<void>,
+): Promise<void> {
+  const { resetPluginUseCache } = await import('../../../shared/state/plugin-use');
+  const saved = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+  try {
+    for (const askFirst of ['1', '0'] as const) {
+      process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = askFirst;
+      resetPluginUseCache();
+      try {
+        await body(askFirst);
+      } catch (error) {
+        // Which configuration failed, or the two iterations of one test report an
+        // identical assertion and the reader cannot tell them apart. The STACK is
+        // prefixed as well as the message, and that is not belt-and-braces:
+        // node:test's reporter prints the stack, whose first line froze the
+        // message at construction — patching `message` alone renders nothing.
+        if (error instanceof Error) {
+          const prefix = `[TRAFFIC_ONE_ASK_USE_PLUGIN=${askFirst}] `;
+          error.message = prefix + error.message;
+          if (typeof error.stack === 'string') error.stack = prefix + error.stack;
+        }
+        throw error;
+      }
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = saved;
+    resetPluginUseCache();
+  }
+}
+
 test('waitForOnboarding: returns "complete" immediately when onboarding is already done', () => {
   const r = waitForOnboarding('/proj', { isComplete: () => true, now: () => 0, sleep: () => {} });
   assert.equal(r, 'complete');
@@ -97,7 +151,7 @@ test('no close directive exists — the setup tab belongs to the user', async ()
   assert.equal('cursorSetupCloseDirective' in mod, false);
 });
 
-test('declineOutput records the opt-out and never touches the user\'s browser', async () => {
+test('declineOutput records the opt-out and never touches the user\'s browser', () => underBothAskFirstValues(async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -136,9 +190,9 @@ test('declineOutput records the opt-out and never touches the user\'s browser', 
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }
-});
+}));
 
-test('applyUseChoice records the yes and seeds originalPrompt at decision time (ask-first: first-ever write)', async () => {
+test('applyUseChoice records the yes and seeds originalPrompt at decision time (ask-first: first-ever write)', () => underBothAskFirstValues(async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -181,7 +235,7 @@ test('applyUseChoice records the yes and seeds originalPrompt at decision time (
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }
-});
+}));
 
 test('ask-first seeding persists an explicit UI library choice with the original request', async () => {
   const fs = await import('node:fs');
@@ -210,7 +264,7 @@ test('ask-first seeding persists an explicit UI library choice with the original
   }
 });
 
-test('applyReconsiderChoice persists exact opt-in before synchronizing', async () => {
+test('applyReconsiderChoice persists exact opt-in before synchronizing', () => underBothAskFirstValues(async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -240,7 +294,7 @@ test('applyReconsiderChoice persists exact opt-in before synchronizing', async (
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }
-});
+}));
 
 test('beginOnboardingAttempt syncs before the first wizard-state read on normal and bootstrap paths', async () => {
   const fs = await import('node:fs');
@@ -278,7 +332,7 @@ test('beginOnboardingAttempt syncs before the first wizard-state read on normal 
   }
 });
 
-test('beginOnboardingAttempt persists --use before sync and shares the SessionStart marker', async () => {
+test('beginOnboardingAttempt persists --use before sync and shares the SessionStart marker', () => underBothAskFirstValues(async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -320,7 +374,7 @@ test('beginOnboardingAttempt persists --use before sync and shares the SessionSt
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = previousPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }
-});
+}));
 
 test('awaitWizardCompletionAck: returns immediately once the server record is gone, bounded otherwise', async () => {
   const fs = await import('node:fs');

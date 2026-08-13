@@ -22,7 +22,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { resetObligationFor } from '../../runners/traffic-one-reset/resets';
 import { isNonProjectRoot } from '../../shared/authoring-root';
+import { readOwnerEntry, readRegularFileOrThrow } from '../../shared/bounded-read';
 import { trustworthyAgeSince } from '../../shared/clock-skew';
 import { writeJson } from '../../shared/fsjson';
 import { modelMatchesExpected } from '../../shared/model-tiers';
@@ -95,10 +97,45 @@ function processDefinitelyDead(pid: number): boolean {
 // STORE_LOCK_STALE_MS had it unlinked and a second writer walked in. The
 // trailing token is new and absent from files written by earlier builds, which
 // parse fine without it.
+//
+// A NINTH COPY OF THE OWNER-FILE SHAPE, and the only one inside a hook module —
+// agent-model carries PreToolUse subscriptions, so this read is on the spawn
+// path. The census excused it as "the exhausted-models lock file and record",
+// which is what the row was for a round: a reason that describes a payload read
+// hides the fact that this is the LOCK HOLDER, and that `catch → null` is scored
+// by both callers below as NO HOLDER — a lock STEAL, the exact outcome
+// `readOwnerEntry` exists to prevent, reached here by a read that never
+// returned rather than by one that answered wrongly.
+//
+// `readOwnerEntry` rather than `readRegularFile` for the same reason
+// project-state-lock.ts uses it: O_NOFOLLOW. Nothing legitimate is ever a
+// symlink at this path — the acquisition below is an `openSync(lockPath, 'wx')`,
+// which creates a regular file or fails — so a link here can only be another
+// object's evidence answering for this lock, which is the immortal-lock wedge.
+// A non-regular shape now reads as no parseable holder line, and the caller
+// falls to the mtime/O_EXCL path that already handles a torn lock file.
+//
+// THAT PARAGRAPH USED TO CLOSE "bounded, and refusing a LIVE holder is still
+// decided by the pid check", AND THE SECOND HALF WAS FALSE — recorded rather
+// than corrected away, because the shape of the mistake is the shape of the
+// defect. It is true only while the holder line is READABLE. A symlink makes
+// this function answer `null`, and `aged && (!holder || processDefinitelyDead(…))`
+// SHORT-CIRCUITS on `!holder`, so the pid check never runs at all. The round-3
+// peer drove both polarities and they differ: a link to a live holder's file
+// stamped NOW is refused (816 ms, busy fallback) and the same link to the same
+// live holder backdated 60 s STEALS the lock (154 ms) — because the age came
+// from `statSync`, which follows the link to the target's mtime.
+//
+// So the guard is now two claims, not one: the pid check decides for a holder
+// whose line can be read, and for a holder-less path the age of THE OBJECT AT
+// THIS PATH decides — `lstatSync`, so an unreadable link cannot borrow its
+// target's age. Both polarities are pinned in __tests__/exhausted-models.test.ts.
 function readLockHolder(lockPath: string): { pid: number; at: number; token: string } | null {
   let parts: string[];
   try {
-    parts = fs.readFileSync(lockPath, 'utf8').trim().split(/\s+/);
+    const line = readOwnerEntry(lockPath);
+    if (line === null) return null;
+    parts = line.trim().split(/\s+/);
   } catch {
     return null;
   }
@@ -123,6 +160,9 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
   const token = `${process.pid.toString(16)}${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
   const deadline = Date.now() + STORE_LOCK_TIMEOUT_MS;
   let acquired = false;
+  // ONE attempt is owed to a reclaim that outlived the budget — see the deadline
+  // branch at the bottom of the loop.
+  let reclaimGraceUsed = false;
 
   while (!acquired) {
     try {
@@ -134,6 +174,7 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
       }
       acquired = true;
     } catch (error) {
+      let reclaimed = false;
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
         // Not contention — the path is unusable (no directory, read-only, …).
@@ -149,7 +190,22 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
           // No parseable holder line at all: an empty or truncated file from a
           // writer that died between create and write. Nothing claims it, so
           // age alone is the only evidence available and is enough.
-          : trustworthyAgeSince(fs.statSync(lockPath).mtimeMs, Date.now());
+          //
+          // `lstat`, not `stat`, and the difference is a measured lock STEAL.
+          // When the path is a SYMLINK the read above ELOOPs, so `holder` is
+          // null and this line decides alone — and `statSync` FOLLOWS the link,
+          // so it dates this lock by the age of whatever the link points at. A
+          // link to a live holder's file backdated by 60 s therefore read as
+          // aged, and `aged && (!holder || …)` short-circuits the pid check the
+          // docblock below credits with protecting a live holder: the lock was
+          // STOLEN in 154 ms while the same link to the same live holder stamped
+          // NOW was refused in 816 ms (driven by the round-3 peer,
+          // .tmp/peer-bounded3/report.md rows 371-372; its summary row quotes
+          // 95 ms, which that report's own line 512 attributes to arms that
+          // threw `body is not a function`). `lstatSync` dates the LINK, which
+          // is the object at this path and the only one whose age this protocol
+          // wrote. Both polarities are pinned in __tests__/exhausted-models.test.ts.
+          : trustworthyAgeSince(fs.lstatSync(lockPath).mtimeMs, Date.now());
         // A stamp ahead of now makes `Date.now() - at` negative, and a negative
         // age is never `> STALE`, so a lock whose holder is provably dead could
         // never be reclaimed and every recorder silently returned busyFallback
@@ -160,14 +216,42 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
         const aged = ageMs === null || ageMs > STORE_LOCK_STALE_MS;
         if (aged && (!holder || processDefinitelyDead(holder.pid))) {
           fs.unlinkSync(lockPath);
-          continue;
+          reclaimed = true;
         }
       } catch {
-        continue; // disappeared between stat/unlink; retry the exclusive create
+        // Disappeared between stat and unlink — or was never stat-able at all.
+        // THIS BRANCH USED TO `continue`, AND THAT WAS AN UNBOUNDED LOOP: the
+        // `continue` re-entered the `while` above the deadline test below, so a
+        // shape that makes every arm throw instantly spun this function forever.
+        // DRIVEN by the round-3 peer with a DANGLING SYMLINK at the lock path,
+        // which is clone-deliverable as mode 120000 pointing at nothing:
+        // `openSync(p,'wx')` threw EEXIST, `readOwnerEntry` threw ELOOP, and
+        // `statSync` threw ENOENT — three instant throws, no progress, measured
+        // at STAT R and 130.86 s of CPU over 136 s of wall clock, 76.9 % of a
+        // core, still running when it was killed. A hook that never returns is
+        // the class this file's lock was hardened for; a SPIN is that outcome
+        // plus a burning core, and no read bound can fix it, because the defect
+        // is where the deadline is tested rather than what the read does.
       }
+      // Every path out of this catch reaches the deadline. The reclaim skips the
+      // SLEEP, not the bound.
+      //
+      // ONE ATTEMPT PAST THE DEADLINE FOR A SUCCESSFUL RECLAIM, for the reason
+      // the sibling protocol carries in full (state/run-agent/locks.ts, where the
+      // same shape was DRIVEN): without it, a reclaim that consumes the budget
+      // removes the lock and still reports that nothing happened, so the caller
+      // takes the busy fallback against a path that is now free. The grace is
+      // gated on `reclaimed`, which is only true after the `unlinkSync` above
+      // SUCCEEDED — so the dangling-symlink spin this deadline was added for (all
+      // three arms throw, `reclaimed` stays false) still returns here, which is
+      // what __tests__/exhausted-models.test.ts's aged-directory row pins.
       const now = Date.now();
-      if (now >= deadline) return busyFallback;
-      sleepSync(Math.min(STORE_LOCK_RETRY_MS, deadline - now));
+      if (now >= deadline) {
+        if (!reclaimed || reclaimGraceUsed) return busyFallback;
+        reclaimGraceUsed = true;
+        continue;
+      }
+      if (!reclaimed) sleepSync(Math.min(STORE_LOCK_RETRY_MS, deadline - now));
     }
   }
 
@@ -182,6 +266,20 @@ function withStoreLock<T>(cwd: string, runId: string, busyFallback: T, body: () 
       try { fs.unlinkSync(lockPath); } catch { /* best-effort */ }
     }
   }
+}
+
+/**
+ * The lease above, for the ONE read-modify-write of this store that does not
+ * live in this module: `traffic-one-reset`'s carry, which merges the retired
+ * run's condemnations into the successor's file at sub-key granularity and so
+ * cannot go through `recordExhaustedModel` (that writer stamps the entry with
+ * the caller's clock and prunes against it, which would shorten a live
+ * condemnation and drop a successor entry stamped later). Every other writer of
+ * this file already serializes here; a carry that did not would write straight
+ * through a live holder's lease.
+ */
+export function withExhaustedModelsLock<T>(cwd: string, runId: string, busyFallback: T, body: () => T): T {
+  return withStoreLock(cwd, runId, busyFallback, body);
 }
 
 function normalizeEntry(value: unknown): ExhaustedEntry | null {
@@ -235,7 +333,7 @@ function normalizeRoleState(value: unknown): ExhaustedRoleState | null {
 
 function readStore(cwd: string, runId: string): ExhaustedStoreV2 {
   try {
-    const raw = JSON.parse(fs.readFileSync(exhaustedPath(cwd, runId), 'utf8')) as unknown;
+    const raw = JSON.parse(readRegularFileOrThrow(exhaustedPath(cwd, runId))) as unknown;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { version: 2, roles: {} };
     const record = raw as Record<string, unknown>;
     const source = record.version === 2 && record.roles && typeof record.roles === 'object' && !Array.isArray(record.roles)
@@ -269,12 +367,46 @@ export function exhaustedModelsForRole(cwd: string, runId: string, role: string,
     .map((e) => e.model);
 }
 
-// Persistent run+role terminal state: all actual tier candidates were attempted
-// and API-limited. It intentionally survives entry TTL and is cleared only by
-// clearExhaustedModels (the user's enable/retry action) or a new run id.
+/**
+ * Persistent run+role terminal state: all actual tier candidates were attempted
+ * and API-limited. It intentionally survives entry TTL and is cleared only by
+ * clearExhaustedModels (the user's enable/retry action) or a new run id.
+ *
+ * TWO SITES, and the second one is not a duplicate of the first. This run's own
+ * store answers for exhaustion this run reached. `.resets.json` answers for
+ * exhaustion this run INHERITED — the price a reset at or past WIDEN_AT pays
+ * (runners/traffic-one-reset/resets.ts ResetObligation).
+ *
+ * The obligation is deliberately NOT copied into the store at reset time, and
+ * this reader is the reason that costs nothing: the store is the file an actor
+ * defeats by holding one lease, and a price written into it is suppressed by
+ * the same capability that drops the bound — measured over six reset cycles
+ * against a successor whose lease was held, zero terminal markers arrived. The
+ * record has one writer (`recordReset`, and nothing on a hook path), takes no
+ * lease and is read here unlocked, exactly as the store above is. The remedy
+ * discharges it WITHOUT writing it — `resetObligationFor` folds in the run's
+ * recorded `enable-retry` answer — which is what keeps that writer count at
+ * one; clearExhaustedModels below used to be the second, and lost increments
+ * off the ladder for it.
+ *
+ * THIS READER IS A GATE, not bookkeeping, and the distinction was worth
+ * measuring because a careful reading of the call graph got it backwards. Of
+ * the three product call sites, TWO — cursor-failure-persist.ts and
+ * cursor-failure-select.ts — only skip a marker write that is already implied,
+ * and they are marginally PERMISSIVE: skipping a write that could have failed
+ * is one fewer way for finalization to abort. Stopping there concludes the
+ * widening prices nothing. The third is correlatedCursorFailureGate
+ * (cursor-failures.ts), reached from gate-reuse.ts on every Cursor spawn, and
+ * it DENIES `cursor-api-limit-terminal` on this answer before it reads anything
+ * else. That is where the price is actually paid, and it is asserted at the
+ * deny rather than here: hooks/__tests__/recovery-runners.test.ts property 5
+ * fails with the spawn ADMITTED if the obligation half of this function is
+ * dropped.
+ */
 export function modelExhaustionTerminalForRole(cwd: string, runId: string, role: string): boolean {
   if (!runId || !role) return false;
-  return Boolean(readStore(cwd, runId).roles[role]?.terminal);
+  if (readStore(cwd, runId).roles[role]?.terminal) return true;
+  return resetObligationFor(cwd, runId).terminalRoles.includes(role);
 }
 
 // True when `model` matches (family-aware) any model still condemned for the role.
@@ -351,6 +483,19 @@ export function markModelExhaustionTerminal(
 // `enable`(-retry) to the model choice: "I fixed the budget / re-enabled the
 // model" makes the ledger stale by definition — keeping it would immediately
 // re-rotate off the model the user just restored.
+//
+// THE INHERITED HALF IS DISCHARGED TOO, and this function is deliberately NOT
+// where that happens. A reset at WIDEN_AT records its terminal roles outside
+// this store (see modelExhaustionTerminalForRole), so unlinking the file cannot
+// clear them, and for one round this function reached over and deleted the key
+// from `.resets.json` — a lease-free read-modify-write of the ladder, on a hook
+// path, which lost 58-72 of every 300 increments under two real processes.
+// The remedy is discharged by the ANSWER instead of by this call:
+// `resetObligationFor` treats a recorded `enable-retry` as the discharge, and
+// the one product path that reaches this function has just written exactly that
+// (choice-reply.ts, which writes the choice first and returns early if refused).
+// So the cost still has its route out — obligations.ts rule 1 — and the record
+// still has one writer.
 export function clearExhaustedModels(cwd: string, runId: string): void {
   if (!runId || isNonProjectRoot(cwd)) return;
   const p = exhaustedPath(cwd, runId);

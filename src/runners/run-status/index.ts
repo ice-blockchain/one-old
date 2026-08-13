@@ -11,7 +11,7 @@ import {
   type RunLedgerOutcome,
   type RunLedgerStatus,
 } from '../../shared/state/run-agent';
-import { sweepAfterTerminalSettlement } from '../../shared/retention';
+import { retentionAdvisory, sweepAfterTerminalSettlement } from '../../shared/retention';
 
 interface RunStatusArgs {
   runId: string;
@@ -144,15 +144,32 @@ export function main(
     // above implies. `refused > 0` is the reachable half — a project whose
     // use-plugin consent is unanswered has EVERY reclaim refused by the state-write
     // fence, so `.traffic-one` grows without bound and nothing ever said so.
-    if (sweep.status === 'failed' || sweep.refused > 0) {
+    if (sweep.status === 'failed' || sweep.refused > 0 || sweep.errored > 0) {
       const what = sweep.status === 'failed'
         ? `did not complete (${sweep.reason}); what it reclaimed first is unknown`
-        : `reclaimed only ${sweep.removed} of ${sweep.planned} candidate path(s) — the rest were refused`;
+        // Two DIFFERENT remedies, so they are not one sentence: a refusal is the
+        // consent fence and is answered by answering the question, an error is
+        // the filesystem and is answered by the errno in the advisory below.
+        : `reclaimed only ${sweep.removed} of ${sweep.planned} candidate path(s) — `
+          + [
+            sweep.refused > 0 ? `${sweep.refused} refused by the state-write fence` : '',
+            sweep.errored > 0 ? `${sweep.errored} failed with a filesystem error` : '',
+          ].filter(Boolean).join(', ');
       process.stderr.write(
         `run-status: run ${args.runId} settled ${args.status} and the settlement stands, but post-settlement `
         + `cleanup ${what}. Re-run it with \`traffic-one-cleanup.cjs --apply\`.\n`,
       );
     }
+    // A sweep can also complete with NOTHING refused and still have reclaimed
+    // nothing it should have: a state file that will not parse suspends the
+    // run-history caps, an artefact with a future timestamp cannot be aged, a
+    // leaked root can only be reduced. Those are standing conditions with a
+    // user-side remedy, they are invisible in `planned`/`removed`/`refused` — all
+    // three read 0 — and until this report carried them, no caller of this
+    // function could see them at all. On stdout, because this is a CLI answering
+    // a question and the condition is the answer's caveat.
+    const advisory = sweep.status === 'swept' ? retentionAdvisory(sweep.notices) : null;
+    if (advisory) process.stdout.write(advisory);
   }
   return 0;
 }

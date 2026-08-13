@@ -408,7 +408,8 @@ test('a terminal transition triggers the retention sweep; a non-terminal one doe
 
 // The sweep is IRREVERSIBLE and used to answer `void`, so a settlement whose
 // cleanup reclaimed nothing it planned printed `{"ok":true,…}` and said no more.
-// The reachable half is a REFUSAL, not a crash: `removePath` answers false when
+// The commonest half is a REFUSAL rather than a crash (the crash is the row
+// below, and it is reachable too): `removePath` answers false when
 // the state-write fence declines a path, and a project whose use-plugin consent
 // is unanswered has every path declined — `.traffic-one` then grows without
 // bound while every settlement reports success.
@@ -459,10 +460,112 @@ test('a settlement whose cleanup was REFUSED still exits 0, and says so', () => 
     assert.equal(fs.lstatSync(lock).isSymbolicLink(), true, 'the fenced candidate survived, as the fence intends');
     assert.match(
       stderr,
-      /run-status: run run-2 settled blocked and the settlement stands, but post-settlement cleanup reclaimed only \d+ of \d+ candidate path\(s\) — the rest were refused\. Re-run it with `traffic-one-cleanup\.cjs --apply`\./,
+      /run-status: run run-2 settled blocked and the settlement stands, but post-settlement cleanup reclaimed only \d+ of \d+ candidate path\(s\) — 1 refused by the state-write fence\. Re-run it with `traffic-one-cleanup\.cjs --apply`\./,
       'the CLI names the run, the shortfall, and the command that retries it',
     );
+    // "the rest were refused" USED TO BE THIS LINE, and it was the same
+    // falsehood the report carried: everything short of `removed` was called a
+    // refusal, including a removal that THREW. The two are now counted apart, so
+    // this line may only say `refused` about paths the fence actually declined —
+    // and the row below drives the other half against a real errno.
+    assert.ok(!stderr.includes('filesystem error'), 'and nothing here threw, so no error is claimed');
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The other half of the same line, and the reason it had to be split. A
+// recursive `rmSync` that THROWS is not a fence refusal, but `refused` was
+// `planned - removed`, so this CLI told the user verbatim about "unanswered
+// use-plugin consent, a planted symlink, or a path escaping the state dir" for
+// an ENOTEMPTY — three remedies, none of which would have changed anything, on a
+// run where part of the tree had already been destroyed.
+//
+// The fixture is a LEAKED NESTED ROOT holding only recognised runtime artefacts,
+// which is the one plan shape that hands `rmSync` a tree to walk, with a `0o111`
+// child it cannot list. Mirrors shared/__tests__/retention.test.ts, driven here
+// through the CLI that words the report.
+test('a settlement whose cleanup THREW is not reported as a refusal', (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-run-status-threw-')));
+  const memoryDir = '.traffic' + '-one';
+  const blocked = path.join(root, 'apps', 'web', memoryDir, 'debug');
+  try {
+    fs.mkdirSync(path.join(root, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(root, memoryDir, '.one.json'), JSON.stringify({ currentRunId: 'run-2' }), 'utf8');
+    fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n", 'utf8');
+    const nested = path.join(root, 'apps', 'web', memoryDir);
+    fs.mkdirSync(blocked, { recursive: true });
+    // Non-empty: an EMPTY directory is removed by the parent's write bit alone
+    // and never reads the mode under test.
+    fs.writeFileSync(path.join(blocked, 'trace.jsonl'), '{}', 'utf8');
+    fs.mkdirSync(path.join(nested, 'runs', '9001'), { recursive: true });
+    fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+
+    fs.chmodSync(blocked, 0o111);
+    let code = -1;
+    const stderr = (() => {
+      try {
+        return capturedStderr(() => {
+          code = main(['--run-id', 'run-2', '--status', 'blocked', '--outcome', 'review-cycle-cap'], root);
+        });
+      } finally {
+        fs.chmodSync(blocked, 0o755);
+      }
+    })();
+    if (!fs.existsSync(nested)) {
+      t.skip('running with a uid that ignores 0o111 — rmSync could read the child directory anyway');
+      return;
+    }
+
+    assert.equal(code, 0, 'the SETTLEMENT stands — cleanup must never fail it');
+    assert.match(
+      stderr,
+      /cleanup reclaimed only 0 of 1 candidate path\(s\) — 1 failed with a filesystem error\./,
+      'the CLI names the cause that actually occurred',
+    );
+    assert.ok(!stderr.includes('refused by the state-write fence'),
+      'and never the one that did not: no fence declined anything here');
+    assert.ok(stderr.includes('could not remove'), 'with the sweep\'s own errno line beside it');
+  } finally {
+    try { fs.chmodSync(blocked, 0o755); } catch { /* already restored, or never created */ }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A sweep can refuse NOTHING, reclaim NOTHING, and still be the reason a state
+// dir grows without bound: an illegible `.one.json` suspends the run-history caps
+// until a human repairs it. `planned`, `removed` and `refused` all read 0, so the
+// shortfall line above cannot fire, and TerminalSweepReport used to drop the
+// notices field at the type level — neither of this function's callers could
+// surface the condition even if it had wanted to.
+test('a settlement whose sweep is SUSPENDED prints the remedy, though nothing was refused', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-run-status-suspended-'));
+  const originalOut = process.stdout.write;
+  const originalErr = process.stderr.write;
+  let out = '';
+  let err = '';
+  try {
+    fs.mkdirSync(path.join(root, '.traffic-one'), { recursive: true });
+    // Parses as nothing: the policy reader answers `corrupt` and suspends.
+    fs.writeFileSync(path.join(root, '.traffic-one', '.one.json'), '{ "currentRunId": ', 'utf8');
+    fs.mkdirSync(path.join(root, '.traffic-one', 'digests', 'run-0'), { recursive: true });
+
+    process.stdout.write = ((chunk: unknown) => { out += String(chunk); return true; }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: unknown) => { err += String(chunk); return true; }) as typeof process.stderr.write;
+    const code = main(['--run-id', 'run-2', '--status', 'blocked', '--outcome', 'review-cycle-cap'], root);
+    process.stdout.write = originalOut;
+    process.stderr.write = originalErr;
+
+    assert.equal(code, 0, 'the settlement stands, as it must');
+    assert.match(out, /SUSPENDED/, 'the CLI prints the sweep advisory on stdout');
+    assert.match(out, /\.one\.json/, 'naming the file only the user can repair');
+    assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'digests', 'run-0')), true,
+      'and the suspension is real: the superseded digest dir was NOT reclaimed');
+    assert.equal(err.includes('cleanup'), false,
+      'nothing was refused, so the shortfall line correctly stays silent — this condition needs its own channel');
+  } finally {
+    process.stdout.write = originalOut;
+    process.stderr.write = originalErr;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

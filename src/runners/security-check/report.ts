@@ -13,6 +13,7 @@ import {
   preserveOneMcpReportId,
   withProjectStateLock,
 } from '../../shared/state/project-state-lock';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export interface ReportPaths { jsonPath: string; markdownPath: string; relativeJsonPath: string; relativeMarkdownPath: string; }
 
@@ -74,7 +75,7 @@ export function stampState(cwd: string, report: Report, relativeReportPath: stri
     let state: Rec = {};
     try {
       const readableStatePath = fs.existsSync(nextStatePath) ? nextStatePath : oldStatePath;
-      const parsed = JSON.parse(fs.readFileSync(readableStatePath, 'utf8')) as unknown;
+      const parsed = JSON.parse(readRegularFileOrThrow(readableStatePath)) as unknown;
       state = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Rec : {};
     } catch {
       state = {};

@@ -2,16 +2,16 @@
 // Parse a Claude session JSONL file into accumulated stats (assistant records
 // only). Ported 1:1 from token-report/parseJsonlFile.cjs.
 
-import * as fs from 'fs';
 
 import { addToStats, type Stats } from './lib';
 import { emptyStats } from './emptyStats';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export function parseJsonlFile(filePath: string): Stats {
   const stats = emptyStats();
   let text: string;
   try {
-    text = fs.readFileSync(filePath, 'utf8');
+    text = readRegularFileOrThrow(filePath);
   } catch {
     return stats;
   }

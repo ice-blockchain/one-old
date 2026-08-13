@@ -39,7 +39,7 @@ import {
   normalizeOpenCodeRole,
 } from '../../shared/opencode-queue';
 import { spawnTool } from '../../shared/spawn-tool';
-import {  isExistingProjectMode, readEffectiveState } from '../../shared/state';
+import {  isNewProjectMode, readEffectiveState } from '../../shared/state';
 
 import {
   type Rec,
@@ -47,6 +47,7 @@ import {
 import {
   git,
 } from './git-sandbox';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 type VerifyCommand = {
   label: string;
@@ -57,7 +58,7 @@ type VerifyCommand = {
 
 function readJsonObject(file: string): Rec | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    const parsed = JSON.parse(readRegularFileOrThrow(file)) as unknown;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Rec : null;
   } catch {
     return null;
@@ -270,17 +271,34 @@ export function postApplyTypecheck(cwd: string, touched: string[]): string | nul
 // run-authored even on an existing codebase and is judged normally — this
 // channel never passes the write gate (git apply), so skipping created files
 // would reopen the exact 7co/8co holes these checks were built for. Returns
-// null when the project is not an existing-* mode (judge everything), else the
-// set of touched files that existed at HEAD (skip exactly those). Delegation
-// requires a git HEAD to sandbox; if git cannot answer, fail toward the
-// stand-down (skip all) — the pre-fix behavior, permissive on existing only.
+// null when Traffic One scaffolded this project (judge everything), else the set
+// of touched files that existed at HEAD (skip exactly those).
+//
+// `!isNewProjectMode`, not `isExistingProjectMode`: what the scoping turns on is
+// whether the repository's conventions are the plugin's, and an UNDECLARED mode is
+// a repository the plugin did not create just as much as a declared existing one.
+// It fences an OPINION — collapse candidacy on a file this run did not author,
+// and the i18n/size family — with no contract fact and nothing on a machine
+// boundary behind it, which is what makes the wider reading the right one.
+//
+// The fallback moves with it. `git ls-tree` failing used to mean "skip all",
+// which was survivable while the stand-down covered declared existing projects
+// only — those have a HEAD by construction, delegation needs one to sandbox. Over
+// undeclared projects it would have meant a project with no usable HEAD and no
+// declared mode being judged on NOTHING: every collapse check silently waived by
+// a git error. So an unanswerable HEAD now fails toward judging (skip nothing).
+// The cost of that direction is bounded and visible — a rollback and a fallback
+// to the paid implementer, on a project whose git is already broken enough that
+// the apply itself is in doubt — while the cost of the other direction is a
+// collapsed file landing with `DELEGATED_OK`, which is the hole (7co) this whole
+// family exists to close.
 function preExistingAtHead(cwd: string, touched: string[]): Set<string> | null {
-  if (!isExistingProjectMode(readEffectiveState(cwd))) return null;
+  if (isNewProjectMode(readEffectiveState(cwd))) return null;
   if (touched.length === 0) return new Set();
   const r = spawnTool('git', ['ls-tree', '-z', '-r', '--name-only', 'HEAD', '--', ...touched], {
     cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,
   });
-  if (r.error || r.status !== 0) return new Set(touched);
+  if (r.error || r.status !== 0) return new Set();
   return new Set(String(r.stdout || '').split('\0').filter(Boolean));
 }
 
@@ -291,7 +309,7 @@ export function postApplyQuality(cwd: string, touched: string[]): string | null 
     if (!isCollapseCandidate(rel)) continue;
     let text: string;
     try {
-      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+      text = readRegularFileOrThrow(path.join(cwd, rel));
     } catch {
       continue; // deleted or unreadable — not this check's concern
     }
@@ -304,7 +322,7 @@ export function postApplyQuality(cwd: string, touched: string[]): string | null 
     const bin = resolveProjectPrettier(cwd, rel);
     if (bin && formatFileWithPrettier(bin, cwd, rel)) {
       try {
-        text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+        text = readRegularFileOrThrow(path.join(cwd, rel));
         line = collapsedLineNumber(rel, text);
       } catch {
         continue;
@@ -342,7 +360,7 @@ export function postApplyStyling(cwd: string, touched: string[], runId = ''): st
     if (!/\.(?:tsx|jsx|vue|svelte)$/i.test(rel)) continue;
     let text: string;
     try {
-      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+      text = readRegularFileOrThrow(path.join(cwd, rel));
     } catch {
       continue; // deleted or unreadable — not this check's concern
     }
@@ -369,7 +387,13 @@ export function postApplyI18n(
   if (normalizeOpenCodeRole(role) !== 'frontend') return null;
   const contract = runId ? readCompiledArchitecture(cwd, runId) : null;
   if (!contract?.i18n && !projectDeclaresI18nRuntime(cwd, contract || undefined)) return null;
-  const existingMode = isExistingProjectMode(readEffectiveState(cwd));
+  // Same reading as the structure scan's `notScaffolded` (react-structure/types.ts):
+  // both demote an OPINION about conventions the plugin did not author, and an
+  // undeclared mode is not a scaffolded project. Left on the narrow predicate,
+  // undeclared was the one mode that got the full i18n opinion — the demotion
+  // withheld and the "no catalog contract detectable" finding raised — over code
+  // Traffic One knows least about.
+  const notScaffolded = !isNewProjectMode(readEffectiveState(cwd));
   const profile = contract?.profile || capabilityProfileForProject(cwd, readEffectiveState(cwd));
   const i18n = contract?.i18n || detectExistingI18nContract(cwd);
   const references: I18nReference[] = [];
@@ -378,7 +402,7 @@ export function postApplyI18n(
     if (!/\.(?:tsx?|jsx?|vue|svelte|astro|html|blade\.php|swift|kt|dart)$/i.test(rel)) continue;
     let text: string;
     try {
-      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+      text = readRegularFileOrThrow(path.join(cwd, rel));
     } catch {
       continue;
     }
@@ -393,7 +417,7 @@ export function postApplyI18n(
     // was ENFORCED harder on delegated maintenance diffs than on the identical
     // paid Write (where these ids never block). Catalog data validation below
     // keeps applying — it guards the project's own declared contract.
-    const lexicalDemoted = uiAstLintLayer(profile) !== null || existingMode;
+    const lexicalDemoted = uiAstLintLayer(profile) !== null || notScaffolded;
     findings.push(...source.findings.filter((finding) => (
       !lexicalDemoted
       || (finding.id !== 'STRUCT_HARDCODED_COPY' && finding.id !== 'STRUCT_I18N_REACT_TRANS')
@@ -421,7 +445,7 @@ export function postApplyI18n(
         requireAllCatalogs: true,
       }));
     }
-  } else if (!existingMode) {
+  } else if (!notScaffolded) {
     // On an existing codebase an undetectable catalog layout (compiled TS
     // message modules, .po files, non-standard paths) means "cannot judge",
     // not "reject every diff" — blocking here burned the whole delegation
@@ -453,17 +477,19 @@ export function postApplyI18n(
  * disabling `noUncheckedIndexedAccess` for the whole monorepo.
  */
 export function postApplySize(cwd: string, touched: string[]): string | null {
-  // Existing-codebase stand-down: the limit judges the whole on-disk file, so
-  // every legacy module already over the budget would become permanently
-  // un-editable via delegation — each maintenance diff rejected regardless of
-  // its own size. Module-size budgets on an existing repo belong to the
-  // project's own lint config, not this gate.
-  if (isExistingProjectMode(readEffectiveState(cwd))) return null;
+  // Not-scaffolded stand-down: the limit judges the whole on-disk file, so every
+  // legacy module already over the budget would become permanently un-editable
+  // via delegation — each maintenance diff rejected regardless of its own size.
+  // Module-size budgets on a repo Traffic One did not write belong to the
+  // project's own lint config, not this gate, and `!isNewProjectMode` is that
+  // set: an undeclared mode is not a scaffolded project either, and this gate
+  // fences a budget rather than a contract fact.
+  if (!isNewProjectMode(readEffectiveState(cwd))) return null;
   for (const rel of touched) {
     if (!isCollapseCandidate(rel)) continue;
     let text: string;
     try {
-      text = fs.readFileSync(path.join(cwd, rel), 'utf8');
+      text = readRegularFileOrThrow(path.join(cwd, rel));
     } catch {
       continue;
     }

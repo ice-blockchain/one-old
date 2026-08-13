@@ -116,6 +116,32 @@ export function isCompletedTrafficOneMaterialization(cwd: string, state: Rec): b
  * shared/materialize/converge.ts's, whose caller reads any non-null outcome as
  * `repaired-materialization`, and it already reports the refusal
  * (stateWriteRefusedOutcome).
+ *
+ * WHAT THIS BOOLEAN ALSO CANNOT EXPRESS, since the list above was written when
+ * the stamp refusal was the only such fact: the sweep below now also reports
+ * `result.roleContracts` — the host's per-role contract files could not be
+ * written — and this route reads only `result.skipped`, so it answers `true` for
+ * a project that materialized everything EXCEPT the contracts that define the
+ * role its caller is about to spawn.
+ *
+ * DELIBERATE, and the two reasons are worth stating because the shortfall is
+ * real. First, this boolean is consumed as "did the stamp land", and its caller
+ * turns anything falsy into one of two denies whose prose names
+ * `materializedStack`/`materializedAt` and five paths — none of which is the
+ * problem when a role directory is occupied, so folding the condition in here
+ * would produce a permanent refusal describing a state that is false, which is
+ * the exact defect the paragraphs above exist to avoid. Second, the condition is
+ * already refused and disclosed where it is actionable and where its own cause
+ * can be named: onboarding-gate/handler.ts denies file-changing work under
+ * `host-role-contracts-unwritable` (a spawn is not a mutating tool use, so it is
+ * not what that deny costs), the SessionStart banner states it to the
+ * orchestrator, and the spawn directives that would otherwise hand a child a path
+ * to a file that is not there check for it first
+ * (plan-guard/build-orchestration-directive.ts,
+ * runners/onboarding-wait/pre-spawn-directives.ts). The residual is a spawn on a
+ * contract-less project running as a generic worker bound only by its
+ * `[t1-role: …]` marker, which is the same posture as the built-in-fallback spawn
+ * the spawn table already treats as legitimate.
  */
 export function materializeIfNeeded(cwd: string): boolean {
   const state = readEffectiveState(cwd);

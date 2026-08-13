@@ -165,7 +165,7 @@ Architect phase gate: `{{ROLE}}` cannot start yet — spawn `senior-architect` f
 
 Missing on disk: {{MISSING}}
 
-The architect must finish the project-memory baseline, semantic `.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` containing `PLAN_READY`. Runtime then compiles architecture/verification, generates assignments, and publishes work-unit bootstraps. Only after that succeeds may you retry `{{ROLE}}` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.
+The architect must finish the required project-memory baseline, semantic `.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` containing `PLAN_READY`. Traffic One runtime — not the architect — then compiles and atomically publishes architecture, verification, assignments, and work-unit bootstraps. Only after those hash-valid contracts exist may you retry `{{ROLE}}` with the same task. Do not spawn other implementers or patch runtime-owned coordination artifacts yourself.
 <!-- T1BLOCK:END architect-phase-incomplete -->
 
 <!-- T1BLOCK:BEGIN opencode-plan-batch-required -->

@@ -22,6 +22,7 @@ import {
   type CodexHookTrustProbe,
   type CodexHookTrustProbeOptions,
 } from './codex-hook-schema';
+import { copyRegularFile } from '../../shared/bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -235,7 +236,7 @@ export async function probeCodexHookTrust(
     const configPath = path.join(shadowHome, 'config.toml');
     const realConfigPath = path.join(realHome as string, 'config.toml');
     if (fs.existsSync(realConfigPath)) {
-      fs.copyFileSync(realConfigPath, configPath);
+      copyRegularFile(realConfigPath, configPath);
     } else {
       fs.writeFileSync(configPath, '', { encoding: 'utf8', mode: 0o600 });
     }

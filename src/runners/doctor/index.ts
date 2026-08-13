@@ -11,14 +11,14 @@
 // findings. Ported 1:1 from scripts/doctor.cjs.
 
 import { buildDoctorBundle, redactProjectProbe } from './bundle';
-import { buildFindings } from './findings';
+import { buildFindings, doctorSummary } from './findings';
 import { parseArgs, type DoctorArgs } from './lib';
 import { probeOverrides } from './override-probe';
 import { probePluginIdentity } from './plugin-identity';
 import { probePluginRoot } from './plugin-root-probe';
 import { probeRunDiagnostic } from './run-diagnostic';
 import { formatRunDiagnosticReport } from './run-diagnostic-report';
-import { unblockMain } from './unblock';
+import { reconcileMain, unblockMain, wantsOverrideReconcile } from './unblock';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import { readDecisions } from '../../shared/state/decision-log';
 import {
@@ -45,8 +45,8 @@ export type { CodexHookTrustProbe, CodexHookTrustProbeOptions, CodexHookTrustSta
 
 export { buildDoctorBundle, looksLikeSecretValue, redactProjectProbe } from './bundle';
 export type { BuildDoctorBundleInput, DoctorBundle, RedactedDecisionRecord, RedactedProjectProbe } from './bundle';
-export { buildFindings } from './findings';
-export type { Finding, BuildFindingsInput } from './findings';
+export { buildFindings, doctorSummary } from './findings';
+export type { DoctorSummary, Finding, BuildFindingsInput } from './findings';
 export { parseArgs } from './lib';
 export type { DoctorArgs } from './lib';
 export { probePluginIdentity } from './plugin-identity';
@@ -63,10 +63,18 @@ export type {
   RunDiagnosticProbe,
 } from './run-diagnostic';
 export { formatRunDiagnosticReport } from './run-diagnostic-report';
-export { probeOverrides } from './override-probe';
+export { OVERRIDE_RECONCILE_FLAG, overrideReconcileCommand, probeOverrides } from './override-probe';
 export type { OverrideProbe } from './override-probe';
-export { buildOverrideSnapshot, isInteractiveTerminal, overrideConfirmationNonce, runUnblock } from './unblock';
-export type { UnblockOutcome, UnblockRefusal, UnblockRequest } from './unblock';
+export {
+  buildOverrideSnapshot,
+  isInteractiveTerminal,
+  overrideConfirmationNonce,
+  projectRunIds,
+  runOverrideReconcile,
+  runUnblock,
+  wantsOverrideReconcile,
+} from './unblock';
+export type { ReconcileOutcome, ReconcileRefusal, UnblockOutcome, UnblockRefusal, UnblockRequest } from './unblock';
 export {
   analyzeCodexSessionFile,
   probeCodexHooks,
@@ -122,6 +130,16 @@ export async function main(): Promise<void> {
     return;
   }
 
+  // The other operator write, and it runs ahead of the probes for the same
+  // reasons: it is interactive, irreversible, and about the project you are
+  // standing in. Read straight off argv rather than through parseArgs because
+  // it takes no value and belongs to the override command — see
+  // wantsOverrideReconcile.
+  if (wantsOverrideReconcile()) {
+    process.exitCode = await reconcileMain(resolveProjectRoot(process.cwd()));
+    return;
+  }
+
   // Resolve the incident first: `doctor --session` must not combine a target
   // transcript with project prefs/trust from whichever directory invoked it.
   const sessionDiagnostics = probeSessionDiagnostics(args.session);
@@ -143,17 +161,21 @@ export async function main(): Promise<void> {
   const runId = resolveDoctorRunId(args, project.runState);
   const runDiagnostic = runId ? probeRunDiagnostic(cwd, runId) : null;
 
+  // Hoisted out of the buildFindings call so it can also be PRINTED. It was
+  // computed inline and consumed only by findings, which is how a report with
+  // an override-evidence refusal behind it could still print `HEALTHY` with no
+  // trace of the probe that knew better.
+  const overrides = probeOverrides(cwd, runId);
   const findings = buildFindings({
     node, nvm, gitnexus, project, codexHooks, auth, oneMcp, openCodeMcp, sessionDiagnostics, pluginRoot, runDiagnostic,
-    overrides: probeOverrides(cwd, runId),
+    overrides,
   });
-  const summary = findings.some((f) => f.severity === 'fix-needed')
-    ? 'ACTION_NEEDED'
-    : (findings.length > 0 ? 'INFO_ONLY' : 'HEALTHY');
+  const summary = doctorSummary(findings);
 
   if (args.bundle) {
     const decisions = runId ? readDecisions(cwd, runId) : [];
     const bundle = buildDoctorBundle({
+      summary,
       plugin,
       node,
       nvm,
@@ -165,6 +187,7 @@ export async function main(): Promise<void> {
       openCodeMcp,
       pluginRoot,
       sessionDiagnostics,
+      overrides,
       findings,
       runId,
       runDiagnostic,
@@ -198,6 +221,10 @@ export async function main(): Promise<void> {
       sessionDiagnostics,
       pluginRoot,
       runDiagnostic,
+      // No redaction pass: every field is a count, a status word, a check id,
+      // a token id or an ISO timestamp minted by this runtime. The one string
+      // an operator supplied is a gate id, which the findings already print.
+      overrides,
     },
     version,
   }, null, 2)}\n`);

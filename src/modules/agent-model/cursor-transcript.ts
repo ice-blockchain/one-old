@@ -1,7 +1,6 @@
 // src/modules/agent-model/cursor-transcript.ts
 // Cursor transcript parsing and correlation predicates.
 
-import * as fs from 'fs';
 import { pickCursorSlug } from '../../shared/materialize/cursor-models';
 import { modelMatchesExpected } from '../../shared/model-tiers';
 import {
@@ -24,6 +23,7 @@ import {
   SUCCESS_STATUSES,
   type ParsedCursorTranscript,
 } from './cursor-failure-prose';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 function stringifyErrorValue(value: unknown): string {
   if (typeof value === 'string') return value.trim();
@@ -46,7 +46,7 @@ function stringifyErrorValue(value: unknown): string {
 
 export function parseCursorTranscript(candidate: CursorTranscriptCandidate): ParsedCursorTranscript | null {
   let raw = '';
-  try { raw = fs.readFileSync(candidate.filePath, 'utf8'); } catch { return null; }
+  try { raw = readRegularFileOrThrow(candidate.filePath); } catch { return null; }
   const lines = raw.split('\n').filter((line) => line.trim().length > 0);
   let terminalRecord: Record<string, unknown> | null = null;
   for (let index = lines.length - 1; index >= 0; index -= 1) {

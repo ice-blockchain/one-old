@@ -2,17 +2,21 @@
 // Pre-spawn directives: OpenCode restart, orchestration, run-id minting,
 // and the Windsurf/Devin architect directive.
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { capabilityProfileForRun } from '../../shared/architecture-contract';
 import { buildOrchestrationDirective } from '../../modules/plan-guard/build-orchestration-directive';
 import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan/directive';
 import { detectHost } from '../../shared/host';
 import { hostFlags } from '../../shared/host/capability-flags';
 import { detectHostPlan } from '../../shared/host/plan';
+import { hostSpawnType } from '../../shared/host/spawn-types';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { canonicalHost } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
-import { ensureCurrentRunId,  readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId, isNewProjectMode,  readEffectiveState } from '../../shared/state';
 import { ensureRunModelPolicy, readRunModelPolicy } from '../../shared/run-model-policy';
 
 export function preSpawnOpenCodeDirective(cwd: string, host: string = detectHost()): string {
@@ -88,7 +92,7 @@ export function preSpawnRunIdDirective(cwd: string, host: string = detectHost())
         'Do not spawn a child. Reopen Performance, confirm the active choice, then retry setup completion.',
       ].join('\n');
     }
-    if (state.mode !== 'new-project') {
+    if (!isNewProjectMode(state)) {
       return [
         '[traffic-one] Immutable run model policy is ready before delegation:',
         `- run: \`${runId}\``,
@@ -126,7 +130,7 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
   if (!hostFlags(canonicalHost(host)).ignoresMaterializedGuidance) return '';
   try {
     const state = readEffectiveState(cwd) as Record<string, unknown>;
-    if (!state || state.mode !== 'new-project') return '';
+    if (!state || !isNewProjectMode(state)) return '';
     const profile = capabilityProfileForRun(cwd, state);
     const implementers = profile.roles.filter((role) => role === 'senior-frontend' || role === 'senior-backend');
     const implementerStep = implementers.length === 2
@@ -139,6 +143,23 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
       : profile.surfaces.includes('web-ui')
         ? `derive uiImpact and use ${profile.qaAdapters.join(', ') || 'Playwright'} only for behavioral/visual UI risk`
         : 'run stack-native build/test/lint checks; do not assign browser, screenshot, design, or frontend QA';
+    // The two "tell the child to read its contract" clauses below name
+    // MATERIALIZED files, and a host whose `.devin/agents` could not be written
+    // has none of them — the instruction then costs the child a failed read and
+    // leaves it with no contract and no idea one was missing. Checked against the
+    // architect's own path, which is the one this directive spawns first and the
+    // one the whole directory shares; the same check the fallback-child contract
+    // line in session-start-setup.ts makes.
+    const architectContractRel = hostSpawnType('windsurf', 'senior-architect', cwd).contractPath;
+    const contractsPresent = Boolean(architectContractRel && fs.existsSync(path.join(cwd, architectContractRel)));
+    const architectContractStep = contractsPresent
+      ? '   `[t1-role: senior-<role>]` (substitute the spawned role; architect here), then tell the child to read `.devin/agents/senior-architect/AGENT.md`.'
+      : '   `[t1-role: senior-<role>]` (substitute the spawned role; architect here). Do NOT tell the child to read'
+        + ' `.devin/agents/senior-architect/AGENT.md` — Traffic One could not write the role contracts, so that file is'
+        + ' not there; state the task and scope inline and report the unwritable `.devin/agents` to the user.';
+    const implementerContractStep = contractsPresent
+      ? '   and an instruction to read the matching `.devin/agents/<role>/AGENT.md` contract,'
+      : '   with the role\'s task and scope stated INLINE (the `.devin/agents/<role>/AGENT.md` contracts could not be written),';
     return [
       '[traffic-one] Windsurf build flow — do this FIRST, before writing or scaffolding anything:',
       `1. Runtime capability contract: profile \`${profile.profileId}\`; framework \`${profile.framework}\`;`,
@@ -146,12 +167,12 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
       `   skill buckets \`${profile.skillBuckets.join(', ') || 'universal only'}\`. Build ONLY on that contract; do not substitute an unrelated stack, QA adapter, or implementation role.`,
       '2. Spawn the architect FIRST with `run_subagent` profile `subagent_general` (custom profiles materialized',
       '   during onboarding are not registered until a new Devin session). The task MUST start with',
-      '   `[t1-role: senior-<role>]` (substitute the spawned role; architect here), then tell the child to read `.devin/agents/senior-architect/AGENT.md`.',
+      architectContractStep,
       '   It writes',
       '   `.traffic-one/plan.md` (PLAN_READY), the runtime architecture input, and only the scaffold outputs allowed by the compiled contract. Development is BLOCKED until',
       '   `.traffic-one/plan.md` exists (the scaffolder + plan gates deny premature/off-stack commands).',
       `3. After PLAN_READY, ${implementerStep} via \`subagent_general\`, with each \`[t1-role: senior-…]\` marker first`,
-      '   and an instruction to read the matching `.devin/agents/<role>/AGENT.md` contract,',
+      implementerContractStep,
       `   then \`senior-reviewer\` + \`senior-tester\`. QA: ${qa}. Build ON the compiled plan the architect produced.`,
     ].join('\n');
   } catch {

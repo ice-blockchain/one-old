@@ -10,6 +10,7 @@ import {
   lineForIndex, missingToolInstallPrompt,  
     relativePath, runCommand, splitNul,
 } from './helpers';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export function scanExternalTools(cwd: string, reportDir: string, report: ScanReport): void {
   const gitleaks = hasCommand('gitleaks', cwd, process.env);
@@ -50,7 +51,7 @@ export function runGitleaks(cwd: string, reportDir: string, report: ScanReport, 
   report.externalReports[`gitleaks-${name}`] = relativePath(cwd, reportPath);
   let findings: Rec[] = [];
   try {
-    const text = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, 'utf8') : '';
+    const text = fs.existsSync(reportPath) ? readRegularFileOrThrow(reportPath) : '';
     findings = text.trim() ? JSON.parse(text) as Rec[] : [];
   } catch {
     findings = [];

@@ -12,14 +12,14 @@
 // own URL query instead; keeping the substitution out of this module means a new
 // public page cannot reintroduce the leak by copying an existing call site.
 
-import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 const cache: Record<string, string> = {};
 
 function load(file: string): string {
   if (cache[file] == null) {
-    cache[file] = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    cache[file] = readRegularFileOrThrow(path.join(__dirname, file));
   }
   return cache[file];
 }

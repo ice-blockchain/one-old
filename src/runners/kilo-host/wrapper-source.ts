@@ -24,6 +24,10 @@ import {
   ONE_MCP_SERVER_NAME,
 } from '../../config/one-mcp';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../../shared/one-mcp/agent-tools';
+import {
+  EMITTED_BOUNDED_READ_FN,
+  emittedBoundedReadSource,
+} from '../../shared/emitted-bounded-read';
 
 import {
   jsString,
@@ -38,12 +42,25 @@ export function wrapperSource(pluginRoot: string, installedAt = new Date().toISO
 const TRAFFIC_ONE_WRAPPER_OWNER = ${JSON.stringify(owner)};
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs';
+import { existsSync, appendFileSync, readdirSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const __require = createRequire(import.meta.url);
+
+// A read whose SHAPE somebody else chose, BOUNDED: this wrapper walks UPWARD from
+// the host's cwd, so the files below live in a PROJECT — and a project's
+// \`.traffic-one/.one.json\` arrives through a pull request, where git records a
+// symlink as mode 120000. A plain readFileSync of a FIFO or of a link to
+// /dev/zero never returns (DRIVEN: SIGKILL at 8 064 ms, control 45 ms), and a
+// wrapper that never returns is a host plugin load that cannot report anything.
+// O_NONBLOCK opens instead of waiting; the fstat is on the DESCRIPTOR, so what is
+// classified is what was opened. Emitted verbatim from
+// src/shared/emitted-bounded-read.ts — this file cannot import the leaf, because
+// it runs before any plugin root is known.
+${emittedBoundedReadSource('nodeFs')}
 
 const TRAFFIC_ONE_PLUGIN_ROOT = ${jsString(pluginRoot)};
 const TRAFFIC_ONE_RUNTIME = path.join(TRAFFIC_ONE_PLUGIN_ROOT, 'scripts', 'kilo-hook-runtime.cjs');
@@ -84,7 +101,7 @@ function validTrafficOneRoot(dir) {
   const stateFile = path.join(dir, '.traffic-one', '.one.json');
   if (!existsSync(stateFile)) return false;
   try {
-    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    const state = JSON.parse(${EMITTED_BOUNDED_READ_FN}(stateFile) ?? 'null');
     return Boolean(state && typeof state === 'object'
       && typeof state.mode === 'string'
       && state.mode.trim());
@@ -97,7 +114,7 @@ function readTrafficOneMarker(dir) {
   const markerFile = path.join(dir, ...TRAFFIC_ONE_ACTIVATION_REL);
   if (!existsSync(markerFile)) return null;
   try {
-    const marker = JSON.parse(readFileSync(markerFile, 'utf8'));
+    const marker = JSON.parse(${EMITTED_BOUNDED_READ_FN}(markerFile) ?? 'null');
     if (!marker || typeof marker !== 'object'
       || marker.owner !== 'traffic-one'
       || marker.version !== 1) return null;

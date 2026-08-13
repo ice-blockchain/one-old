@@ -14,6 +14,7 @@ import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
   type AddIssue, type CommandResult, type Issue, type Rec,
 } from './constants';
+import { readRegularBytesOrThrow, readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export function toPosix(filePath: string): string {
   return filePath.split(path.sep).join('/');
@@ -84,7 +85,7 @@ export function trafficStateHasOnlyStampFields(cwd: string, relPath: string): bo
     return false;
   }
   try {
-    const decoded = JSON.parse(fs.readFileSync(path.join(cwd, relPath), 'utf8'));
+    const decoded = JSON.parse(readRegularFileOrThrow(path.join(cwd, relPath)));
     if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
       return false;
     }
@@ -119,7 +120,7 @@ export function hashFileForFingerprint(cwd: string, relPath: string): Buffer | s
   if (!fs.existsSync(absPath)) {
     return '<deleted>';
   }
-  const bytes = fs.readFileSync(absPath);
+  const bytes = readRegularBytesOrThrow(absPath);
   const normalized = toPosix(relPath);
   if (normalized === STATE_REL_PATH || normalized === LEGACY_STATE_REL_PATH) {
     return normalizeTrafficState(bytes.toString('utf8'));
@@ -171,7 +172,7 @@ export function readTextFile(cwd: string, relPath: string): string | null {
   const absPath = path.join(cwd, relPath);
   let buffer: Buffer;
   try {
-    buffer = fs.readFileSync(absPath);
+    buffer = readRegularBytesOrThrow(absPath);
   } catch {
     return null;
   }
@@ -377,7 +378,7 @@ export function missingToolInstallPrompt(missingTools: string[], cwd: string = p
 
 export function readPackageJson(cwd: string): Rec | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as Rec;
+    return JSON.parse(readRegularFileOrThrow(path.join(cwd, 'package.json'))) as Rec;
   } catch {
     return null;
   }

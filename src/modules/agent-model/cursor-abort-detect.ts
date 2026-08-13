@@ -16,6 +16,7 @@ import {
   FAILURE_STATUSES,
   SUCCESS_STATUSES,
 } from './cursor-failure-prose';
+import { openRegularFd } from '../../shared/bounded-read';
 
 export function rawParentSessionIds(raw: unknown): Set<string> {
   const data = obj(raw) || {};
@@ -176,7 +177,7 @@ export function parentTranscriptWasUserAborted(
     try {
       const stat = fs.statSync(parentPath);
       const start = Math.max(0, stat.size - 32_768);
-      const fd = fs.openSync(parentPath, 'r');
+      const fd = openRegularFd(parentPath);
       try {
         const bytes = Buffer.alloc(stat.size - start);
         fs.readSync(fd, bytes, 0, bytes.length, start);

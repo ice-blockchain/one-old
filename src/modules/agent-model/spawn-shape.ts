@@ -203,11 +203,23 @@ export function namedOpenCodeAgentDeny(cwd: string, role: string, agentType: str
   }), { denyId: 'opencode-named-agent-required', denyTarget: role });
 }
 
+// The path is READ FROM THE TABLE, not spelled again: a second literal for the
+// same file is how Copilot's contract path stayed at `.copilot/` (a HOME
+// location written as a project-relative one) long after the writer moved.
+//
+// It stays UNCONDITIONAL on the file existing, deliberately. Every reason string
+// a gate renders is part of the deny-repeat signature (shared/state/
+// deny-repeat.ts), so a sentence that changed with disk state would split one
+// refusal into two counters and silently stop escalation — and this deny's
+// subject is the spawn TYPE, which is wrong whether or not the contract landed.
+// A missing contract is refused where it is actionable instead: mutating work is
+// blocked at the gate (`host-role-contracts-unwritable`) and the SessionStart
+// banner tells the orchestrator to state the role inline.
 export function kiloGeneralAgentDeny(role: string, agentType: string): HookResult {
   return deny(block('kilo-general-agent-required', {
     ROLE: role,
     AGENT_TYPE: agentType || 'missing',
-    AGENT_PATH: `.kilo/agents/${role}.md`,
+    AGENT_PATH: hostSpawnType('kilo', role).contractPath || `.kilo/agents/${role}.md`,
   }), { denyId: 'kilo-general-agent-required', denyTarget: role });
 }
 

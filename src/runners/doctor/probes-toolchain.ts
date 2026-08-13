@@ -31,6 +31,7 @@ import {
   type CodexHookTrustProbe,
   type CodexHookTrustProbeOptions,
 } from './codex-hook-trust';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 type Rec = Record<string, unknown>;
 
 // `requiredMajor` and `pluginRequiredMajor` answer DIFFERENT questions and are
@@ -148,7 +149,7 @@ function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
   let status: string | null = null;
   if (fs.existsSync(runJson)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(runJson, 'utf8')) as Rec;
+      const parsed = JSON.parse(readRegularFileOrThrow(runJson)) as Rec;
       status = effectiveLegacyRunStatus(parsed) || null;
     } catch {
       status = null;
@@ -161,7 +162,7 @@ function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
   let maintenanceRecord: Rec | null = null;
   if (fs.existsSync(maintenanceJson)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(maintenanceJson, 'utf8')) as Rec;
+      const parsed = JSON.parse(readRegularFileOrThrow(maintenanceJson)) as Rec;
       maintenanceRecord = parsed;
       maintenanceOutcome = typeof parsed.outcome === 'string' ? parsed.outcome : null;
       maintenanceOverallOutcome = typeof parsed.overallOutcome === 'string' ? parsed.overallOutcome : null;

@@ -1,7 +1,7 @@
 // src/runners/traffic-one-cleanup/index.ts
 // CLI wrapper for the conservative .traffic-one retention sweep.
 
-import { sweepTrafficOneRetention } from '../../shared/retention';
+import { retentionAdvisory, sweepTrafficOneRetention } from '../../shared/retention';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 
 function usage(): string {
@@ -50,6 +50,14 @@ export function main(): number {
   for (const action of result.actions) {
     process.stdout.write(`- ${action.reason}: ${action.path}\n`);
   }
+  // The count above is not the whole answer, and on its own it MISREADS: a
+  // project whose `.one.json` will not parse has every run-history cap suspended,
+  // so the sweep plans nothing and this line says "0 candidate(s), 0 removed" —
+  // a clean bill of health for a directory that is growing without bound. The
+  // notices carry the file, the reason and the remedy. They were printed under
+  // `--json` only, which is the mode a human is least likely to be reading.
+  const advisory = retentionAdvisory(result.notices);
+  if (advisory) process.stdout.write(advisory);
   return 0;
 }
 

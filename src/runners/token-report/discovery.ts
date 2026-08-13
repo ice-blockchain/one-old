@@ -9,13 +9,14 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { codexSessionIdFromFile } from './lib';
+import { openRegularFd, readRegularFileOrThrow } from '../../shared/bounded-read';
 
 type Rec = Record<string, unknown>;
 
 export function readFirstLine(filePath: string, maxBytes = 4 * 1024 * 1024): string {
   let fd: number | undefined;
   try {
-    fd = fs.openSync(filePath, 'r');
+    fd = openRegularFd(filePath);
     const chunks: Buffer[] = [];
     let offset = 0;
     const buffer = Buffer.alloc(64 * 1024);
@@ -77,7 +78,7 @@ export function discoverSubagents(sessionDir: string): Subagent[] {
     const metaPath = path.join(subagentsDir, `${id}.meta.json`);
     let meta: Rec = {};
     if (fs.existsSync(metaPath)) {
-      try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Rec; } catch { meta = {}; }
+      try { meta = JSON.parse(readRegularFileOrThrow(metaPath)) as Rec; } catch { meta = {}; }
     }
     out.push({
       id,

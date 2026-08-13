@@ -99,6 +99,7 @@ function decision(over: Partial<DecisionRecord> = {}): DecisionRecord {
 
 function bundleInput(over: Partial<BuildDoctorBundleInput> = {}): BuildDoctorBundleInput {
   return {
+    summary: 'HEALTHY',
     plugin: {
       version: '1.2.3',
       contentHash: 'abc',
@@ -187,6 +188,29 @@ test('--bundle drops decision-log inputs and stateWrites entirely, keeping the v
     denyTarget: 'src/app.tsx',
     repeatCount: 3,
   });
+});
+
+test('--bundle carries the override completeness probe, which is what a wedged project is about', () => {
+  // The bundle is what gets pasted into a bug report titled "nothing will
+  // certify". It had no override section at all, so the one probe that explains
+  // that state was the one thing missing from it. Nothing here is sensitive:
+  // counts, states, and check ids that settlement already writes into run.json.
+  const overrides = {
+    active: [], unvouchable: 0, forgedLines: 0, malformedLines: 0, runMinted: 0, ledger: 'absent' as const,
+    duplicateLines: 0, orphanSnapshots: 1, mintCounter: 'verified' as const, mintCounterCount: 2,
+    vouchableMints: 1, mintCounterWritable: true, snapshotScanAsked: true, reconciliations: 0, excused: [],
+    discrepancies: ['override-snapshot-orphaned'], repairCommand: 'node doctor.cjs --reconcile-overrides',
+  };
+  const bundle = buildDoctorBundle(bundleInput({ overrides }));
+  assert.deepEqual(bundle.probes.overrides?.discrepancies, ['override-snapshot-orphaned']);
+  assert.equal(bundle.probes.overrides?.orphanSnapshots, 1);
+  // The verdict itself, which this artifact carried the findings for and never
+  // stated: a reader of an attached bundle could not tell HEALTHY from wedged
+  // without re-deriving it from the severities.
+  assert.equal(buildDoctorBundle(bundleInput({ summary: 'ACTION_NEEDED' })).summary, 'ACTION_NEEDED');
+  // A caller that never collected it is a `null` section rather than an absent
+  // one, so a reader can tell "not asked" from "clean".
+  assert.equal(buildDoctorBundle(bundleInput()).probes.overrides, null);
 });
 
 test('--bundle caps the decision tail and reports both counts', () => {

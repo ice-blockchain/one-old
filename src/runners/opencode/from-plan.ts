@@ -2,7 +2,6 @@
 // The --from-plan batch: parse the plan queue, walk units in dependency
 // order with per-role sharding, and settle the plan-batch state.
 
-import * as fs from 'fs';
 import * as path from 'path';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {
@@ -44,6 +43,7 @@ import { normalizePlanRole } from './diff-policy';
 import {
   normalizePlanI18nUnits,
 } from './i18n';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 interface PlanDelegationResult {
   total: number;
@@ -80,7 +80,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
     : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
   const runId = (opts.runId || '').trim() || stateRunId;
   let planText = '';
-  try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
+  try { planText = readRegularFileOrThrow(path.join(cwd, '.traffic-one', 'plan.md')); } catch { /* no plan → empty queue */ }
   // In maintenance, plan.md is a durable artifact from the last build, so from-plan
   // is a no-op — UNLESS the architect wrote a fresh run-scoped queue for THIS run
   // (a complex maintenance build). `hasFreshArchitectQueueForRun` gates that: it
@@ -99,7 +99,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   if (!maintenanceQueueSuppressed && runId
     && parsePlanDelegationQueue(planText).length === 0
     && restorePlanOpenCodeDelegateBlock(cwd, runId)) {
-    try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* keep prior read */ }
+    try { planText = readRegularFileOrThrow(path.join(cwd, '.traffic-one', 'plan.md')); } catch { /* keep prior read */ }
   }
   const parsedQueue = maintenanceQueueSuppressed ? [] : parsePlanDelegationQueue(planText);
   const normalizedI18n = normalizePlanI18nUnits(cwd, runId, parsedQueue);

@@ -30,6 +30,7 @@ import {
 import { canonicalHost } from '../../shared/model-tiers';
 import { readRunModelPolicy } from '../../shared/run-model-policy';
 import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
+import { resetRecoveryLine } from '../../shared/reset-command';
 import { ensureRunHostCapability } from '../../shared/host/capabilities';
 import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 import { block } from './handler-prose';
@@ -444,16 +445,38 @@ export function codexChildModelGate(ctx: Ctx): HookResult {
     }
     if (admission === 'closed') {
       const ledger = runLedgerStatusRecord(cwd, runId);
+      // THE WEDGE, and the one status that has a command behind it. The arm
+      // below tells a `failed` run to "mint a fresh run" and, until this line,
+      // named nothing that does it: `traffic-one-reset` is reachable through the
+      // fail-closed allowlist, has a grammar and an identity check behind it,
+      // and was printed by no rule, skill or runtime string anywhere. Printed
+      // ONLY for `failed`, because that is the only status the runner accepts —
+      // it refuses `completed` with `run-not-failed`, and advising a command
+      // that will be refused is how prose stops being trusted. `resetRecoveryLine`
+      // renders the exact argv the reset grammar admits, so this cannot drift
+      // into printing a command the gate then blocks.
+      //
+      // THE SENTENCE BELOW HAD TO MOVE WITH IT, and it did not: it said "the
+      // command below is refused for them", which was true when the only
+      // command below was the resume, and became false the moment this line
+      // started appending a recovery — appended, note, on EXACTLY the statuses
+      // the sentence covered. 100% co-occurrence: every time the product handed
+      // out the reset command, the same message told the agent it would be
+      // refused. It names the RESUME now. Pinned by
+      // hooks/__tests__/recovery-runners.test.ts, which reads this file.
+      const recovery = ledger.status === 'failed' ? ` ${resetRecoveryLine(runId)}` : '';
       return deny(`traffic-one — Codex child blocked: the run ledger for \`${runId}\` is \`${ledger.status || 'unreadable'}\``
         + `${ledger.outcome ? ` (${ledger.outcome})` : ''}, so NO child can bind a role in it and every tool call from `
         + 'this thread stays denied. Respawning does not fix this — the run itself is closed. ROOT orchestrator: a '
-        + 'resume is legal ONLY out of `blocked`; `completed` and `failed` runs cannot be reopened at all, and the '
-        + 'command below is refused for them. If the status above is `blocked` and the user has authorized another '
+        + 'resume is legal ONLY out of `blocked`; `completed` and `failed` runs cannot be reopened at all, so the '
+        + 'RESUME command below is refused for them — a terminally `failed` run is recovered by retiring it, not by '
+        + 'reopening it. If the status above is `blocked` and the user has authorized another '
         + 'cycle, resume the RUN first with '
         + `\`node ~/.traffic-one/bin/run-status.cjs --run-id "${runId}" --status active --reason user-authorized-extra-cycle\`, `
         + `then confirm \`.traffic-one/runs/${runId}/settlement-v2.json\` reads \`"status": "active"\` before respawning `
         + 'this child. If it still reads `"status": "blocked"`, the resume did NOT take effect — do not spawn into this '
-        + 'run; settle it and mint a new one. For any other status, minting a new run is the only remedy.',
+        + 'run; settle it and mint a new one. For any other status, minting a new run is the only remedy.'
+        + recovery,
         { denyId: 'codex-child-model-ledger-closed', denyTarget: runId });
     }
     const rival = obj(activeClaimForOtherThread(cwd, state, runId, role, childId));

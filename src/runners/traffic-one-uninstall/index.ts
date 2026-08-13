@@ -56,6 +56,7 @@ import {
 } from '../windsurf-host';
 import { codexConfigPath } from '../../shared/codex-mcp';
 import { globalTrafficOneDir } from '../../shared/state/traffic-one-paths';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string }
 
@@ -154,7 +155,7 @@ export function isRemovableResidueDir(dir: string, env: NodeJS.ProcessEnv = proc
 /** Does this directory hold the Traffic One plugin bundle? Read, never assumed. */
 function isTrafficOneBundle(dir: string): boolean {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { name?: unknown };
+    const parsed = JSON.parse(readRegularFileOrThrow(path.join(dir, 'package.json'))) as { name?: unknown };
     return parsed.name === PLUGIN_NAME;
   } catch {
     return false;
