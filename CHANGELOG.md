@@ -28,15 +28,19 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-08-09
+## 1.0.52 — 2026-08-13
 
 ### Agent-visible content — what your agents are told
 
+- P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
 - P5/P6 release accuracy: truthful deny causes, atomic write-set, corrected licence record (`c241fde8`)
 - fix: report write refusals instead of silently reporting success (`199dcb19`)
 
 ### Deny prose — what a refusal says
 
+- P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
+- P8 agent model and runners: model gating, doctor probes, reset obligations (`fe5b8b15`)
+- P8 plan-guard: reset-record fence, shell write vocabulary, scan coverage (`4462d395`)
 - P5/P6 release accuracy: truthful deny causes, atomic write-set, corrected licence record (`c241fde8`)
 - P4 workspace enforcement: member write fence, member identity, harness case model (`76598567`)
 - P4 workspace foundation, torn-root residuals, deny-id tiering census (`a5bb395c`)
@@ -48,6 +52,15 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
+- P8 shared runtime: bounded reads, directory copies, durable writers (`1359eca6`)
+- P8 agent model and runners: model gating, doctor probes, reset obligations (`fe5b8b15`)
+- P8 materialization and hosts: role contracts report refusals instead of counts (`76c9bd30`)
+- P8 project state: lock ordering, override probes, durable write refusals (`07505bc4`)
+- P8 retention: notices stop stating false reasons for their own declines (`056f3846`)
+- P8 plan-guard: reset-record fence, shell write vocabulary, scan coverage (`4462d395`)
+- P8 verification contracts: a named skip gap discloses instead of refusing a run (`0331b639`)
+- P8 qa evidence: bounded commands, process-group reaping, run-lock liveness (`350e50d1`)
 - P7 install verification: exercise the installed runtime, document mid-chain provenance churn (`4ab0eded`)
 - P7 release accuracy: derive platform claims from code, refuse an envelope with no immutable twin (`5181cea5`)
 - P5/P6 release accuracy: truthful deny causes, atomic write-set, corrected licence record (`c241fde8`)
