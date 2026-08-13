@@ -39,6 +39,8 @@ publication date.**
 
 ### Deny prose — what a refusal says
 
+- P8 reset-record prose: describe the mirror, and what it does not cover (`facb4c57`)
+- P8 reset record: erasing it no longer buys a free reset (`16f36fe7`)
 - P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
 - P8 agent model and runners: model gating, doctor probes, reset obligations (`fe5b8b15`)
 - P8 plan-guard: reset-record fence, shell write vocabulary, scan coverage (`4462d395`)
@@ -53,6 +55,9 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 reset-record prose: describe the mirror, and what it does not cover (`facb4c57`)
+- P8 reset record: erasing it no longer buys a free reset (`16f36fe7`)
+- P8 spawn ledger: a refusal nobody heard is now reported to the orchestrator (`7875b6e4`)
 - P8 shipped prose: two walks, two answers about a skipped link (`23e89265`)
 - P8 write gate: the project root is a member of its own project (`2c4de0d5`)
 - P8 lighthouse: bound every read the audited project can shape (`2713083c`)
