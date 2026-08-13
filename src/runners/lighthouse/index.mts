@@ -14,6 +14,7 @@ import { createServer as createNetServer } from 'node:net';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { openRegularFd } from './bounded-read.js';
 import {
   DEFAULTS,
   applyContractThresholds,
@@ -163,7 +164,20 @@ async function startStaticPreview(staticDir: string, port: number): Promise<Serv
         return;
       }
       res.setHeader('content-type', contentType(filePath));
-      createReadStream(filePath).pipe(res);
+      // STREAMED FROM A DESCRIPTOR THIS PROCESS PROVED REGULAR, not from the
+      // path again. `resolveStaticFile` above already asked `statSync(candidate)
+      // .isFile()`, and that answer belongs to the object that was there WHEN IT
+      // ASKED: a name swapped for a FIFO between the two calls opens a stream
+      // that waits for a writer forever, wedging one libuv threadpool thread per
+      // request until file I/O in this process stops entirely. DRIVEN through
+      // this server with a swapper flipping the name: 10 of the first 40 requests
+      // never answered (aborted at a 5 000 ms deadline, one at 11 210 ms), while
+      // the same 60 requests against a stable file answered in 19 ms at worst.
+      // `openRegularFd` decides on the DESCRIPTOR, so there is nothing left to
+      // substitute; a non-regular shape throws in front of the stream and lands
+      // in the 500 below, which is the honest answer — something is there and it
+      // is not a page. A file that vanished is still the 404 above.
+      createReadStream(filePath, { fd: openRegularFd(filePath) }).pipe(res);
     } catch (err) {
       res.statusCode = 500;
       res.end(err instanceof Error ? err.message : String(err));

@@ -1,8 +1,10 @@
 // src/runners/lighthouse/cli-args.ts
 // Lighthouse runner defaults, argument parsing, and usage text.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+
+import { readRegularText } from './bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -63,11 +65,19 @@ const THRESHOLD_FLAGS = new Set([
  *
  * Best-effort and dependency-free: plain JSON reads, no shared imports (this
  * runner is ESM-only and cannot require the CJS runtime).
+ *
+ * Both reads are BOUNDED (./bounded-read): these are project-relative paths a
+ * clone can deliver as a symlink, and a FIFO or a device at either one used to
+ * park the runner in `open(2)` for as long as anyone was willing to wait. A
+ * shape that cannot be read lands on the `null` this reader already answers for
+ * a corrupt contract, which is the honest verdict — there is no budget here we
+ * can trust, so the CLI's own defaults gate the audit, exactly as they do for a
+ * project that declares no contract at all.
  */
 export function contractThresholds(rootDir: string): Partial<LighthouseArgs> | null {
   const readJson = (file: string): Rec | null => {
     try {
-      const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+      const parsed: unknown = JSON.parse(readRegularText(file));
       return parsed && typeof parsed === 'object' ? parsed as Rec : null;
     } catch {
       return null;
@@ -111,11 +121,17 @@ export function contractThresholds(rootDir: string): Partial<LighthouseArgs> | n
  * Best-effort and dependency-free (this runner is ESM-only and cannot require
  * the CJS runtime): with no Traffic One state, or no build on disk, the caller
  * keeps its plain output directory.
+ *
+ * BOUNDED (./bounded-read). `.one.json` is the clone-deliverable path this whole
+ * class was found at, and an unreadable shape answers `null` — the same answer a
+ * project with no Traffic One state gives, and the right one: an unscoped report
+ * directory is a cosmetic loss, where a runner that never returns reports no
+ * page speed at all.
  */
 export function currentRunId(rootDir: string): string | null {
   try {
     const parsed: unknown = JSON.parse(
-      readFileSync(join(rootDir, '.traffic-one', '.one.json'), 'utf8'),
+      readRegularText(join(rootDir, '.traffic-one', '.one.json')),
     );
     const state = parsed && typeof parsed === 'object' ? parsed as Rec : null;
     const runId = typeof state?.currentRunId === 'string' ? state.currentRunId.trim() : '';
@@ -127,7 +143,15 @@ export function currentRunId(rootDir: string): string | null {
   }
 }
 
-/** The served build's identity: the hashed entry asset, or the Next BUILD_ID. */
+/**
+ * The served build's identity: the hashed entry asset, or the Next BUILD_ID.
+ *
+ * Both reads are BOUNDED (./bounded-read). These paths are BUILD OUTPUT, which
+ * makes them the easiest of the lot to point somewhere hostile — a build script
+ * writes them, and the two `catch`es below already mean "this project is not
+ * built with this layout". A shape that cannot be read joins them, so the report
+ * simply carries no build tag; the audit itself is unaffected.
+ */
 export function buildFingerprintTag(rootDir: string, appDir: string): string | null {
   const sanitize = (value: string): string | null => {
     const cleaned = value.replace(/\.[cm]?js$/i, '').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 40);
@@ -136,7 +160,7 @@ export function buildFingerprintTag(rootDir: string, appDir: string): string | n
   for (const dir of [appDir, rootDir]) {
     for (const outDir of ['dist', 'out', '.output/public', 'build', 'public/build']) {
       try {
-        const html = readFileSync(join(dir, ...outDir.split('/'), 'index.html'), 'utf8');
+        const html = readRegularText(join(dir, ...outDir.split('/'), 'index.html'));
         const match = /<script[^>]+src="([^"]+\.[cm]?js)"/.exec(html);
         if (match?.[1]) return sanitize(match[1].split('/').pop() || '');
       } catch {
@@ -144,7 +168,7 @@ export function buildFingerprintTag(rootDir: string, appDir: string): string | n
       }
     }
     try {
-      const buildId = readFileSync(join(dir, '.next', 'BUILD_ID'), 'utf8').trim();
+      const buildId = readRegularText(join(dir, '.next', 'BUILD_ID')).trim();
       if (buildId) return sanitize(buildId);
     } catch {
       // not a Next build
@@ -466,9 +490,20 @@ export function classifyRunnerFailure(message: string): RunnerStatus {
   return classifyBlockedStatus(message) ?? classifyProjectFault(message) ?? 'failed:unclassified';
 }
 
+/**
+ * Every JSON file this runner reads off the project: `package.json` at the root
+ * and in each `apps/*`, and the Lighthouse report the audit just wrote.
+ *
+ * BOUNDED (./bounded-read), and `null` keeps meaning exactly what it meant — "no
+ * usable JSON here". Absence, a parse failure and a hostile shape have always
+ * been one answer at this reader, and the callers are written for it: package
+ * manager detection falls back to npm, app detection falls back to the root, and
+ * the report reader raises `Could not read Lighthouse report`, which is a failure
+ * the runner reports rather than one it hangs on.
+ */
 export function readJson(filePath: string): Rec | null {
   try {
-    return JSON.parse(readFileSync(filePath, 'utf8')) as Rec;
+    return JSON.parse(readRegularText(filePath)) as Rec;
   } catch {
     return null;
   }

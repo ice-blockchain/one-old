@@ -2986,11 +2986,21 @@ const CLASSIFIED_WALL_CLOCK_CLAIMS: Readonly<Record<string, string>> = {
   'src/shared/state/__tests__/run-agent.test.ts  elapsed < 12000  x3': 'boundedness, 3500 ms floor',
   // Both of these sit UNDER a deadline rather than over a measured cost, which
   // is the boundedness shape: the runner must give up inside its poll loop
-  // instead of holding the process to the 4 s readiness budget (0.6 s
-  // measured), and two contended carries must share ONE lease budget instead
-  // of taking one each (the row above them asserts the 8 s floor).
-  'src/runners/lighthouse/__tests__/preview-start-failure.test.ts  elapsedMs < 3500  x1':
-    'boundedness, under a 4 s readiness deadline',
+  // instead of holding the process to its readiness budget, and two contended
+  // carries must share ONE lease budget instead of taking one each (the row
+  // above them asserts the 8 s floor).
+  //
+  // The lighthouse ceiling was 3500 under a 4 s budget and is now 10000 under a
+  // 20 s one, for a reason that does not weaken the claim: the wall clock there
+  // spans `node --import tsx index.mts` booting as well as the poll it is
+  // grading, and that boot alone measured 3.6-7.7 s with the rest of the suite
+  // compiling beside it — so at the old ceiling a loaded machine and a runner
+  // holding its process open were the SAME observation, and the row red at
+  // 5234 ms with nothing wrong. Both numbers moved together, so the ratio a
+  // regression has to cross is unchanged: boot cannot reach 10 s, and a runner
+  // that waits out its budget cannot come in under 20 s.
+  'src/runners/lighthouse/__tests__/preview-start-failure.test.ts  elapsedMs < 10000  x1':
+    'boundedness, under a 20 s readiness deadline',
   'src/runners/traffic-one-reset/__tests__/carry-integrity.test.ts  elapsed < 14000  x2':
     'boundedness, one shared lease budget',
   // The one worth re-reading if it ever flakes: a 500 ms cap on a re-entrant

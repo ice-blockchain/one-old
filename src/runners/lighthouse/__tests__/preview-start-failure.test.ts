@@ -143,15 +143,23 @@ test('a preview command this host cannot run reports a blocked status instead of
  * instead of racing it: `delay` in that loop is a REF'D timer, so a race would
  * print this status line and then keep the process alive polling a port nothing
  * will ever bind — 4 s here, and up to 90 s for a Next preview on its own
- * default. Measured at 0.6 s wall clock for the whole runner against the 4 s
- * budget below.
+ * default. Measured at 0.6 s wall clock for the whole runner on a quiet box.
+ *
+ * THE BUDGET IS RAISED FOR THIS ROW ALONE, and the reason is that wall clock is
+ * measuring two things at once. The runner is `node --import tsx index.mts`, and
+ * that boot alone costs 0.6 s on a quiet box and was measured at 3.6-7.7 s while
+ * the rest of the suite compiles beside it — so against the 4 s budget the other
+ * rows use, a LOADED MACHINE and a runner waiting out its poll are the same
+ * observation, and this row red at 5 234 ms with nothing wrong. At 20 s the two
+ * separate again by a wide margin: boot cannot reach 10 s, and a regression
+ * cannot come in under 20 s.
  */
 test('a refused preview gives up inside a poll, not at the readiness budget', { timeout: TEST_TIMEOUT_MS }, async () => {
   const startedAtMs = Date.now();
-  const result = await runRunner(project());
+  const result = await runRunner(project(), ['--timeout', '20000']);
   const elapsedMs = Date.now() - startedAtMs;
   assert.match(result.stdout, /blocked:preview-command-missing/, 'fixture guard: this row must measure the refusal path');
-  assert.ok(elapsedMs < 3_500, `the runner must not hold its process open to the readiness budget (${elapsedMs}ms of 4000ms)`);
+  assert.ok(elapsedMs < 10_000, `the runner must not hold its process open to the readiness budget (${elapsedMs}ms of 20000ms)`);
 });
 
 /**

@@ -1437,6 +1437,10 @@ const RESIDUE_LEDGER = [
   // conversion visible: without this row the equality below reds, which is the
   // point (round 4's ceiling recorded neither growth nor progress).
   { round: 6, sites: 13, rows: 5 },
+  // Round 7: the three ESM-runner rows are CONVERTED — the remedy round 4 proved
+  // and round 6 deferred for ownership was taken, so seven measured hangs leave
+  // the residue at once. See the block above the rows that used to be here.
+  { round: 7, sites: 6, rows: 2 },
 ] as const;
 
 const EXCUSED: readonly Excuse[] = [
@@ -1483,8 +1487,42 @@ const EXCUSED: readonly Excuse[] = [
   // abort. Re-driven through the real function, same driver, `impl=cacheFilter`.
   { file: 'src/runners/doctor/codex-hook-schema.ts', sites: 1, kind: 'driven-bounded', reason: 'copyCacheWithoutSymlinks: cpSync of the plugin cache under <$HOME>/.codex, RE-DRIVEN through the real function in round 6 (.tmp/bounded6/p3-taxonomy.json, impl=cacheFilter), and RE-RUNNABLE at src/shared/__tests__/copy-tree-taxonomy.test.ts, which drives the real function per shape in its own child under a parent SIGKILL. It never blocks and never omits: a FIFO or socket INSIDE the tree throws (ERR_INTERNAL_ASSERTION on v26.5.0 — a node-internal message, but thrown and catchable, not the silent omission plain cpSync gives), a FIFO as the source throws ERR_FS_CP_FIFO_PIPE, and EVERY symlink — including the a->b->a loop that ABORTS plain cpSync with SIGABRT — hits this call\'s own filter refusal first, which is the bound and was never the stated reason. Control: an ordinary directory copies through the same call in 20 ms with the entry present. Cost class is the shim\'s, not the wrappers\': a host-owned install cache under $HOME that no pull request can deliver' },
 
-  // ── THE ESM RUNNER: THE LEAF IMPORT is blocked. THE CONVERSION IS NOT ───────
-  // These three compile under their own `rootDir` for a separate ESM bundle, so
+  // ── THE ESM RUNNER: CONVERTED IN ROUND 7, AND ALL THREE ROWS ARE GONE ───────
+  //
+  // The rows that used to sit here — `runners/lighthouse/cli-args.ts` (5 sites),
+  // `lib.ts` (1) and `index.mts` (1) — are REMOVED because the remedy the
+  // paragraphs below PROVED was finally taken, not because the argument improved.
+  // `src/runners/lighthouse/bounded-read.ts` is the in-bundle reader this row-set
+  // predicted: `O_RDONLY|O_NONBLOCK` plus an `fstat` on the descriptor, importing
+  // nothing but `node:fs`, compiling under the same `tsconfig.lighthouse.build.json`
+  // with NO build change (re-driven: `npx tsc -p tsconfig.lighthouse.build.json
+  // --noEmit`, exit 0). All six synchronous reads call `readRegularText`; the
+  // stream takes its descriptor from `openRegularFd`, which is what moves the
+  // bound onto the fd where `isDescriptorStream` can see it.
+  //
+  // RE-DRIVEN BEFORE AND AFTER, one child per (site, shape) under a parent SIGKILL
+  // at 8 000 ms, plus the stream through the REAL preview server
+  // (.tmp/lhbound/results-before.json, results-after.json, results-s7-*.json):
+  // the six sync sites sat in `open(2)` at 8 006-8 017 ms on a FIFO and
+  // 8 031-8 055 ms on a symlink to /dev/zero, and answer in 239-783 ms now, with
+  // every control still parsing (`run-abc`, `app-deadbeef`, `bid-12345`, `pnpm`,
+  // the contract's 77/1234/2345/99/0.05, and `true` for output: 'export').
+  //
+  // THE STREAM ROW WAS RIGHT ABOUT THE HANG AND SILENT ABOUT ITS REACH, which is
+  // worth recording because the next reader will otherwise price it wrong.
+  // `resolveStaticFile` already asked `statSync(candidate).isFile()`, so a FIFO
+  // parked at `index.html` is answered 404 and the stream never opens it: the
+  // reachable shape is a SUBSTITUTION between that stat and the stream's own open.
+  // Driven that way — a swapper flipping the name while requests are in flight —
+  // 10 of the first 40 requests never answered (aborted at a 5 000 ms deadline,
+  // one at 11 210 ms) and each wedged a libuv threadpool thread permanently;
+  // 60 requests against a stable file answered in 19 ms at worst. After the
+  // conversion, 400 racing requests all answered (worst 56 ms): 229 pages, 156
+  // 404s, and 15 that hit the window and were REFUSED there — 13 with
+  // `not-a-regular-file` from the fstat, 2 with EINVAL from the kernel.
+  //
+  // ── WHAT THE THREE ROWS SAID, KEPT BECAUSE THE SHAPE OF IT IS THE FINDING ───
+  // These compiled under their own `rootDir` for a separate ESM bundle, so
   // importing the leaf fails the build outright:
   //
   //   error TS6059: File 'src/shared/bounded-read.ts' is not under 'rootDir'
@@ -1510,23 +1548,24 @@ const EXCUSED: readonly Excuse[] = [
   // config, and the two hangs below become 61 ms and 57 ms while the controls
   // still answer `true` and `r1`.
   //
-  // So these rows are UNCONVERTED WITH A PROVEN REMEDY, not blocked. They are
-  // still rows because the remedy is a SECOND COPY of the two refusals, which is
-  // the thing this file's leaf exists to avoid, and choosing between one more copy
-  // and a build change is a call for the lane that owns this bundle — the lighthouse
-  // runner has uncommitted work from another lane in it as this is written. What is
-  // NOT open is whether the sites hang.
+  // The rows were then held one more round on the ground that the remedy is a
+  // SECOND COPY of the two refusals, which is the thing this file's leaf exists to
+  // avoid, and that choosing between one more copy and a build change belonged to
+  // the lane owning the bundle. That call has now been made — the copy, because
+  // the build change moves every emitted path in the bundle — and it is carried
+  // where the last version of this argument can be read: the header of
+  // `src/runners/lighthouse/bounded-read.ts`, which states why a duplicate of the
+  // leaf's rule lives there and must not be "tidied" into a re-import.
   //
-  // DRIVEN HANGS, mine, one child per shape under a parent SIGKILL at 8 000 ms
-  // (.tmp/bounded4b/drive.out): `nextConfigOutputExport` on the project's
-  // `next.config.js` — control 155 ms, FIFO 8 005 ms, symlink to /dev/zero
-  // 8 051 ms; `currentRunId` on the project's `.one.json` — control 58 ms, FIFO
-  // 8 003 ms, /dev/zero 8 073 ms. A dangling symlink is bounded at both (62 ms,
-  // 150 ms) because it is ENOENT, which is the shape that found the spin next door.
-  { file: 'src/runners/lighthouse/cli-args.ts', sites: 5, kind: 'unconverted', reason: 'UNCONVERTED, REMEDY DRIVEN: the leaf import is TS6059 under this bundle\'s rootDir, but an in-bundle O_NONBLOCK+fstat reader compiles and bounds it with no build change (61/57 ms, controls intact). DRIVEN HANG at currentRunId: FIFO 8 003 ms, /dev/zero 8 073 ms vs a 58 ms control, on the project\'s .one.json; also the bare-import shape trap 2 is built around' },
-  { file: 'src/runners/lighthouse/lib.ts', sites: 1, kind: 'unconverted', reason: 'UNCONVERTED, REMEDY DRIVEN: same bundle, same in-bundle remedy. DRIVEN HANG at nextConfigOutputExport: FIFO 8 005 ms, /dev/zero 8 051 ms vs a 155 ms control, on the project\'s next.config.js — a path a clone delivers as mode 120000' },
-  { file: 'src/runners/lighthouse/index.mts', sites: 1, kind: 'unconverted', reason: 'UNCONVERTED: createReadStream over a Lighthouse artifact — DRIVEN HANG 4005 ms on a FIFO, a hard link to one and a symlink to one, against a control that streams; needs openRegularFd\'s equivalent in the bundle rather than the string remedy above, since the bound has to move to the stream\'s fd; and the file whose EXTENSION round 2\'s census could not see at all' },
-
+  // ONE FIGURE IN THE OLD STREAM ROW WAS MEASURED SOMEWHERE THE RUNNER CANNOT GO,
+  // and correcting it is the reason the re-drive above exists. `4005 ms on a FIFO`
+  // came from the bare `createReadStream` expression, not from the server: in the
+  // shipped handler `resolveStaticFile` stats every candidate first, so the FIFO is
+  // a 404 and the hang needs a substitution between that stat and the open. Still a
+  // real hang — 10 of 40 requests, each wedging a threadpool thread — but a
+  // different cost class from "a Lighthouse artifact hangs the stream", and a round
+  // that took the old figure at face value would have looked for it in the wrong
+  // place.
 ];
 
 // ── the tests ────────────────────────────────────────────────────────────────
@@ -1689,18 +1728,39 @@ test('every unbounded read of a PATH in production source is EXCUSED with a reas
       .some((site) => site.argument === 'opened'), true,
     'trap 1: an fstat on a DIFFERENT descriptor launders nothing');
 
-  // TRAP 2 READBACK — the files that import `readFileSync` BY NAME are seen at
-  // all. A scan anchored on `fs.readFileSync` finds nothing in either of these.
-  for (const bare of [
-    path.join(SRC_ROOT, 'runners', 'lighthouse', 'cli-args.ts'),
-    path.join(SRC_ROOT, 'runners', 'lighthouse', 'lib.ts'),
-  ]) {
-    const text = fs.readFileSync(bare, 'utf8');
-    assert.equal(/(?<![\w$.])readFileSync\s*\(/.test(text), true,
-      `FIXTURE trap 2: ${path.relative(REPO_ROOT, bare)} calls readFileSync with no fs. prefix`);
-    assert.ok(unboundedSitesIn(bare, text).length > 0,
-      `trap 2: a bare imported readFileSync must be counted — ${path.relative(REPO_ROOT, bare)}`);
-  }
+  // TRAP 2 READBACK — a `readFileSync` imported BY NAME, with no `fs.` prefix, is
+  // seen at all. A scan anchored on `fs.readFileSync` finds nothing in this file.
+  //
+  // THE FIXTURE MOVED IN ROUND 7 AND THE MOVE IS THE POINT. It used to assert
+  // `sites.length > 0` in `lighthouse/cli-args.ts` and `lib.ts` — i.e. it was
+  // anchored on those two files STILL HANGING, so the conversion that bounded them
+  // would have red a readback whose subject is the SCANNER. A positive control
+  // that a fix breaks is a control that argues against the fix.
+  //
+  // So it is anchored on the converted bundle's own reader instead, which still
+  // spells the bare call and must now be seen as BOUNDED — and the negative arm is
+  // a MUTATION of that same real file, which is the half `sites.length > 0` was
+  // buying: break the fstat guard and the bare read must reappear. Same shape as
+  // the trap-1 readback above, and it cannot be satisfied by the file merely
+  // existing.
+  const bundleReader = path.join(SRC_ROOT, 'runners', 'lighthouse', 'bounded-read.ts');
+  const bundleText = fs.readFileSync(bundleReader, 'utf8');
+  assert.equal(/(?<![\w$.])readFileSync\s*\(/.test(bundleText), true,
+    'FIXTURE trap 2: runners/lighthouse/bounded-read.ts calls readFileSync with no fs. prefix');
+  assert.deepEqual(unboundedSitesIn(bundleReader, bundleText), [],
+    'trap 2: the ESM bundle\'s own reader must be proved bounded from its flags and its fstat — it is the one '
+    + 'place in that bundle where a path reaches the kernel, and the six converted call sites are only as '
+    + 'bounded as it is');
+  assert.ok(
+    unboundedSitesIn(bundleReader, bundleText.replace(/fstatSync\(fd\)/g, 'fstatSync(other)'))
+      .some((site) => site.api === 'readFileSync' && site.argument === 'fd'),
+    'trap 2: a bare imported readFileSync must still be COUNTED when the fstat that guards it is on another '
+    + 'descriptor — otherwise the green arm above means only that the scan cannot see this file');
+  assert.ok(
+    unboundedSitesIn(bundleReader, bundleText.replace(/\| \(constants\.O_NONBLOCK \|\| 0\)/g, ''))
+      .some((site) => site.api === 'openSync'),
+    'trap 2: dropping O_NONBLOCK from the bundle reader\'s flags must red — O_RDONLY alone waits for a writer '
+    + 'on a FIFO, and the fstat cannot help a call that never returns from the open');
 
   const excusedByFile = new Map(EXCUSED.map((row) => [row.file, row]));
   assert.equal(excusedByFile.size, EXCUSED.length, 'the allowlist must not name a file twice');

@@ -2,9 +2,10 @@
 // Project detection, server orchestration, and result shaping for the
 // lighthouse runner. CLI parsing lives in cli-args.ts.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import {  join } from 'node:path';
 
+import { readRegularText } from './bounded-read';
 import {
   readJson,
   type PackageManager,
@@ -29,12 +30,25 @@ function hasNextConfig(dir: string): boolean {
   return NEXT_CONFIG_NAMES.some((name) => existsSync(join(dir, name)));
 }
 
+// BOUNDED (./bounded-read), and this is the site the class was found at: a Next
+// config is a file every clone carries, git records a symlink as mode 120000, so
+// `next.config.js -> /dev/zero` needs no local process at all. Measured before
+// the bound, one child per shape under a parent SIGKILL at 8 000 ms — the figure
+// IS the deadline, so the read never returned: 8 011 ms on a FIFO and 8 047 ms on
+// a /dev/zero link, against a control that answered with the config parsed. It
+// answers in 301 ms and 307 ms now, most of which is the child starting node.
+//
+// A shape that cannot be read keeps the existing `catch`: the runner has no
+// evidence this project static-exports, so it previews it the ordinary way. That
+// is the same conservative answer an unparseable config already got, and the
+// worse outcome — guessing `export` and then finding no `out/` — is a
+// `failed:project` the operator did not earn.
 export function nextConfigOutputExport(dir: string): boolean {
   for (const name of NEXT_CONFIG_NAMES) {
     const file = join(dir, name);
     if (!existsSync(file)) continue;
     try {
-      const raw = readFileSync(file, 'utf8');
+      const raw = readRegularText(file);
       if (/\boutput\s*:\s*['"]export['"]/i.test(raw)) return true;
     } catch {
       // unreadable config: fall through to normal next start handling
