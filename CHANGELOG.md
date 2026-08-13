@@ -55,6 +55,9 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 unresolved run id: stop citing a backup that is never there (`fcbb1405`)
+- P8 state loss: a wiped project no longer looks like a fresh one (`337a73b1`)
+- P8 sidecar fence: a run id nobody minted no longer disarms it (`a0bd1261`)
 - P8 reset-record prose: describe the mirror, and what it does not cover (`facb4c57`)
 - P8 reset record: erasing it no longer buys a free reset (`16f36fe7`)
 - P8 spawn ledger: a refusal nobody heard is now reported to the orchestrator (`7875b6e4`)
