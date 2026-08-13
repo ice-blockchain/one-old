@@ -8,6 +8,7 @@ import * as path from 'path';
 import { movePath, readText, removePath, writeTextFile } from '../fsjson';
 import { templatePath } from '../stacks';
 import { removeGeneratedFile, removeGeneratedManifest, removeGeneratedSkillDir, removeGeneratedTree } from './generated';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -18,7 +19,7 @@ export function loadPreviousManifest(cwd: string): Rec {
   ];
   for (const manifestPath of candidates) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const parsed = JSON.parse(readRegularFileOrThrow(manifestPath));
       if (parsed && typeof parsed === 'object') return parsed as Rec;
     } catch {
       // try the next candidate

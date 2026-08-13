@@ -13,7 +13,8 @@ import { postWriteIncompleteWarning } from '../directives';
 import { isNonProjectRoot } from '../authoring-root';
 import { doctorCommand } from '../doctor-command';
 import { ensureRunnerShims } from '../runner-shims';
-import { isUnclaimedWorkspaceSubPackage } from '../hook/paths';
+import { isRegisteredWorkspaceMember, isUnclaimedWorkspaceSubPackage } from '../hook/paths';
+import { hasStateFile } from '../tool-classify';
 import { detectMode } from '../detection';
 import { pluginRootInfo } from '../paths';
 import { STACKS } from '../stacks';
@@ -33,8 +34,9 @@ import {
   materializedContentIsIncomplete,
   materializedFromDifferentPluginBuild,
 } from './has-assets';
+import { roleContractShortfallSentence, roleContractsNeedConvergence } from './role-contract-status';
 import { materializeProjectAssets, type MaterializeResult, type TornRootEvidence } from './materialize';
-import { migrateArchitectureDocsToPlan } from './plan-migration';
+import { migrateArchitectureDocsToPlan, planMigrationNotice } from './plan-migration';
 
 type Rec = Record<string, unknown>;
 
@@ -59,6 +61,17 @@ interface ConvergeOptions {
   // Fire-and-forget one-mcp first-look reporter; injected so shared/ stays
   // free of the runner layer. Defaults to a no-op.
   reportOneMcp?: (cwd: string, state: Rec, trigger: string) => void;
+  /**
+   * What the legacy-plan migration did, when a CALLER already ran it.
+   *
+   * `materializeProjectIfNeeded` migrates before its own branches — it has to,
+   * because three of them return `null` and the plan gate still needs the plan —
+   * and only then may it delegate here. Without this the fold would be reported
+   * by nobody: the second (idempotent) migration below finds the document
+   * already gone and has nothing to say about it. Internal to this module; not
+   * part of the `materialize-project` subcommand's surface.
+   */
+  migrationNotice?: string;
 }
 
 const noopReporter: NonNullable<ConvergeOptions['reportOneMcp']> = () => {};
@@ -97,6 +110,78 @@ function tornContentClause(torn: TornRootEvidence): string {
 
 function outcome(status: MaterializeStatus, systemMessage: string, context: string, result: MaterializeResult | null = null): MaterializeOutcome {
   return { status, systemMessage, context, result };
+}
+
+/**
+ * THE HOST ROLE CONTRACTS ARE MISSING, and until this existed nothing said so.
+ *
+ * Rules and skills are the two things every other message in this file is
+ * about; the per-role contracts are the third artifact a materialization
+ * writes, and they are what a host loads to KNOW what `senior-architect` is.
+ * Six writers used to swallow the failed `mkdirSync` and return a count, so a
+ * project whose `.cursor/agents` was (say) a plain file got the ordinary
+ * `materialized` line, a stamped state, and — because
+ * `hasMaterializedProjectAssets` validates rules/skills/AGENTS.md/CLAUDE.md and
+ * has never looked at role contracts — no further attempt for the life of that
+ * plugin build. Measured: healthy run 102 written / six contracts; the same run
+ * with the directory refused, 96 written / ZERO contracts and every reported
+ * field otherwise identical.
+ *
+ * Reported rather than thrown, and reported WITHOUT moving the status. Throwing
+ * puts an error into the hook runtime, where it becomes a fail-closed deny that
+ * can wedge a session — a defect this repo has taken before. Moving the status
+ * off `materialized` would not merely relabel: onboarding-gate/handler.ts turns
+ * a status other than `materialized`/`current` on a mutating PreToolUse into the
+ * `materialization-not-converged` deny, whose CAUSE (a plugin root or a state
+ * file that is broken) and whose REMEDY are not these — this file's naming rule
+ * for deny ids forbids the merge, and the diagnosis would send an operator to
+ * re-check a plugin tree that is perfectly fine.
+ *
+ * WHETHER AN ABSENT HOST CONTRACT SHOULD REFUSE WORK is now settled — it does,
+ * for file-changing tools only, under its own deny id
+ * (`host-role-contracts-unwritable`, onboarding-gate/handler.ts) — and this
+ * function is still not where that happens. The gate asks
+ * role-contract-status.ts, which reads the directory instead of a run's result,
+ * for the reason the two cannot be the same answer: a refused directory outlives
+ * the run that discovered it, and the run that discovered it may be the only one
+ * that ever ran. What this function owes is the DIAGNOSIS, in the channel that
+ * already carries every other materialization message.
+ *
+ * The retry it used to disclaim is real now: `materializeProjectIfNeeded` below
+ * carries `roleContractsNeedConvergence` as a term, so every later hook attempts
+ * these contracts again and this notice repeats until the path is cleared — which
+ * is also what writes them the moment it is.
+ */
+function roleContractShortfallNotice(cwd: string, result: MaterializeResult | null): string {
+  const shortfall = result?.roleContracts;
+  if (!shortfall) return '';
+  return `Traffic One role contracts are missing: ${roleContractShortfallSentence(cwd, shortfall)} `
+    + 'The rules and skills above are on disk; these are not. '
+    + 'The usual causes are a file or a symlink planted at that path, a directory this user cannot write, '
+    + 'or a read-only checkout. Clear the path — every later hook re-attempts the contracts on its own, and '
+    + 'until one succeeds, file-changing tool calls are refused (`host-role-contracts-unwritable`) while '
+    + 'read-only work continues.';
+}
+
+/**
+ * Fold a role-contract shortfall into an outcome a DIFFERENT reporter built.
+ *
+ * Exported for the same reason `materializeRefusedOutcome` and
+ * `stateWriteRefusedOutcome` are: modules/materialize/converge-from-write.ts
+ * assembles its own `materialized`/null answers for the project-memory-write
+ * path, and it discarded this fact outright — a write that converged a project
+ * whose role contracts were refused reported the ordinary success line. One
+ * renderer, so the two routes cannot drift into two different accounts of one
+ * condition.
+ */
+export function withRoleContractShortfall(cwd: string, outcome: MaterializeOutcome): MaterializeOutcome {
+  const notice = roleContractShortfallNotice(cwd, outcome.result);
+  if (!notice) return outcome;
+  return {
+    ...outcome,
+    systemMessage: `${outcome.systemMessage} — but this host's per-role contracts were NOT written`,
+    context: `${outcome.context} ${notice}`,
+  };
 }
 
 // materializeProjectAssets refuses to touch disk whenever it cannot resolve the
@@ -181,14 +266,15 @@ export function materializeRefusedOutcome(result: MaterializeResult): Materializ
  * that materialization happened; `isMaterialized()` reads them to decide whether
  * to converge again, so without them `materializeProjectIfNeeded` re-materializes
  * on every call and keeps returning a NON-NULL outcome. Its consumer in
- * onboarding-gate/handler.ts reads any non-null outcome on a mutating PreToolUse
- * as `deny('repaired-materialization')` — "we just repaired it, retry" — so a
- * refused stamp turns a self-healing condition into a permanent deny loop over
- * assets that are already on disk, with nothing in either message naming the
- * write that was refused. Reported as `failed` and naming the fence and the exact
- * path, the way persistCompiledArchitecture does: no consumer branches on the
- * status, so this changes no control flow — it stops the outcome claiming
- * `materialized`/`current` and puts the cause in the message an operator reads.
+ * onboarding-gate/handler.ts denies EVERY non-null outcome on a mutating
+ * PreToolUse; it picks the id by STATUS — `repaired-materialization` ("we just
+ * repaired it, retry") for the two that converged, `materialization-not-converged`
+ * for the rest — so a refused stamp turns a self-healing condition into a
+ * permanent deny loop over assets that are already on disk, with nothing in
+ * either message naming the write that was refused. Reported as `failed` and
+ * naming the fence and the exact path, the way persistCompiledArchitecture does:
+ * `failed` lands in that second bucket, so the refusal an operator can act on is
+ * what the deny quotes instead of a repair instruction that cannot work.
  *
  * Exported so converge-from-write.ts's project-memory path reports the identical
  * diagnostic, exactly as it already shares materializeRefusedOutcome above.
@@ -214,12 +300,31 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
   const trigger = opts.trigger || 'manual materialize-project';
   const reportOneMcp = opts.reportOneMcp || noopReporter;
 
+  // THE MIGRATION'S RETURN VALUE HAS A READER, and this is it. It folds a legacy
+  // `architecture.md` into `.traffic-one/plan.md` and REMOVES the file, and both
+  // call sites here used to discard what it reported — so its own docblock
+  // reasoned at length about which paths `migrated` may name while nothing read
+  // the answer. `report` carries it into the `context` of every outcome this
+  // function returns, which is the text onboarding-gate/handler.ts puts in front
+  // of the agent. Read at CALL time, not captured: a caller that already migrated
+  // (see `migrationNotice`) has its notice on the early returns below too, which
+  // happen before this function's own migration and would otherwise drop it.
+  let notice = opts.migrationNotice || '';
+  // The role-contract shortfall rides the same channel as the migration notice
+  // and is read at CALL time for the same reason: it is discovered by the writer
+  // partway through, and every outcome returned after that must carry it.
+  const report = (result: MaterializeOutcome): MaterializeOutcome => {
+    const withShortfall = withRoleContractShortfall(cwd, result);
+    if (!notice) return withShortfall;
+    return { ...withShortfall, context: `${withShortfall.context} ${notice}` };
+  };
+
   if (isNonProjectRoot(cwd)) {
-    return outcome(
+    return report(outcome(
       'authoring-root',
       'traffic-one — plugin authoring root detected; project materialization skipped',
       'This directory is the Traffic One plugin source, not a generated Traffic One project. `materialize-project` only rewrites `.traffic-one/**`, root `AGENTS.md`, and root `CLAUDE.md` inside projects created with the plugin.',
-    );
+    ));
   }
 
   try { ensureRunnerShims(); } catch { /* best-effort; MCP may load before sessionStart */ }
@@ -229,11 +334,11 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
 
   if (!state || typeof state !== 'object') {
-    return outcome(
+    return report(outcome(
       'missing-state',
       'traffic-one — `.traffic-one/.one.json` is missing or invalid; cannot materialize project rules',
       'Write the complete Traffic One state file first, then run `node -e "const p=require(\'node:path\'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,\'traffic-one-runtime\');require(p.join(r,\'scripts\',\'hook-runtime.cjs\'))" materialize-project` from the project root.',
-    );
+    ));
   }
 
   const hadLocalPreferenceFields = hasLocalPreferenceFields(state);
@@ -262,24 +367,29 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
       validCodeGraphProviders,
       validationIssues,
     });
-    return outcome(
+    return report(outcome(
       'incomplete',
       'traffic-one — `.traffic-one/.one.json` is incomplete; cannot materialize project rules yet',
       context,
-    );
+    ));
   }
-  migrateArchitectureDocsToPlan(cwd);
+
+  // The migration runs HERE and not earlier: it writes into `.traffic-one/` and
+  // removes a file, and a project whose state is missing or incomplete has not
+  // established that Traffic One may do either. A caller that already migrated
+  // supplied its notice above; this is the direct-call path.
+  notice = notice || planMigrationNotice(migrateArchitectureDocsToPlan(cwd));
 
   let materialized: MaterializeResult | null = null;
   try {
     materialized = materializeProjectAssets(cwd, state);
   } catch (error) {
     const detail = error && (error as Error).message ? (error as Error).message : String(error || 'unknown error');
-    return outcome(
+    return report(outcome(
       'failed',
       'traffic-one — project-local materialization failed',
       `traffic-one could not materialize .traffic-one/rules, .traffic-one/skills, and .traffic-one/manifest.json: ${detail}`,
-    );
+    ));
   }
 
   // A refused run materialized NOTHING, so the state stamp must not claim it
@@ -292,7 +402,7 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
   // succeeds. `skipped: 'plugin-authoring-root'` cannot appear here: this
   // function returns the authoring-root outcome above before calling the writer.
   if (materialized?.skipped) {
-    return materializeRefusedOutcome(materialized);
+    return report(materializeRefusedOutcome(materialized));
   }
 
   try {
@@ -303,25 +413,120 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
   } catch {
     // best-effort; the copied local assets are still usable.
   }
-  if (!stateRecorded) return stateWriteRefusedOutcome(materialized);
+  if (!stateRecorded) return report(stateWriteRefusedOutcome(materialized));
 
   reportOneMcp(cwd, state, trigger);
 
   if (!materialized || (materialized.written <= 0 && materialized.removed <= 0)) {
-    return outcome(
+    return report(outcome(
       'current',
       'traffic-one — project-local rules/skills already materialized',
       `Project-local rules/skills are current for ${stackFingerprint(state)}. Root AGENTS.md contains or preserves existing content with the Traffic One active rule kernel/index; root CLAUDE.md symlinks to AGENTS.md only when no CLAUDE.md exists.`,
       materialized,
-    );
+    ));
   }
 
-  return outcome(
+  return report(outcome(
     'materialized',
     'traffic-one — project-local rules/skills materialized',
     `Project-local rules/skills materialized after ${trigger}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/manifest.json. Root AGENTS.md contains or preserves existing content with the Traffic One active rule kernel/index; root CLAUDE.md symlinks to AGENTS.md only when no CLAUDE.md exists.`,
     materialized,
-  );
+  ));
+}
+
+/**
+ * Never auto-converge a WORKSPACE SUB-PACKAGE THAT HOLDS NO STATE OF ITS OWN,
+ * whether the workspace merely GLOBBED it or actually REGISTERED it.
+ *
+ * The first arm is the incumbent rule and unchanged: when `cwd` owns no Traffic
+ * One state but sits inside a workspace (an ancestor declares package.json
+ * workspaces / pnpm-workspace.yaml / a Gradle settings file), it belongs to
+ * that workspace root, and converging it would mint a stray shallow
+ * `.traffic-one/.one.json` here (detectMode labels any sparse dir
+ * 'new-project'). resolveProjectRoot already anchors callers at the real root;
+ * this is the write-side backstop for a caller that passes a raw sub-package
+ * cwd.
+ *
+ * The second arm is the workspace clause, and it is a REFUSAL rather than an
+ * exemption because the exemption spelling was measurably wrong. Spelled as
+ * `if (isRegisteredWorkspaceMember(cwd)) return false`, it did not grant a
+ * registered member a materialization — the member still has no stack, no mode
+ * and no `onboardingComplete`, so every branch below still returns null — it
+ * only let execution WALK FURTHER DOWN THIS FUNCTION. And a few lines below the
+ * refusal sat `migrateArchitectureDocsToPlan`, at the time an ungated raw-`fs`
+ * writer. MEASURED on a registered member holding a hand-written
+ * `architecture.md`, against its unregistered sibling in the same container:
+ *
+ *                                    unregistered   registered (exemption)
+ *   converge return                  null           null
+ *   member architecture.md survives  true           FALSE
+ *   member .traffic-one/plan.md      absent         MINTED
+ *
+ * Identical return, opposite effect on the user's file. An exemption whose only
+ * observable consequence is that more code runs is not an exemption, so the
+ * clause now exits where the incumbent rule exits and the exempt directory is
+ * genuinely left alone: after the change both columns read null / true / absent.
+ *
+ * The migration has since been gated on READABLE STATE at its own definition,
+ * which independently closes those two rows for a stateless member and for
+ * every other caller — the fix belongs there, because the directory it must not
+ * touch is not always a workspace member.
+ *
+ * WHAT THIS REFUSAL ALONE STILL HOLDS IS THE RETURN VALUE, and the previous
+ * version of this docblock named the wrong row. It claimed the refusal was the
+ * only thing standing between a stateless member and `writeState` minting a
+ * stray shallow `<member>/.traffic-one/.one.json`. Measured with the refusal
+ * mutated off, that row does not move: `readEffectiveState` answers `{}` for a
+ * stateless directory, `normalizeState` finds nothing to canonicalize, and the
+ * unknown-stack branch returns null long before any writer. All three disk rows
+ * of the pin were byte-identical with the refusal deleted — it was unmeasured,
+ * not defence in depth.
+ *
+ * The shape that does move is the one directory that HAS state and no state
+ * FILE: a member carrying the pre-`.one.json` legacy lock (`.claude-plugin-mode`)
+ * naming `new-project`. `readEffectiveState` honours that file, `hasStateFile`
+ * does not, so the mode branch is satisfied and `materializeProjectFromState`
+ * runs and returns `incomplete` about a directory that is not a project. That
+ * return is not cosmetic: onboarding-gate/handler.ts turns any non-null outcome
+ * on a mutating PreToolUse into a deny, and a non-converged one into
+ * `materialization-not-converged`, which repeats byte-identically for as long as
+ * the file is there. MEASURED on that member, refusal on vs off:
+ *
+ *                                    refusal on   refusal off
+ *   converge return                  null         outcome:incomplete
+ *   member architecture.md survives  true         true
+ *   member .traffic-one/.one.json    absent       absent
+ *
+ * So the pin reads the RETURN for that shape, which is the row this guard
+ * decides, and keeps the three disk rows for the shapes above — where they pin
+ * the migration's own gate rather than this one.
+ *
+ * KEYED ON HOLDING NO STATE, which is what keeps this a refusal of NOTHING a
+ * member wants. A registered member that HAS committed state fails both arms —
+ * `isUnclaimedWorkspaceSubPackage` returns false for any directory with a state
+ * file, and so does this one — so it converges and materializes exactly as it
+ * does today. What is refused is only the cell that had nothing to do anyway.
+ *
+ * IT ALSO CLOSES A SHAPE THE INCUMBENT RULE NEVER COVERED. A container that
+ * registers members WITHOUT declaring package-manager workspaces (a Go or Maven
+ * workspace) makes `isUnclaimedWorkspaceSubPackage` answer false, so its
+ * stateless members walked down to the same deletion with the exemption absent
+ * entirely. The registry arm catches them.
+ *
+ * `indeterminate` folds to false inside `isRegisteredWorkspaceMember`, so an
+ * unreadable registry grants nothing and leaves the incumbent rule in charge —
+ * the same direction as before, now meaning "refuse only what the glob refuses"
+ * instead of "allow only what the glob allows".
+ *
+ * NAMED AND EXPORTED rather than inlined at the call site, so the composed
+ * decision is the thing a test holds to account. The behavioural pin lives in
+ * __tests__/workspace-member-converge.test.ts and is the `architecture.md` table
+ * above: it is what proves the two arms agree on effects and not merely on
+ * return values.
+ */
+export function isStatelessWorkspaceSubPackage(cwd: string): boolean {
+  if (isUnclaimedWorkspaceSubPackage(cwd)) return true;
+  return !hasStateFile(cwd) && isRegisteredWorkspaceMember(cwd);
 }
 
 // Hook-time convergence guard: ensure a project's .traffic-one/** is current
@@ -333,19 +538,19 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
 
   if (isNonProjectRoot(cwd)) return null;
 
-  // Never auto-converge a monorepo SUB-PACKAGE as its own project. When `cwd` owns
-  // no Traffic One state but sits inside a workspace (an ancestor declares
-  // package.json workspaces / pnpm-workspace.yaml), it belongs to that workspace
-  // root — bail before normalizeState/writeState below would mint a stray shallow
-  // .traffic-one/.one.json here (detectMode labels any sparse dir 'new-project').
-  // resolveProjectRoot already anchors callers at the real root; this is the
-  // write-side backstop for a caller that passes a raw sub-package cwd.
-  if (isUnclaimedWorkspaceSubPackage(cwd)) return null;
+  // Ahead of EVERY mutation below, `migrateArchitectureDocsToPlan` included.
+  if (isStatelessWorkspaceSubPackage(cwd)) return null;
 
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return null;
 
-  migrateArchitectureDocsToPlan(cwd);
+  // Ahead of the branches below, three of which return `null`: the plan gate asks
+  // for a plan even on a project this function finds nothing else to do for. The
+  // notice is threaded into every delegation so the fold is reported by the
+  // outcome this convergence produces rather than by the second, idempotent
+  // migration inside it, which finds the document already gone.
+  const migrationNotice = planMigrationNotice(migrateArchitectureDocsToPlan(cwd));
+  const delegate = (): MaterializeOutcome => materializeProjectFromState(cwd, { trigger, reportOneMcp, migrationNotice });
 
   const normalized = normalizeState(state, (state.mode as string) || detectMode(cwd));
   if (normalized) {
@@ -361,12 +566,12 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
     // return `null`, i.e. "nothing needed", about a project whose state file
     // cannot be written at all. Hand it to materializeProjectFromState, this
     // module's single reporter for that condition.
-    if (!canonicalized) return materializeProjectFromState(cwd, { trigger, reportOneMcp });
+    if (!canonicalized) return delegate();
   }
 
   if (!state.stack || !isKnownStack(state.stack)) {
     if (state.mode === 'new-project' || state.onboardingComplete === true) {
-      return materializeProjectFromState(cwd, { trigger, reportOneMcp });
+      return delegate();
     }
     return null;
   }
@@ -388,13 +593,55 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
   // shipped without a hand-bump, which is 11 of the last 14 content commits in
   // this repo (shared/build-provenance.ts). This is where a user who upgraded stops
   // silently serving the previous release's rules and skills.
+  //
+  // `roleContractsNeedConvergence` is the fifth, and it is the term that makes
+  // the host's per-role contracts a first-class part of "is this project
+  // current". The four above cannot see them: `hasMaterializedProjectAssets`
+  // validates the manifest, root AGENTS.md/CLAUDE.md and every tracked rule and
+  // skill, and role contracts are in none of those — so a project whose
+  // `.cursor/agents` is a plain file passes all four, forever, and the contracts
+  // that define every spawned role stay absent for the life of the plugin build.
+  // Measured before this existed: `materialized` with ZERO contracts on disk and
+  // `materializeProjectIfNeeded` returning null on the very next hook.
+  //
+  // It answers true for a REFUSED directory and for an EMPTY one, and both arms
+  // are load-bearing in opposite directions. The refused arm makes the run report
+  // the fault every time instead of once — which is what the pre-tool deny reads.
+  // The empty arm is the self-heal: the hook after a human clears the path finds
+  // an empty directory, converges, and the contracts land. Without it the refusal
+  // would go quiet the instant the path was cleared and leave the contracts
+  // missing, which is the original defect with an extra step.
+  //
+  // Self-limiting, like the two disk-reading terms beside it: a successful write
+  // makes it false, and a profile with no eligible roles never makes it true (see
+  // role-contract-status.ts), so it cannot spin on a project that legitimately
+  // has no contracts to write.
+  //
+  // AND ASKED ONLY OF A PROJECT WHOSE STATE IS OTHERWISE VALID, which is not
+  // fastidiousness — it bounds the blast radius to the condition it is about.
+  // `delegate()` validates the state before it writes anything, so on a project
+  // carrying a pre-migration `.one.json` (no `projectContext`, no `mobile.source`,
+  // legacy top-level `team`/`performance`) it answers `incomplete` — and
+  // onboarding-gate/handler.ts turns any non-`materialized`/`current` outcome on a
+  // mutating tool use into the `materialization-not-converged` deny. Without this
+  // guard, adding a term about ROLE CONTRACTS would newly refuse file-changing work
+  // on a class of project that has never been refused and whose contracts are not
+  // even the problem. MEASURED while landing this: two existing converge tests
+  // moved from `null` to a full state-validation wall, one of them the
+  // already-materialized short-circuit. A project in that state keeps the behaviour
+  // it had; the dangerous shape — a directory that is REFUSED rather than
+  // empty — is still refused at the gate, which reads disk and does not consult
+  // this conjunction at all.
+  const roleContractsShort = trafficOneStateValidationIssues(state, ['gitnexus', 'graphify']).length === 0
+    && roleContractsNeedConvergence(cwd, state);
   if (isMaterialized(state)
     && hasMaterializedProjectAssets(cwd, state)
     && !materializedContentIsIncomplete(cwd, state)
-    && !materializedFromDifferentPluginBuild(cwd)) {
+    && !materializedFromDifferentPluginBuild(cwd)
+    && !roleContractsShort) {
     reportOneMcp(cwd, state, trigger);
     return null;
   }
 
-  return materializeProjectFromState(cwd, { trigger, reportOneMcp });
+  return delegate();
 }

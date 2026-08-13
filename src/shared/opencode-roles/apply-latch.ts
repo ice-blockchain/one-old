@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { obj } from '../obj';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 const APPLY_LATCH_LEGACY_TTL_MS = 60_000;
 const APPLY_LATCH_HARD_CAP_MS = 15 * 60_000;
@@ -69,7 +70,7 @@ export function openCodeApplyInProgress(cwd: string, runId: string, nowMs: numbe
       if (ageMs >= APPLY_LATCH_HARD_CAP_MS) continue; // runaway backstop
       let pid = 0;
       try {
-        pid = Number(obj(JSON.parse(fs.readFileSync(target, 'utf8')))?.pid ?? 0);
+        pid = Number(obj(JSON.parse(readRegularFileOrThrow(target)))?.pid ?? 0);
       } catch {
         pid = 0;
       }

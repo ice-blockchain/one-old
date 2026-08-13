@@ -20,6 +20,7 @@ import {
   type Rec,
   normalizeAttemptRole,
 } from './plan-units';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 function planBatchDir(cwd: string, runId: string): string {
   return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-plan-batch');
@@ -176,7 +177,7 @@ function writeLegacyBatchComplete(cwd: string, runId: string): void {
 function readPlanBatchStateRaw(cwd: string, runId: string): OpenCodePlanBatchState | null {
   if (!runId) return null;
   try {
-    const raw = fs.readFileSync(planBatchJsonPath(cwd, runId), 'utf8');
+    const raw = readRegularFileOrThrow(planBatchJsonPath(cwd, runId));
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object') return null;
     const rec = parsed as Rec;
@@ -378,7 +379,7 @@ function architectRanThisRun(cwd: string, runId: string): boolean {
     }
   }
   try {
-    const registry = obj(JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'runs', runId, 'agents.json'), 'utf8')));
+    const registry = obj(JSON.parse(readRegularFileOrThrow(path.join(cwd, '.traffic-one', 'runs', runId, 'agents.json'))));
     const agents = registry ? obj(registry.agents) : null;
     if (agents && obj(agents['senior-architect'])) return true;
   } catch {

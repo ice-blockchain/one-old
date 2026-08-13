@@ -6,6 +6,8 @@ export * from './has-assets';
 export * from './render-agents';
 export * from './cleanup';
 export * from './materialize';
+export * from './role-contracts';
+export * from './role-contract-status';
 export * from './codex-agents';
 export * from './kilo-agents';
 export * from './opencode-assets';

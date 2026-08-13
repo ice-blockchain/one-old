@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readText, removePath } from '../fsjson';
+import { isNewProjectMode } from '../state/lifecycle';
 import { writeTextIfChanged } from '../fs-text';
 import { pluginRoot } from '../paths';
 import { templatePath } from '../stacks';
@@ -270,7 +271,7 @@ export function preserveManualRootContext(cwd: string, fileName: string, state: 
   if (!fs.existsSync(rootPath)) return false;
   const stat = fs.lstatSync(rootPath);
   if (stat.isSymbolicLink() || isGenerated(rootPath)) return false;
-  if (!state || state.mode !== 'new-project') return false;
+  if (!isNewProjectMode(state)) return false;
 
   const localPath = path.join(cwd, '.traffic-one', localContextName(fileName));
   const body = normalizeBody((readText(rootPath) || '').replace(TOOL_MANAGED_BLOCK_RE, ''));

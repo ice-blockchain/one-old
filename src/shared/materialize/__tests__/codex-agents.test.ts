@@ -19,6 +19,7 @@ import {
   isGeneratedCodexAgent,
   writeCodexAgentFiles,
 } from '../codex-agents';
+import { roleContractsWritten } from '../role-contracts';
 
 const FULL_STATE = {
   stack: 'default',
@@ -30,7 +31,7 @@ const FULL_STATE = {
 test('writeCodexAgentFiles materializes the full role contract, not the kernel excerpt', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codex-agents-'));
   try {
-    assert.ok(writeCodexAgentFiles(cwd, FULL_STATE) > 0);
+    assert.ok(roleContractsWritten(writeCodexAgentFiles(cwd, FULL_STATE)) > 0);
     const frontend = path.join(cwd, CODEX_AGENTS_REL, 'senior-frontend.md');
     const text = fs.readFileSync(frontend, 'utf8');
     assert.ok(text.includes(CODEX_AGENT_MARKER));

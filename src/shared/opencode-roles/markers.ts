@@ -23,6 +23,7 @@ import {
   planBatchPhaseEligible,
   readOpenCodePlanBatchState,
 } from './batch-state';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export function markOpenCodePlanRoleCompleted(cwd: string, runId: string, role: string): void {
   if (!runId || !role) return;
@@ -127,7 +128,7 @@ function runtimeVersion(): string | null {
   let resolved: string | null = null;
   for (const up of [['..', '..'], ['..', '..', '..']]) {
     try {
-      const pkg = obj(JSON.parse(fs.readFileSync(path.resolve(__dirname, ...up, 'package.json'), 'utf8')));
+      const pkg = obj(JSON.parse(readRegularFileOrThrow(path.resolve(__dirname, ...up, 'package.json'))));
       if (pkg?.name === 'traffic-one' && typeof pkg.version === 'string' && pkg.version) {
         resolved = pkg.version;
         break;
@@ -196,7 +197,7 @@ export function markOpenCodeGatewayOutage(cwd: string, runId: string): void {
 export function openCodeGatewayOutageActive(cwd: string, runId: string, ttlMs: number, nowMs: number = Date.now()): boolean {
   if (!runId) return false;
   try {
-    const raw = fs.readFileSync(gatewayBreakerPath(cwd, runId), 'utf8');
+    const raw = readRegularFileOrThrow(gatewayBreakerPath(cwd, runId));
     const trippedAt = Date.parse(String(obj(JSON.parse(raw))?.trippedAt ?? ''));
     return Number.isFinite(trippedAt) && nowMs - trippedAt < ttlMs;
   } catch {

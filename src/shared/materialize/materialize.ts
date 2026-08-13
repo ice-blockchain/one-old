@@ -21,6 +21,7 @@ import {
 import { roleScopedRuleUnion, stackSpecForState, templatePath } from '../stacks';
 import { nowIsoNoMs } from '../text';
 import { detectHost } from '../host';
+import { isNewProjectMode } from '../state/lifecycle';
 import { projectWritesPermitted } from '../state/plugin-use';
 import {
   cleanupPrevious,
@@ -38,8 +39,15 @@ import { writeCodexAgentFiles } from './codex-agents';
 import { writeKiloAgentFiles } from './kilo-agents';
 import { cleanupLegacyOpenCodeProjectAssets, refreshOpenCodeGlobalAgentFiles } from './opencode-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
+import {
+  type RoleContractOutcome,
+  type RoleContractShortfall,
+  roleContractFailures,
+  roleContractsWritten,
+} from './role-contracts';
 import { writeWindsurfAgentFiles } from './windsurf-agents';
 import { writeWindsurfHostAssets } from './windsurf-assets';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -56,7 +64,19 @@ export interface MaterializeResult {
   // Evidence for the refusal in `skipped`, when naming the numbers is the whole
   // diagnostic — see tornRootRefusal. Absent on every successful run.
   torn?: TornRootEvidence;
+  // The active host's per-role contracts could not be written, in whole
+  // (`unwritable`: the role directory itself was refused) or in part. ABSENT on
+  // every healthy run, which is why this is optional rather than an always-empty
+  // list — the presence of the key is the fact. Everything else in this result
+  // can be true while these are missing, so nothing else here reports it.
+  roleContracts?: RoleContractShortfall;
 }
+
+// `RoleContractShortfall` is declared in role-contracts.ts, beside the outcome it
+// is derived from and the disk probe that reports the identical shape without a
+// materialization (role-contract-status.ts). Both reach callers through
+// `shared/materialize`, so it is imported here rather than re-exported: two
+// `export *` paths to one name is a conflict waiting for the first reader.
 
 // What a complete install was asked for versus what the root actually gave back,
 // per kind. `missing` is the WHOLE list, not a sample: "46 of 47 skills are
@@ -244,8 +264,13 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
    *   - `.cursor/agents/**`, `.github/agents/**`, `.devin/agents/**`,
    *     `.windsurf/**`, the Kilo and OpenCode host project dirs — the
    *     host-native role writers further down;
-   *   - 51 skill directories, created by `copySkillDir`'s raw `fs.mkdirSync`
-   *     before its fenced file writes are refused one by one.
+   *   - 51 skill directories, created by `copySkillDir` (generated.ts) before its
+   *     fenced file writes are refused one by one. Its mkdir goes through
+   *     fsjson.ts's `ensureDir` and the `false` aborts the copy, so the
+   *     directories are the residue of the copies that started, not of an
+   *     unchecked mkdir — the "raw `fs.mkdirSync`" this comment used to name is
+   *     gone, and role-contract-swallow.test.ts now refuses a new one anywhere
+   *     under this directory.
    *
    * The first two are the reason this refusal is not merely tidiness. On a
    * pending project the delete still landed while the preserving copy into
@@ -326,7 +351,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // onboarding/repair.ts re-derives a lost mode with `detectMode(cwd)`, which
   // answers `existing-codebase` for a populated scaffolded directory, so
   // `state.mode` is NOT stable for a project's lifetime.
-  ensureProjectGitignore(cwd, { newProject: state.mode === 'new-project' });
+  ensureProjectGitignore(cwd, { newProject: isNewProjectMode(state) });
 
   const root = rootInfo.root;
   const capabilityProfile = capabilityProfileForRun(cwd, state);
@@ -428,7 +453,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   let written = 0;
   const projectMemoryRoot = path.join(cwd, '.traffic-one');
   for (const relPath of rules) {
-    const source = fs.readFileSync(path.join(root, templatePath(relPath)), 'utf8').trimEnd();
+    const source = readRegularFileOrThrow(path.join(root, templatePath(relPath))).trimEnd();
     const content = `${GENERATED_MARKER}\n<!-- SOURCE: ${templatePath(relPath)} -->\n\n${source}\n`;
     if (writeTextIfChanged(path.join(projectMemoryRoot, relPath), content)) written += 1;
   }
@@ -455,24 +480,50 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // Host-native project role files are model-agnostic contracts. The active
   // user's plan, performance choice, and model lineup are injected at runtime
   // from local preferences rather than persisted in the shared project.
-  if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, capabilityState);
-  if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, capabilityState);
-  if (detectHost() === 'kilo') written += writeKiloAgentFiles(cwd, capabilityState);
-  if (detectHost() === 'codex') written += writeCodexAgentFiles(cwd, capabilityState);
+  //
+  // Every one of these returns a RoleContractOutcome rather than a count, and
+  // `roleContracts` below is the channel that carries a refusal to the reporter.
+  // Before that they each swallowed a failed `mkdirSync` and returned the
+  // SWEEP count as though it were a write count, so a host whose role directory
+  // could not be created was folded into this success total invisibly — measured
+  // end to end, `materialized` with zero role contracts on disk (see
+  // role-contracts.ts).
+  //
+  // This result is the WRITE-TIME half of the report only. The persistent half —
+  // "is that directory usable, asked at any moment, by a caller that is not
+  // materializing" — is role-contract-status.ts, and it is what the pre-tool gate
+  // and the SessionStart banner read. A run's own outcome cannot serve them:
+  // three of the five routes that reach this writer discard the result, and the
+  // steady state has no run at all.
+  let roleContracts: RoleContractOutcome | null = null;
+  if (host === 'cursor') roleContracts = writeCursorAgentFiles(cwd, capabilityState);
+  if (host === 'copilot') roleContracts = writeCopilotAgentFiles(cwd, capabilityState);
+  if (host === 'kilo') roleContracts = writeKiloAgentFiles(cwd, capabilityState);
+  if (host === 'codex') roleContracts = writeCodexAgentFiles(cwd, capabilityState);
   // Legacy project-local OpenCode assets are shared, so every host removes only
   // Traffic One-generated copies. Model-pinned replacements are user-local and
   // are written exclusively by the active OpenCode host.
   removed += cleanupLegacyOpenCodeProjectAssets(cwd);
-  if (detectHost() === 'opencode') written += refreshOpenCodeGlobalAgentFiles(cwd, capabilityState);
+  if (host === 'opencode') roleContracts = refreshOpenCodeGlobalAgentFiles(cwd, capabilityState);
   let windsurfAssets: ReturnType<typeof writeWindsurfHostAssets> | null = null;
+  // The manifest's `windsurf.agents` is the ONE place a role-contract count is
+  // persisted, and it must now report contracts written — not, as it did, the
+  // sweep count a refused directory returned in their place.
   let windsurfAgents = 0;
-  if (detectHost() === 'windsurf') {
+  if (host === 'windsurf') {
     windsurfAssets = writeWindsurfHostAssets(cwd, rules);
-    windsurfAgents = writeWindsurfAgentFiles(cwd, capabilityState);
+    roleContracts = writeWindsurfAgentFiles(cwd, capabilityState);
+    windsurfAgents = roleContractsWritten(roleContracts);
     written += windsurfAssets.written;
-    written += windsurfAgents;
     removed += windsurfAssets.removed;
   }
+  if (roleContracts) {
+    written += roleContractsWritten(roleContracts);
+    removed += roleContracts.removed;
+  }
+  const roleContractFailure = roleContracts && roleContracts.kind !== 'complete'
+    ? { host, kind: roleContracts.kind, failures: roleContractFailures(roleContracts) }
+    : null;
 
   const mobile = capabilityState.mobile as Rec | undefined;
   // WHICH plugin build these bytes came from — the freshness signal
@@ -508,5 +559,12 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
     written += 1;
   }
 
-  return { rules: rules.length, skills: skills.length, written, removed, contextProfile: leanMode ? 'lean' : 'full' };
+  return {
+    rules: rules.length,
+    skills: skills.length,
+    written,
+    removed,
+    contextProfile: leanMode ? 'lean' : 'full',
+    ...(roleContractFailure ? { roleContracts: roleContractFailure } : {}),
+  };
 }

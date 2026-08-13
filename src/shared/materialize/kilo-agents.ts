@@ -15,10 +15,10 @@ import { KILO_HOST_AGENTS_REL } from '../../config/kilo-host';
 import { TEAM_ROLES } from '../../config/onboarding';
 import { eligibleRolesForProfile } from '../capabilities';
 import { capabilityProfileForRun } from '../architecture-contract';
-import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
 import { GENERATED_MARKER, isGenerated } from './generated';
+import { type RoleContractFile, type RoleContractOutcome, writeRoleContracts } from './role-contracts';
 
 type Rec = Record<string, unknown>;
 
@@ -93,25 +93,18 @@ function agentFile(role: string, label: string, blurb: string): string {
   return lines.join('\n');
 }
 
-export function writeKiloAgentFiles(cwd: string, state: Rec): number {
+export function writeKiloAgentFiles(cwd: string, state: Rec): RoleContractOutcome {
   const dir = path.join(cwd, KILO_HOST_AGENTS_REL);
   const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
   const members = TEAM_ROLES.filter((member) => eligible.has(member.role));
   const keep = new Set(members.map((member) => member.role));
-  let written = cleanupGeneratedAgents(dir, keep);
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch {
-    return written;
-  }
+  const removed = cleanupGeneratedAgents(dir, keep);
+  const files: RoleContractFile[] = [];
   for (const member of members) {
     const target = path.join(dir, `${member.role}.md`);
+    // A user-authored contract wins and is not a failure to write.
     if (fs.existsSync(target) && !isGeneratedKiloAgent(target)) continue;
-    try {
-      if (writeTextIfChanged(target, agentFile(member.role, member.label, member.blurb))) written += 1;
-    } catch {
-      // best-effort per role
-    }
+    files.push({ path: target, content: agentFile(member.role, member.label, member.blurb) });
   }
-  return written;
+  return writeRoleContracts(dir, removed, files);
 }

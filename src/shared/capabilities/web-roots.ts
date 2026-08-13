@@ -1,7 +1,6 @@
 // src/shared/capabilities/web-roots.ts
 // Web-root resolution across workspace layouts.
 
-import * as fs from 'fs';
 import * as path from 'path';
 
 import {
@@ -14,6 +13,7 @@ import {
 import {
   detectFrontendFramework,
 } from './detect-frontend';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export function frontendArtifactsPresent(cwd: string): boolean {
   return detectFrontendFramework(cwd, {}).hasWebUi;
@@ -37,7 +37,7 @@ export function nuxtSourceRoot(cwd: string, webRoot: string): string {
   for (const name of ['nuxt.config.ts', 'nuxt.config.js', 'nuxt.config.mjs']) {
     let text = '';
     try {
-      text = fs.readFileSync(path.join(cwd, prefixed(webRoot, name)), 'utf8').slice(0, 256_000);
+      text = readRegularFileOrThrow(path.join(cwd, prefixed(webRoot, name))).slice(0, 256_000);
     } catch {
       continue;
     }

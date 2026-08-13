@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { OPENCODE_HOST_AGENTS_REL, OPENCODE_HOST_SKILLS_REL } from '../../../config/opencode-host';
 import { openCodeGlobalAgentPath, writeOpenCodeHostAssets } from '../opencode-assets';
+import { roleContractsWritten } from '../role-contracts';
 import { GENERATED_MARKER } from '../generated';
 
 function withPlugin(fn: (project: string, home: string) => void, plan = 'free'): void {
@@ -48,8 +49,14 @@ function withPlugin(fn: (project: string, home: string) => void, plan = 'free'):
 test('writeOpenCodeHostAssets writes project-scoped model-pinned agents in the user config directory', () => {
   withPlugin((project, home) => {
     const state = { team: { mode: 'subagents', approved: true }, performance: { level: 'balanced' } };
-    const n = writeOpenCodeHostAssets(project, state, ['project-memory']);
-    assert.ok(n >= 1);
+    // The return used to be one `number` that ADDED a project-local sweep count
+    // to a user-local write count, so `>= 1` was satisfied by a removal on a run
+    // that wrote nothing (measured: 2 for one file on disk). The two facts are
+    // separate now, and the write half is an outcome that can say it failed.
+    const assets = writeOpenCodeHostAssets(project, state, ['project-memory']);
+    assert.equal(assets.roleContracts.kind, 'complete', 'the profiles were written');
+    assert.ok(roleContractsWritten(assets.roleContracts) >= 1, 'and the count is of WRITES only');
+    assert.equal(assets.legacyRemoved, 0, 'nothing legacy to sweep on a fresh project');
 
     const architectPath = openCodeGlobalAgentPath(project, 'senior-architect');
     assert.equal(path.dirname(architectPath), path.join(home, '.config', 'opencode', 'agents'));

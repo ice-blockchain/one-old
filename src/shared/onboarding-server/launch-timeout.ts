@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { serverLockPath } from './registry';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 /**
  * How long one spent retry suppresses the next. Ten minutes: an onboarding turn
@@ -90,7 +91,7 @@ export function claimLaunchTimeoutRetry(
   // its retry; outside it, the window has re-armed.
   let claimedAt = 0;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { at?: unknown };
+    const parsed = JSON.parse(readRegularFileOrThrow(file)) as { at?: unknown };
     claimedAt = Number(parsed?.at);
   } catch {
     claimedAt = 0;

@@ -20,8 +20,17 @@
 // deletion-authority question, and answers it NEGATIVELY whenever it is not sure:
 // an unreadable file, a syntax outside the subset below, or a single pattern it
 // cannot compile all yield "no claim". Resolution keeps its leniency untouched —
-// `dirDeclaresWorkspace` is not routed through here, so the resolution hot path
-// pays no extra file read either.
+// `dirDeclaresWorkspace` is not routed through `readWorkspaceDeclaration`, so the
+// resolution hot path pays no extra file read either.
+//
+// THE LENIENT PREDICATE LIVES HERE TOO, beside the strict reader it must stay
+// lenient against, and hook/paths.ts re-exports it under its established name.
+// It has two consumers now — resolution, and state/normalize.ts's state-write
+// veto — and the filename list they key on has to be ONE list. A veto that
+// recognises a declaration the resolver does not, or the reverse, produces a
+// directory that anchors resolution somewhere it is then forbidden to hold the
+// state for; that is exactly the split the Gradle settings file caused once
+// already, from the ownership side.
 //
 // Dependency-free by contract (the hook runtime ships no npm packages), so both
 // the pnpm YAML reader and the glob matcher are hand-written and deliberately
@@ -30,14 +39,25 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { readRegularFileResult } from '../bounded-read';
 import { readJson } from '../fsjson';
 
 /**
  * What a container's declaration says about its members.
  *
- * `opaque` is the load-bearing arm: the directory DOES declare a workspace (so
- * `dirDeclaresWorkspace` still says yes and resolution is unchanged) but the
- * member list could not be established, so no deletion may be justified by it.
+ * `opaque` means the directory DOES declare a workspace (so `dirDeclaresWorkspace`
+ * still says yes and resolution is unchanged) but the member list could not be
+ * established, so no deletion may be justified by it. `none` means nothing here
+ * declares a workspace at all.
+ *
+ * THAT PARAGRAPH USED TO OPEN "`opaque` is the LOAD-BEARING arm", and it is not,
+ * yet. The distinction is real at the type and would matter the moment anything
+ * asked, but no production consumer asks: `workspaceClaimsDescendant` below is
+ * the only one, and it tests `kind !== 'patterns'`, which folds the two arms
+ * together. Every observable behaviour is identical for both today. Recorded as
+ * LATENT rather than argued for, and pinned that way in
+ * __tests__/workspace-declaration.test.ts, so the row reds when a consumer
+ * finally distinguishes them and this note has to go.
  */
 export type WorkspaceDeclaration =
   | { readonly kind: 'none' }
@@ -47,6 +67,56 @@ export type WorkspaceDeclaration =
 type Rec = Record<string, unknown>;
 
 const PNPM_WORKSPACE_FILES = ['pnpm-workspace.yaml', 'pnpm-workspace.yml'] as const;
+
+/**
+ * The files that DECLARE members, in every ecosystem the resolver understands
+ * them for. `settings.gradle(.kts)` is Gradle's spelling of npm's `workspaces`
+ * glob: it is the file Gradle itself walks up to in order to find the build, and
+ * its contents are a list of the modules that build contains.
+ */
+const WORKSPACE_DECLARATION_FILES = [
+  ...PNPM_WORKSPACE_FILES,
+  'settings.gradle', 'settings.gradle.kts',
+] as const;
+
+/**
+ * A directory is a WORKSPACE ROOT when it declares workspaces — npm/yarn/bun
+ * `workspaces` in package.json, a pnpm-workspace file, or a Gradle settings
+ * file. Lenient by design: the cost of a false positive is resolving up one
+ * level; the cost of a miss is a stray `.traffic-one` minted into a sub-package.
+ *
+ * It never reads the declared PATTERNS. This is the resolution hot path and it
+ * stays at a few `existsSync` calls plus one `readJson`; the pattern read is
+ * `readWorkspaceDeclaration` above, reached only under `membership` authority,
+ * so a directory that claims nothing still anchors resolution exactly as it
+ * always has. The invariant binding the two — a declaration that CLAIMS a
+ * descendant is always a declaration — is pinned in
+ * ../__tests__/workspace-declaration.test.ts rather than assumed, and adding a
+ * name to the list above can only make this side MORE true, so the implication
+ * survives.
+ *
+ * NO GRADLE DSL IS PARSED, and none is needed: every consumer of this predicate
+ * asks only whether a declaration EXISTS and then relies on containment.
+ * `membership` authority — the one whose false positive is a DELETION — goes
+ * through `workspaceClaimsDescendant`, which reads package-manager patterns only
+ * and answers "no claim" for a Gradle root. So this grants resolution authority
+ * and grants no deletion authority at all, which is the safe direction for both.
+ *
+ * IT DOES NOT CONFER PROJECTHOOD, and that separation is the whole reason
+ * `settings.gradle` is here rather than in `MANIFEST_MARKERS`. Declaring a
+ * workspace says "these are my members"; owning a project says "I am one". The
+ * third consumer, state/normalize.ts's creation-time veto, reads this to decide
+ * whether a directory may hold CONTAINER state — a strictly smaller permission
+ * than being a project, and one that must not be mistaken for it.
+ */
+export function dirDeclaresWorkspace(dir: string): boolean {
+  if (WORKSPACE_DECLARATION_FILES.some((file) => fs.existsSync(path.join(dir, file)))) return true;
+  const pkg = readJson<Rec>(path.join(dir, 'package.json'), {} as Rec);
+  const ws = pkg ? pkg.workspaces : undefined;
+  if (Array.isArray(ws)) return ws.length > 0;
+  if (ws && typeof ws === 'object') return Array.isArray((ws as Rec).packages);
+  return false;
+}
 
 // ── declaration shapes ───────────────────────────────────────────────────────
 // Handled: npm/yarn/bun `workspaces: [...]`, `workspaces: { packages: [...] }`,
@@ -61,15 +131,36 @@ export function readWorkspaceDeclaration(dir: string): WorkspaceDeclaration {
   for (const name of PNPM_WORKSPACE_FILES) {
     const file = path.join(resolved, name);
     if (!fs.existsSync(file)) continue;
-    let text: string;
-    try {
-      text = fs.readFileSync(file, 'utf8');
-    } catch (error) {
-      // The declaration exists and we cannot see through it. It still anchors
-      // resolution; it grants nothing here.
-      return { kind: 'opaque', why: `${name} is unreadable (${String(error)})` };
+    // BOUNDED, and the sentence this replaced is recorded rather than deleted
+    // because it is the exact false comfort this class hides behind. It read
+    // "The declaration exists and we cannot see through it", inside a `catch`
+    // around a bare `fs.readFileSync` — a catch that CANNOT RUN for the two
+    // shapes that matter, because the read it guards never returns to throw.
+    // DRIVEN at this call site (.tmp/bounded3/p1-before.txt, load 2.54 of 10
+    // cpus, one child per shape under a parent SIGKILL at 8 000 ms): a FIFO at
+    // `pnpm-workspace.yaml` was killed at 8 012 ms and a committed symlink to
+    // `/dev/zero` at 8 057 ms, against a regular file answering in 0 ms. Both
+    // arrive through an ordinary `git clone` — git records a link as mode
+    // 120000 — and `hook/paths.ts:149` calls `workspaceClaimsDescendant`, whose
+    // first statement is this function, on the resolver every hook entry runs.
+    //
+    // `readRegularFileResult` rather than `readRegularFile`: this reader must
+    // tell PRESENT-BUT-UNREADABLE from ABSENT, and the two answer opposite
+    // things here. The sibling `dirDeclaresWorkspace` was already bounded
+    // (`readJson`), which is what made this insidious — a maintainer reading
+    // line 102 concludes the file is handled.
+    const read = readRegularFileResult(file);
+    if (read.kind !== 'text') {
+      // The declaration is THERE and we cannot see through it — now including
+      // the FIFO and the device node, which are classified from the descriptor
+      // without a byte being read. It still anchors resolution; it grants
+      // nothing here.
+      return {
+        kind: 'opaque',
+        why: `${name} is unreadable (${read.kind === 'absent' ? 'ENOENT' : read.errno})`,
+      };
     }
-    return compile(parsePnpmPackages(text), name);
+    return compile(parsePnpmPackages(read.text), name);
   }
 
   const pkg = readJson<Rec>(path.join(resolved, 'package.json'), {} as Rec);

@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { writeCursorAgentFiles } from '../cursor-agents';
 import { cursorAgentModel } from '../cursor-agent-model';
+import { roleContractsWritten } from '../role-contracts';
 
 type Rec = Record<string, unknown>;
 const FULL_STATE = {
@@ -22,8 +23,9 @@ function tmp(): string {
 test('writeCursorAgentFiles writes model-agnostic role contracts without local preferences', () => {
   const dir = tmp();
   try {
-    const n = writeCursorAgentFiles(dir, FULL_STATE as Rec);
-    assert.ok(n >= 1, 'wrote at least one agent file');
+    const outcome = writeCursorAgentFiles(dir, FULL_STATE as Rec);
+    assert.equal(outcome.kind, 'complete', 'every contract was written');
+    assert.ok(roleContractsWritten(outcome) >= 1, 'wrote at least one agent file');
     const agentsDir = path.join(dir, '.cursor', 'agents');
     assert.ok(fs.existsSync(path.join(agentsDir, 'senior-architect.md')), 'architect agent file exists');
     const body = fs.readFileSync(path.join(agentsDir, 'senior-architect.md'), 'utf8');

@@ -5,6 +5,7 @@ import { isNonProjectRoot } from '../authoring-root';
 import { obj, type Rec } from '../obj';
 import { shellQuote } from '../shell-quote';
 import { onboardingWaitScriptPath } from './wait-command';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 // Claude Code's auto-mode permission classifier can block the onboarding wait
 // command (observed: the first wait attempt right after bootstrap), and the
@@ -20,7 +21,7 @@ export function ensureOnboardingWaitPermission(cwd: string, host: unknown): void
   const file = path.join(cwd, '.claude', 'settings.local.json');
   let settings: Rec = {};
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const parsed = JSON.parse(readRegularFileOrThrow(file));
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) settings = parsed as Rec;
   } catch {
     // missing or invalid → start fresh (preserving nothing we can't parse)

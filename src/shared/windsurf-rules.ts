@@ -43,6 +43,12 @@ function parseScalar(value: string): string {
     const decoded = JSON.parse(cleaned) as unknown;
     return typeof decoded === 'string' ? decoded : cleaned;
   } catch {
+    // Doubling is how a YAML single-quoted scalar escapes its own quote, so the
+    // outer pair is only half the job — see the gen-side copy of this function
+    // in src/gen/lib/frontmatter.ts for what shipped without this line.
+    if (cleaned.length >= 2 && cleaned.startsWith("'") && cleaned.endsWith("'")) {
+      return cleaned.slice(1, -1).replace(/''/g, "'");
+    }
     return cleaned.replace(/^["']|["']$/g, '');
   }
 }
@@ -185,6 +191,17 @@ export function renderWindsurfRuleDocs(sourceRel: string, sourceText: string): W
   const description = parsed.description || `${title}. Generated from ${rel}.`;
   const trigger = triggerFor(rel, ruleRel, parsed.paths, parsed.alwaysApply);
   const marker = `${GENERATED_MARKER}\n<!-- GENERATED FROM: ${rel}; run \`npm run gen\` to update. -->`;
+  // This sentence names `.devin/agents/<role>/AGENT.md` unconditionally, and that
+  // is a DISCLOSED residual rather than an oversight: this function is a pure
+  // renderer with no cwd, its output is byte-pinned by the golden manifest, and
+  // the same text is emitted into the plugin tree where no project exists to
+  // check. A body that varied with one machine's disk state would make generated
+  // output non-deterministic to buy a warning that arrives on a channel the
+  // orchestrator reads AFTER the run-time ones that already carry it: the
+  // SessionStart banner (session-start-lib.ts `roleContractBanner`) and the
+  // pre-spawn architect directive (pre-spawn-directives.ts) both check the file
+  // and tell the orchestrator to state the role inline when it is absent, and
+  // mutating work is refused at the gate meanwhile.
   const renderedBody = isAgent
     ? [
       'Mirrored Traffic One role context. On Devin Local the orchestrator uses `run_subagent` profile `subagent_general`, starts the task with `[t1-role: senior-<role>]`, and tells the child to read `.devin/agents/<role>/AGENT.md`. Custom profiles created during onboarding are not registered until a new session, so never require the role name as the profile in the active first-run session.',

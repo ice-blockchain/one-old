@@ -90,6 +90,11 @@ test('migrateArchitectureDocsToPlan: .traffic-one/architecture.md becomes plan.m
   try {
     const t1 = path.join(dir, '.traffic-one');
     fs.mkdirSync(t1, { recursive: true });
+    // The migration is gated on Traffic One OWNING the directory, so the fixture
+    // carries the state file every project it can legitimately run on has. Without
+    // it this is a directory nobody was invited into, and the gate refuses —
+    // see __tests__/plan-migration-gate.test.ts for that half.
+    fs.writeFileSync(path.join(t1, '.one.json'), '{"mode":"existing-codebase","stack":"minimal"}\n', 'utf8');
     fs.writeFileSync(path.join(t1, 'architecture.md'), '# Legacy\n\nModule map from old file.', 'utf8');
 
     const result = migrateArchitectureDocsToPlan(dir);
@@ -110,6 +115,7 @@ test('migrateArchitectureDocsToPlan: root and package architecture docs append t
   try {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'packages', 'ui'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), '{"mode":"existing-codebase","stack":"minimal"}\n', 'utf8');
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), '# Existing Plan\n\n## Module map\nCanonical package map.', 'utf8');
     fs.writeFileSync(path.join(dir, 'architecture.md'), '# Root Architecture\n\nRoot data flow.', 'utf8');
     fs.writeFileSync(path.join(dir, 'packages', 'ui', 'architecture.md'), '# UI Package\n\nButton boundary.', 'utf8');

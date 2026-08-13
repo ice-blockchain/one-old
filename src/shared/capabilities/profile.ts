@@ -5,6 +5,7 @@ import * as path from 'path';
 
 import { scanSourceFiles } from '../detection';
 import { obj } from '../obj';
+import { isNewProjectMode } from '../state/lifecycle';
 
 import {
   BACKEND_NONE,
@@ -123,7 +124,10 @@ export function capabilityProfileForProject(cwd: string, input: unknown): Capabi
   // compilation). A genuine greenfield project has nothing on disk at that
   // moment; and once we HAVE scaffolded, the app is at `apps/web`, so the
   // detected root and the planned root agree and the profile stays stationary.
-  const plannedWebWorkspace = state.mode === 'new-project'
+  // `isNewProjectMode`, not the raw string: the gates that consume this profile
+  // read the mode through the predicate, and a profile derived from a stricter
+  // reading of the same value is a profile for a different project.
+  const plannedWebWorkspace = isNewProjectMode(state)
     && !webAppHoldsSource(cwd, frontendDetection)
     && profileSupportsShadcnWorkspace(cwd, frontend, state);
   const webStructural = hasWeb

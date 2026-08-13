@@ -19,6 +19,7 @@ import { pluginRoot } from '../paths';
 import { resolveTrafficOneEnv } from '../state/traffic-one-paths';
 import type { LocalFallback } from './wizard-links';
 import { clearLegacyOnboardingRuntime, clearServerRecord, readServerRecord, serverLockPath } from './registry';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 // A launch lock older than this is presumed abandoned (holder crashed between
 // claiming and publishing the record) and may be stolen — a generous multiple of
@@ -165,7 +166,7 @@ function acquireLaunchLock(lockPath: string, isAlive: (pid: number) => boolean):
   let holderPid = 0;
   let claimedAt = 0;
   try {
-    const raw = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    const raw = JSON.parse(readRegularFileOrThrow(lockPath));
     holderPid = Number(raw.pid);
     claimedAt = Number(raw.at);
   } catch {

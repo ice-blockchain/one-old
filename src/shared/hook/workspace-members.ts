@@ -40,6 +40,7 @@ import * as path from 'path';
 
 import { STATE_FILE } from '../../config/paths';
 import { SKIP_DIRS } from '../../config/reporting';
+import { fsIdentity, type FsIdentity } from '../fs-identity';
 import { readJsonResult } from '../fsjson';
 import { VCS_MARKERS } from '../project-membership';
 import { isSafeRunId } from '../qa-report/schema';
@@ -456,10 +457,26 @@ export function workspaceMemberRegistryOf(state: unknown): WorkspaceMemberRegist
  * question it never actually read, which is the confident-negative defect again,
  * one layer up.
  *
- * The poison is safe HERE for a reason that is specific rather than assumed:
- * `opaque` denies everything, and denying everything is precisely today's
- * behaviour, because nothing in the tree carries this mode. A malformed registry
- * therefore cannot do worse than not existing.
+ * WHAT THE POISON COSTS, corrected — the earlier wording ("`opaque` denies
+ * everything, denying everything is today's behaviour, so a malformed registry
+ * cannot do worse than not existing") is false, and comfortably so. The two are
+ * not the same answer at all. MEASURED on one container and one member:
+ *
+ *   no registry at all      the member resolves to itself and every gate operates
+ *   a malformed registry    `resolveToolScope` reports `unresolved` and EVERY
+ *                           gated call under the container is refused
+ *
+ * A malformed registry therefore FREEZES members that would otherwise work,
+ * which is strictly worse than not existing. It is still the right direction —
+ * a half-read authorization list answering "no" to a question it never read is
+ * the alternative, and that one loses a member's state rather than a session's
+ * writes — but it is a cost to be paid deliberately, not a free poison. The
+ * refusal names the container and the `why`, so the freeze is legible to
+ * whoever has to repair the file, and it clears on the first parse.
+ *
+ * (This predates member identity and is not a regression; it is recorded here
+ * because the sentence it replaces is the reassurance that would stop the next
+ * reader from measuring.)
  */
 // Returns the parsed entry, or a STRING saying what is wrong with it — which
 // the caller splices into its `why` so a malformed registry names the field
@@ -519,6 +536,16 @@ function validateMemberEntry(
  *   nobody registered. If the directory is a project in its own right it is
  *   judged on its own terms, exactly as it would be if this workspace did not
  *   exist.
+ *
+ *   ON ONE AXIS THE EQUIVALENCE DOES NOT HOLD, and stating it without the
+ *   exception understated the consequence for a member that already holds
+ *   state. A member owning no project marker, onboarded and then flipped to
+ *   opted-out, stopped resolving to itself, became a leaked nested root and had
+ *   its `.traffic-one` removed by the next SessionStart sweep — the flag that
+ *   promises Traffic One will leave a directory alone deleting that directory's
+ *   record of ever having been managed. `registryEnclosureOf` therefore answers
+ *   `vouched` for an opted-out entry: no member's authority (the paragraph
+ *   above is unchanged), and never a deletion candidate.
  *
  * WHY RECORD IT AT ALL, then, if absence produces the same behaviour: because
  * absence and refusal are different FACTS, and this module already draws that
@@ -615,6 +642,225 @@ export function validateMemberPath(raw: unknown): string | null {
 }
 
 /**
+ * `dev:ino` for a DIRECTORY, with "not there" kept apart from "could not tell".
+ *
+ * The primitive is shared/fs-identity.ts, which retention.ts's `fileIdentity`
+ * is the other copy of; see that file's header for why the six lines are shared
+ * and the POLICIES above them deliberately are not.
+ */
+function directoryIdentity(dir: string): FsIdentity {
+  return fsIdentity(dir, { mustBeDirectory: true });
+}
+
+/**
+ * Does this entry NAME the directory it reaches, or merely POINT AT it?
+ *
+ * THE ONE QUESTION THAT SPLITS MAJOR 3'S ASYMMETRY, so it is worth being exact
+ * about what it separates. Both of these reach one directory and are therefore
+ * one `dev:ino`:
+ *
+ *   - `Api` where the directory is `api`. A TYPO in a committed file, on a
+ *     volume that folds case. The entry names that directory; the author wrote
+ *     down the directory they meant and the platform agrees. Identity here is
+ *     what stops the member's own state from being swept as a leaked nested
+ *     root, which is the deletion this whole matcher exists to avert.
+ *   - `x` where `x` is a SYMLINK to `secret`, and the registry never names
+ *     `secret` anywhere. The entry does not name that directory, it points at
+ *     it — so treating it as a member LAUNDERS membership onto a directory the
+ *     author never authorized, and needs no privilege at all when `x` is a ghost
+ *     entry nobody has to overwrite.
+ *
+ * `realpathSync`, NOT `lstat`, and not `realpathSync.native`. `lstat` sees only
+ * a symlink at the LAST component and would miss `link/api`. `native` CANONICALIZES
+ * CASE on APFS (measured: `.../Api` → `.../api`), which would fold the typo into
+ * the symlink's answer and lose the very distinction this draws. Plain
+ * `realpathSync` resolves every symlink and preserves the caller's spelling
+ * (measured on this volume: `Api` → `Api`, `x` → `secret`), which is exactly the
+ * discriminator — and it is asked ONLY after an identity match, so the common
+ * path never pays for it.
+ *
+ * A FAILURE ANSWERS false, and that is safe in both directions rather than by
+ * luck: false denies member standing (fail closed for an authorization question)
+ * and the caller's remaining arm is `vouched`, which keeps the directory's state
+ * (fail closed for the deletion question). The identity stat has already
+ * succeeded by the time we are here, so this is exotic either way.
+ *
+ * ── WHAT THIS DOES NOT SAY, because the obvious wording is false ─────────────
+ *
+ * NOT "a name the workspace committed is standing whatever sits at that name".
+ * A registered leaf that IS a link does keep member standing, but not because
+ * this function grants it: the exact-spelling pass answers first and never asks
+ * the question. This is consulted EXCLUSIVELY when the query spelling differs
+ * from the entry's — so the same directory and the same link, queried through
+ * an entry differing in nothing but CASE, come back `vouched` instead of
+ * `member` on a folding volume, while every row of the spelling table on
+ * `enclosingRegisteredMember` says a case difference there is the same name. An
+ * ancestor symlink does the same to the case-typo forgiveness one segment up.
+ *
+ * The claim that survives is narrower, and it is the one the callers rely on:
+ * THE EXACT SPELLING AN ENTRY CARRIES is standing whatever sits at that name;
+ * every other spelling is judged here. Both flips above land on `vouched`, so
+ * they cost AUTHORITY and never data — which is why this is a bound worth
+ * stating rather than a hole worth plugging, and why widening the question to
+ * the ENTRY's own realpath would be a deliberate change on the authority axis
+ * rather than a repair of this one.
+ */
+function namesDirectly(rootReal: string, rootAbs: string, segments: readonly string[]): boolean {
+  try {
+    return fs.realpathSync(path.join(rootAbs, ...segments)) === path.join(rootReal, ...segments);
+  } catch {
+    return false;
+  }
+}
+
+function realpathOrSelf(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/** Registry entries grouped by how many segments they carry — no syscall. */
+function entriesByDepth(members: readonly string[]): Map<number, readonly string[][]> {
+  const byDepth = new Map<number, string[][]>();
+  for (const member of members) {
+    const segments = member.split('/');
+    const bucket = byDepth.get(segments.length);
+    if (bucket) bucket.push(segments);
+    else byDepth.set(segments.length, [segments]);
+  }
+  return byDepth;
+}
+
+/**
+ * What a registry says about ONE directory, on the two axes that need opposite
+ * safe directions.
+ *
+ * `member` is full standing: the fence attributes work to it, a plan and run
+ * state and role claims live in it, and `resolveProjectRoot` answers with it.
+ * `vouched` is standing on the DELETION axis only — some entry reaches this
+ * exact directory, but not by naming it (see `namesDirectly`), or we could not
+ * settle the question at all. A vouched directory's state must never be swept as
+ * a leaked nested root, and it must never be granted a member's authority.
+ *
+ * `indeterminate` is separate from `none` for the reason this module draws that
+ * line five times over: `none` is the positive finding that no entry reaches
+ * this directory, and `indeterminate` is the absence of a finding. They are
+ * folded together by exactly one consumer and only in one direction.
+ */
+export type RegistryEnclosure =
+  | { readonly kind: 'member'; readonly member: string }
+  | { readonly kind: 'vouched'; readonly why: string }
+  | { readonly kind: 'indeterminate'; readonly why: string }
+  | { readonly kind: 'none' };
+
+/**
+ * Is THIS EXACT DIRECTORY one the registry reaches — and if so, does it reach it
+ * by naming it?
+ *
+ * The exact question, asked once per directory that holds committed state, which
+ * is what makes it affordable to be thorough here: it scans every entry at every
+ * depth, so a bind mount or a symlink that reaches this directory from a
+ * different depth is still SEEN (as `vouched`), and a member state file is
+ * therefore never swept just because the entry that reaches it is spelled at
+ * another depth. `enclosingRegisteredMember` below is the hot ancestor-or-self
+ * walk and deliberately does less.
+ *
+ * ORDER IS THE POLICY: spelling, then same-depth direct identity, then anything
+ * else that reaches here, then our own inability. The first two grant authority;
+ * the last two only withhold a deletion.
+ */
+export function registryEnclosureOf(
+  root: string,
+  registry: WorkspaceMemberRegistry,
+  dir: string,
+): RegistryEnclosure {
+  if (registry.kind !== 'members') return { kind: 'none' };
+  const rootAbs = path.resolve(root);
+  const rel = path.relative(rootAbs, path.resolve(dir)).replace(/\\/g, '/');
+  if (!rel || rel === '.' || rel.startsWith('../')) return { kind: 'none' };
+  const parts = rel.split('/');
+  const spelled = parts.join('/');
+  // The exact spelling first, and it stats NOTHING — which is what keeps a ghost
+  // entry (one naming a directory that does not exist) behaving exactly as it
+  // always has.
+  if (registry.members.includes(spelled)) return { kind: 'member', member: path.join(root, ...parts) };
+
+  // AN OPTED-OUT ENTRY IS READ HERE, AND ONLY HERE — the one place the
+  // record list beats the resolution list. `members` excludes it, so every
+  // resolver answers for it exactly as it does for a directory nobody wrote
+  // down, which is what the note on `MEMBER_OPT_OUT_KEY` promises and what
+  // keeps opting out free. That promise is about AUTHORITY, and on the
+  // DELETION axis the same equivalence is a data loss: an onboarded member
+  // owning no project marker, flipped to opted-out, stopped resolving to
+  // itself, `isLeakedNestedRoot` reported its live `.traffic-one` and the
+  // SessionStart sweep removed it — so the flag whose whole documented
+  // contract is "Traffic One leaves this directory alone" deleted the
+  // directory's memory of ever having been managed. `vouched` is the arm that
+  // separates the two: no member's authority, and never a sweep candidate.
+  //
+  // It is also the more honest reading of the flag. An absent entry is "nobody
+  // has considered this directory"; an opted-out entry is "this was considered
+  // and the answer was no" — a DECISION ABOUT THIS DIRECTORY, which is exactly
+  // what `none` (no entry reaches here) denies having.
+  if (registry.identities.some((identity) => identity.optOut && identity.path === spelled)) {
+    return {
+      kind: 'vouched',
+      why: `the entry ${JSON.stringify(spelled)} is opted out — a decision this workspace recorded about this directory, not an absence of one`,
+    };
+  }
+  if (registry.members.length === 0) return { kind: 'none' };
+
+  const candidateDir = path.join(rootAbs, ...parts);
+  const candidate = directoryIdentity(candidateDir);
+  if (candidate.kind === 'indeterminate') return { kind: 'indeterminate', why: candidate.why };
+  // A directory that is not there, or is not a directory, is not reached by any
+  // entry — a finding, not an inability, so no entry needs to be stat'ed for it.
+  //
+  // EXCEPT WHEN THE FINDING CONTRADICTS THE CALLER. ENOENT and ENOTDIR are
+  // evidence about a NAME, and that is sound for an entry — a registry entry
+  // reaching nothing is a real fact about the entry. Here the name is the
+  // directory whose fate is being decided, and the caller that matters is a
+  // deletion sweep standing in it because it found committed state there. A
+  // name that reaches nothing while its `.one.json` is still readable is not a
+  // directory that stopped existing; it is a rename in flight — a `git
+  // checkout` swapping the tree under a session sweep is the reachable window —
+  // and answering `none` there hands the container the member's state file for
+  // an instant that the sweep is entirely capable of acting inside. One
+  // `existsSync`, on an arm that is already exotic, and only when the stat
+  // itself came back absent: a directory that genuinely does not exist has no
+  // state file, so "a legible registry that does not list you" stays the
+  // positive negative it has always been.
+  if (candidate.kind === 'absent' && fs.existsSync(path.join(candidateDir, STATE_FILE))) {
+    return { kind: 'indeterminate', why: `${candidateDir} reached nothing while still holding ${STATE_FILE}` };
+  }
+  if (candidate.kind !== 'identity') return { kind: 'none' };
+
+  const rootReal = realpathOrSelf(rootAbs);
+  let vouched = '';
+  let indeterminate = '';
+  for (const member of registry.members) {
+    const segments = member.split('/');
+    const entry = directoryIdentity(path.join(rootAbs, ...segments));
+    if (entry.kind === 'indeterminate') {
+      if (!indeterminate) indeterminate = entry.why;
+      continue;
+    }
+    if (entry.kind !== 'identity' || entry.id !== candidate.id) continue;
+    if (segments.length === parts.length && namesDirectly(rootReal, rootAbs, segments)) {
+      return { kind: 'member', member: path.join(root, ...parts) };
+    }
+    if (!vouched) {
+      vouched = `the entry ${JSON.stringify(member)} reaches ${rel} without naming it`;
+    }
+  }
+  if (vouched) return { kind: 'vouched', why: vouched };
+  if (indeterminate) return { kind: 'indeterminate', why: indeterminate };
+  return { kind: 'none' };
+}
+
+/**
  * The registered member that is `descendant` itself, or encloses it — or null.
  *
  * ANCESTOR-OR-SELF, matching `workspaceClaimsDescendant`'s own ancestor arm and
@@ -624,12 +870,87 @@ export function validateMemberPath(raw: unknown): string | null {
  * registers both `apps` and `apps/web` resolves a file in `apps/web` to
  * `apps/web`.
  *
- * SPELLING-PRESERVING, and that is inherited rather than incidental: the result
- * is `path.join(root, …)` on the caller's own `root`, never a realpath. The
- * deletion predicate in shared/retention.ts compares the resolver's answer to
- * its own input BY STRING, so an exit that canonicalized here would make every
- * member of a workspace reached through a symlinked checkout a deletion
- * candidate — see the contract note above resolveProjectRoot.
+ * ── MATCHED BY FILESYSTEM IDENTITY, WITH THE SPELLING AS A SHORTCUT ──────────
+ *
+ * An entry differing from its directory only in CASE is an ordinary typo in a
+ * committed file, and on a case-folding volume (APFS, NTFS) it names THE SAME
+ * DIRECTORY. Under a string comparison it matched nothing, so the member was
+ * not recognised, so `resolveProjectRoot` climbed past it to the container,
+ * so `isLeakedNestedRoot` reported the member's own live `.traffic-one` as a
+ * leaked nested root and the SessionStart sweep REMOVED it. MEASURED on two of
+ * three sub-shapes of a `Api`/`api` container (the member owning no project
+ * marker, and the container additionally declaring package-manager
+ * workspaces): the member's state was planned for deletion.
+ *
+ * THE FIX IS NOT A FOLDING TABLE, and refusing one is the whole point —
+ * shared/retention.ts reached the same conclusion over seventeen adversarial
+ * spellings when it had to decide which `readdir` entries durable memory
+ * reaches, and the reasoning transfers exactly. A fold this code writes down is
+ * only as good as the set of rules it happens to know: case, Unicode
+ * normalization, trailing dots and spaces, and whatever a locale or a volume
+ * flag does that nobody here has tested. Asking the FILESYSTEM which directory
+ * an entry resolves to needs to be right about none of them.
+ *
+ * It is also the answer that stays correct on a case-SENSITIVE volume, which a
+ * fold would get wrong. There `<ws>/Api` and `<ws>/api` are two directories, the
+ * registry names one of them, and state in the other genuinely IS an
+ * unregistered nested root — the packages/ui leak this sweep exists to heal.
+ * Identity says "different directory" there and "same directory" on APFS, from
+ * one rule, because the rule is the platform's own.
+ *
+ * ── TWO PASSES, AND WHAT THE SECOND ONE IS ALLOWED TO COST ───────────────────
+ *
+ * SPELLING ACROSS EVERY DEPTH FIRST, then identity — because identity costs a
+ * stat per candidate depth plus a stat per entry, and the correctly-spelled
+ * registry is the overwhelmingly common case. Instrumented on a 60-member
+ * workspace over 200 warm calls, resolving from a directory inside a member: the
+ * single-pass form built the whole identity set at the first depth whose exact
+ * spelling missed and cost 61 `statSync` (66 at six levels deep), against 0
+ * before member identity existed. Two passes make that shape free.
+ *
+ * A NAIVE two-pass form would also CHANGE ANSWERS, in the one direction that
+ * costs data, and this one therefore does not take it: returning the deepest
+ * SPELLING match without looking deeper by identity would resolve a file in
+ * `api/web` to `api` for the registry `['api', 'Api/web']`, so `api/web`'s own
+ * state stops resolving to itself and becomes a deletion candidate — the exact
+ * sweep this matcher exists to prevent, reintroduced by an optimization. The
+ * second pass therefore still runs, and runs at every depth DEEPER than the
+ * spelling match, which is the complete set of depths that could beat it.
+ *
+ * The pass is PRUNED BY DEPTH rather than by any rule about names: an entry can
+ * only be compared against a candidate carrying the same number of segments. A
+ * differently-deep entry reaching the same directory is a symlink or a bind
+ * mount, and that population is exactly the one the note on `namesDirectly`
+ * denies member standing to anyway — it keeps its standing on the deletion axis
+ * through `registryEnclosureOf`, which is unpruned and is what the sweep asks.
+ *
+ * WHY UNPRUNING THIS PASS CHANGES NO ANSWER, stated correctly because the
+ * obvious version of the argument is false. It is NOT that two directories can
+ * only share a `dev:ino` at different depths as the filesystem root, or that
+ * making them do so needs privilege: stock macOS ships nineteen firmlink pairs
+ * that are exactly this — identical device and inode at different depths,
+ * transparent to `realpathSync`, available to any user. What actually holds is
+ * narrower and stronger: every such pair's two spellings share no common
+ * ancestor BELOW the filesystem root, while a registry's entries are all
+ * relative to one workspace root that this resolver never lets be the root
+ * (`isMachineConfigRoot` and the `$HOME` stop in hook/paths.ts end the walk
+ * first). So no pair of them can appear as two entries of one registry, and a
+ * differently-deep match inside a workspace is a symlink or a bind mount the
+ * author made — the population `namesDirectly` denies anyway.
+ *
+ * The exact spelling is still tried FIRST at every depth, and not only to save a
+ * syscall: it is what keeps a registry entry naming a directory that does not
+ * exist behaving exactly as it did before — a ghost entry claims a descendant
+ * spelled the same way, and stats nothing.
+ *
+ * SPELLING-PRESERVING, and now more strictly than before: the result is built
+ * from the DESCENDANT's own segments on the caller's own `root`, never from the
+ * entry and never from a realpath. The deletion predicate in
+ * shared/retention.ts compares the resolver's answer to its own input BY
+ * STRING, so returning the registry's `Api` for a directory the caller called
+ * `api` would have left the member a deletion candidate even once it was
+ * correctly recognised — the string test moved, not the outcome. For every
+ * entry whose spelling already matches, the two are the same string.
  */
 export function enclosingRegisteredMember(
   root: string,
@@ -637,14 +958,72 @@ export function enclosingRegisteredMember(
   descendant: string,
 ): string | null {
   if (registry.kind !== 'members' || registry.members.length === 0) return null;
-  const rel = path.relative(path.resolve(root), path.resolve(descendant)).replace(/\\/g, '/');
+  const rootAbs = path.resolve(root);
+  const rel = path.relative(rootAbs, path.resolve(descendant)).replace(/\\/g, '/');
   // The workspace root is never its own member: an empty relative path matches
   // no entry, because every validated entry has at least one segment.
   if (!rel || rel === '.' || rel.startsWith('../')) return null;
-  let best = '';
-  for (const member of registry.members) {
-    if (rel !== member && !rel.startsWith(`${member}/`)) continue;
-    if (member.length > best.length) best = member;
+  const parts = rel.split('/');
+  const spelled = new Set(registry.members);
+
+  // PASS 1 — spelling, deepest first, no syscall at all.
+  let spelledDepth = 0;
+  for (let depth = parts.length; depth >= 1; depth -= 1) {
+    if (spelled.has(parts.slice(0, depth).join('/'))) { spelledDepth = depth; break; }
   }
-  return best ? path.join(root, ...best.split('/')) : null;
+  // Nothing can be deeper than the descendant itself, so this exit is the whole
+  // of the common case: a member asked about itself never stats anything.
+  if (spelledDepth === parts.length) return path.join(root, ...parts);
+
+  // PASS 2 — identity, only at the depths that could still beat pass 1, and only
+  // against the entries carrying that many segments.
+  const byDepth = entriesByDepth(registry.members);
+  let rootReal = '';
+  for (let depth = parts.length; depth > spelledDepth; depth -= 1) {
+    const entries = byDepth.get(depth);
+    if (!entries) continue;
+    const segments = parts.slice(0, depth);
+    const candidate = directoryIdentity(path.join(rootAbs, ...segments));
+    if (candidate.kind !== 'identity') continue;
+    for (const entry of entries) {
+      const found = directoryIdentity(path.join(rootAbs, ...entry));
+      if (found.kind !== 'identity' || found.id !== candidate.id) continue;
+      if (!rootReal) rootReal = realpathOrSelf(rootAbs);
+      if (namesDirectly(rootReal, rootAbs, entry)) return path.join(root, ...segments);
+    }
+  }
+  return spelledDepth > 0 ? path.join(root, ...parts.slice(0, spelledDepth)) : null;
 }
+
+/**
+ * Collapse a list of member directories to one entry PER DIRECTORY, keeping the
+ * first spelling of each.
+ *
+ * The counting side of the same question `enclosingRegisteredMember` answers on
+ * the matching side, and they have to agree: with the registry `['api', 'Api']`
+ * on a case-folding volume, `<ws>/api/a.ts` and `<ws>/Api/b.ts` are two writes
+ * into ONE directory, and a fence counting by string reports "spans 2 members"
+ * about a call that spans one. (It denied either way, so this is a wording
+ * defect rather than a hole — but a lane that applied filesystem identity to
+ * matching and left string equality on counting has two rules for one question,
+ * and the next reader cannot tell which is the intended one.)
+ *
+ * AN UNAVAILABLE IDENTITY KEEPS THE ENTRIES APART, which is the safe direction
+ * here and the opposite of the one the deletion axis wants: merging two
+ * directories we cannot prove are one would UNDER-count a span and allow a
+ * cross-member call, while keeping them apart over-counts and refuses. The
+ * refusal names both spellings, so a user reading it can see what happened.
+ */
+export function dedupeMemberDirectories(dirs: readonly string[]): string[] {
+  const kept: string[] = [];
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    const identity = directoryIdentity(dir);
+    const key = identity.kind === 'identity' ? identity.id : `spelled:${path.resolve(dir)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(dir);
+  }
+  return kept;
+}
+

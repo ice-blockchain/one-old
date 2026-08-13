@@ -8,6 +8,7 @@ import {
   ONE_MCP_CACHE_LOCK_STALE_MS,
   ONE_MCP_CACHE_LOCK_TIMEOUT_MS,
 } from '../../config/one-mcp';
+import { readOwnerEntry } from '../bounded-read';
 import { trustworthyAgeSince } from '../clock-skew';
 import {
   type Rec,
@@ -40,7 +41,15 @@ function observedLockOwner(lockPath: string): CacheLockOwner | null {
     if (entries.length !== 1) return null;
     const ownerName = entries[0]!;
     const ownerPath = path.join(lockPath, ownerName);
-    const raw = JSON.parse(fs.readFileSync(ownerPath, 'utf8')) as Rec;
+    // BOUNDED (shared/bounded-read.ts). This reader is state/project-state-lock.ts's
+    // `observedLockOwner` ported, and the one property that never travelled with
+    // the port is the one that bounds the read: a FIFO or a device node at an
+    // `owner-<token>.json` name made the bare read never return. Anything but a
+    // regular file is not a record this protocol wrote, so it refuses here and
+    // the abandoned arm decides on presence plus age.
+    const bytes = readOwnerEntry(ownerPath);
+    if (bytes === null) return null;
+    const raw = JSON.parse(bytes) as Rec;
     const token = typeof raw.token === 'string' ? raw.token : '';
     const pid = typeof raw.pid === 'number' ? raw.pid : Number.NaN;
     const createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : Number.NaN;
@@ -151,7 +160,14 @@ export function acquireCacheLock(filePath: string): CacheLock {
 export function releaseCacheLock(lock: CacheLock): void {
   const releasedPath = `${lock.dirPath}.${lock.token}.released`;
   try {
-    const raw = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')) as Rec;
+    // BOUNDED too, and for the reason project-state-lock.ts's release records:
+    // the proof of ownership is a read of a path inside the lock directory, so
+    // anybody who can write there can replace our own owner file with a shape
+    // that never answers. A null lands where a foreign token lands — remove
+    // nothing, and let the reaper collect the directory.
+    const bytes = readOwnerEntry(lock.ownerPath);
+    if (bytes === null) return;
+    const raw = JSON.parse(bytes) as Rec;
     if (raw.token !== lock.token) return;
     // Remove the canonical lock pathname in one atomic operation. Cleanup is
     // token-addressed and best-effort, so a crash can strand only a harmless

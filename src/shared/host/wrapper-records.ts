@@ -6,9 +6,9 @@
 // a thin typed wrapper. runtimePluginRoot stays in the runners: its __dirname
 // walk assumes the compiled scripts/runners/<host>/ depth.
 
-import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -94,7 +94,7 @@ function parsedRecord(spec: WrapperRecordSpec, parsed: unknown): (WrapperRecordB
 /** Read the owner stamp embedded in a generated wrapper file. */
 export function readOwnerRecord(spec: WrapperRecordSpec, filePath: string): (WrapperRecordBase & Record<string, unknown>) | null {
   try {
-    const body = fs.readFileSync(filePath, 'utf8');
+    const body = readRegularFileOrThrow(filePath);
     const match = body.match(WRAPPER_OWNER_RE);
     if (!match || !match[1]) return null;
     const rec = parsedRecord(spec, JSON.parse(match[1]) as unknown);
@@ -109,7 +109,7 @@ export function readOwnerRecord(spec: WrapperRecordSpec, filePath: string): (Wra
 /** Read a JSON project-activation record. */
 export function readActivationRecord(spec: WrapperRecordSpec, filePath: string): (WrapperRecordBase & Record<string, unknown>) | null {
   try {
-    const rec = parsedRecord(spec, JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown);
+    const rec = parsedRecord(spec, JSON.parse(readRegularFileOrThrow(filePath)) as unknown);
     if (!rec) return null;
     const { installedAt, ...activation } = rec;
     return activation as WrapperRecordBase & Record<string, unknown>;

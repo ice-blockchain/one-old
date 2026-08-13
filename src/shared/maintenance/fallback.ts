@@ -38,6 +38,7 @@ import {
 import { matchesPattern } from '../scope';
 import { withProjectStateLock } from '../state/project-state-lock';
 import { sha256 } from '../text';
+import { readRegularBytesOrThrow } from '../bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -493,7 +494,7 @@ export function finalizePaidMaintenanceFallback(
         const absoluteDigest = path.join(projectRoot, digestPath);
         const stat = fs.statSync(absoluteDigest);
         if (!stat.isFile() || stat.size <= 0 || stat.size > 1024 * 1024) throw new Error('invalid digest');
-        digestBytes = fs.readFileSync(absoluteDigest);
+        digestBytes = readRegularBytesOrThrow(absoluteDigest);
         digestMtime = Math.floor(stat.mtimeMs);
       } catch {
         return { status: 'pending', reason: 'paid fallback terminal digest is absent' };

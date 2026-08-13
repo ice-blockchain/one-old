@@ -17,6 +17,7 @@ import {
   materializeProjectIfNeeded,
   materializeRefusedOutcome,
   stateWriteRefusedOutcome,
+  withRoleContractShortfall,
 } from '../../shared/materialize';
 import {
   isMaterialized,
@@ -104,15 +105,29 @@ function materializeProjectMemoryPath(
       if (!writeState(projectRoot, state)) return stateWriteRefusedOutcome(materialized);
     }
     reportOneMcp(projectRoot, state, trigger);
+    // `null` is "nothing happened, say nothing", and a run that could not write
+    // this host's per-role contracts is not that: nothing else in this function
+    // mentions them, and the byte-no-op case (`written`/`removed` both zero) is
+    // exactly the shape a REPEAT convergence against a still-refused directory
+    // produces. Reported as `current` — the status this branch's silence stands
+    // for — so the fact reaches the same PostToolUse channel as every other
+    // materialization message rather than dying here.
     if (!materialized || (materialized.written <= 0 && materialized.removed <= 0)) {
-      return null;
+      return materialized?.roleContracts
+        ? withRoleContractShortfall(projectRoot, {
+          status: 'current',
+          systemMessage: 'traffic-one — project-local rules/skills already materialized',
+          context: `Project-local rules/skills are current after ${relativePath}.`,
+          result: materialized,
+        })
+        : null;
     }
-    return {
+    return withRoleContractShortfall(projectRoot, {
       status: 'materialized',
       systemMessage: 'traffic-one — project-local rules/skills materialized',
       context: `Project-local rules/skills materialized after ${relativePath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/manifest.json. Root AGENTS.md contains or preserves existing content with the Traffic One active rule kernel/index; root CLAUDE.md symlinks to AGENTS.md only when no CLAUDE.md exists.`,
       result: materialized,
-    };
+    });
   } catch (error) {
     const detail = error && (error as Error).message ? (error as Error).message : String(error || 'unknown error');
     return {

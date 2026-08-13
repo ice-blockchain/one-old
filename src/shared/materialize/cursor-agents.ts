@@ -15,10 +15,10 @@ import * as path from 'path';
 import { TEAM_ROLES } from '../../config/onboarding';
 import { eligibleRolesForProfile } from '../capabilities';
 import { capabilityProfileForRun } from '../architecture-contract';
-import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
 import { CURSOR_AGENTS_REL } from './cursor-agent-model';
+import { type RoleContractFile, type RoleContractOutcome, writeRoleContracts } from './role-contracts';
 
 type Rec = Record<string, unknown>;
 
@@ -126,25 +126,18 @@ function cleanupGeneratedAgents(dir: string, keep: ReadonlySet<string>): number 
 
 // Materialize every capability-eligible role regardless of this user's
 // team/performance choice. Runtime injects the active lineup/models per session.
-export function writeCursorAgentFiles(cwd: string, state: Rec): number {
+export function writeCursorAgentFiles(cwd: string, state: Rec): RoleContractOutcome {
   const dir = path.join(cwd, CURSOR_AGENTS_REL);
   const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
   const members = TEAM_ROLES.filter((member) => eligible.has(member.role));
   const keep = new Set(members.map((member) => member.role));
-  let written = cleanupGeneratedAgents(dir, keep);
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch {
-    return written;
-  }
+  const removed = cleanupGeneratedAgents(dir, keep);
+  const files: RoleContractFile[] = [];
   for (const member of members) {
     const target = path.join(dir, `${member.role}.md`);
+    // A user-authored contract wins and is not a failure to write.
     if (fs.existsSync(target) && !isGeneratedCursorAgent(target)) continue;
-    try {
-      if (writeTextIfChanged(target, agentFile(member.role, member.label, member.blurb))) written += 1;
-    } catch {
-      // best-effort per file
-    }
+    files.push({ path: target, content: agentFile(member.role, member.label, member.blurb) });
   }
-  return written;
+  return writeRoleContracts(dir, removed, files);
 }

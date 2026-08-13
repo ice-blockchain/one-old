@@ -17,6 +17,7 @@ import {
 import { GENERATED_MARKER, removeGeneratedSkillDir } from './generated';
 import { removePath } from '../fsjson';
 import { writeTextIfChanged } from '../fs-text';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 const WINDSURF_LEGACY_SKILLS_REL = path.join('.windsurf', 'skills');
 
@@ -69,7 +70,7 @@ function isFileFollowingLinks(candidate: string): boolean {
 // the sweep below needs both the marker and the source class out of it.
 function generatedText(filePath: string): string | null {
   try {
-    const text = fs.readFileSync(filePath, 'utf8');
+    const text = readRegularFileOrThrow(filePath);
     return text.includes(GENERATED_MARKER) ? text : null;
   } catch {
     return null;
@@ -168,7 +169,7 @@ function activeRuleDocs(root: string, rules: readonly string[]): {
       missing.push(relPath);
       continue;
     }
-    docs.push(...renderWindsurfRuleDocs(relPath, fs.readFileSync(source, 'utf8')));
+    docs.push(...renderWindsurfRuleDocs(relPath, readRegularFileOrThrow(source)));
   }
   return { docs, missing };
 }
@@ -230,7 +231,7 @@ function roleRuleDocs(root: string): { docs: WindsurfRuleDocument[]; missing: st
     if (!isFileFollowingLinks(abs)) continue;
     const relPath = `agents/${entry.name}`;
     present.add(entry.name.slice(0, -'.md'.length));
-    docs.push(...renderWindsurfRuleDocs(relPath, fs.readFileSync(abs, 'utf8')));
+    docs.push(...renderWindsurfRuleDocs(relPath, readRegularFileOrThrow(abs)));
   }
   return { docs, missing: DECLARED_ROLE_DOC_IDS.filter((id) => !present.has(id)).sort() };
 }
@@ -288,7 +289,7 @@ export function writeWindsurfHostAssets(cwd: string, rules: readonly string[]): 
   const workspaceHooksPath = path.join(cwd, WINDSURF_WORKSPACE_HOOKS_REL);
   let workspaceHooks = 0;
   try {
-    const existing = fs.existsSync(workspaceHooksPath) ? fs.readFileSync(workspaceHooksPath, 'utf8') : '';
+    const existing = fs.existsSync(workspaceHooksPath) ? readRegularFileOrThrow(workspaceHooksPath) : '';
     // Current Windsurf uses native Devin lifecycle hooks from config.json.
     // Remove only our generated Cascade workspace file; never touch a manual one.
     if (existing && isGeneratedWindsurfWorkspaceHooks(existing) && removePath(workspaceHooksPath)) {

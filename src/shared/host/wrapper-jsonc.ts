@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { ONE_MCP_SERVER_NAME } from '../../config/one-mcp';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export type JsonObject = Record<string, unknown>;
 export type ConfigUpdate =
@@ -83,7 +84,7 @@ function removeTrailingCommas(input: string): string {
 
 export function parseJsoncObject(file: string): JsonObject | null {
   if (!fs.existsSync(file)) return {};
-  const parsed = JSON.parse(removeTrailingCommas(stripJsonc(fs.readFileSync(file, 'utf8')))) as unknown;
+  const parsed = JSON.parse(removeTrailingCommas(stripJsonc(readRegularFileOrThrow(file)))) as unknown;
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as JsonObject : null;
 }
 

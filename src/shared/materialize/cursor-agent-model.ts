@@ -4,8 +4,8 @@
 // writer so importing it into the hook runtime does NOT pull the onboarding flow
 // (buildTeamLineup) into that bundle.
 
-import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export const CURSOR_AGENTS_REL = path.join('.cursor', 'agents');
 
@@ -15,7 +15,7 @@ export const CURSOR_AGENTS_REL = path.join('.cursor', 'agents');
 export function cursorAgentModel(cwd: string, role: string): string | null {
   if (!role) return null;
   try {
-    const txt = fs.readFileSync(path.join(cwd, CURSOR_AGENTS_REL, `${role}.md`), 'utf8');
+    const txt = readRegularFileOrThrow(path.join(cwd, CURSOR_AGENTS_REL, `${role}.md`));
     const m = /^model:[ \t]*(\S+)[ \t]*$/m.exec(txt);
     return m && m[1] ? m[1].trim() : null;
   } catch {

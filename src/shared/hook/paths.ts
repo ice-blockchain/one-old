@@ -9,15 +9,17 @@ import * as path from 'path';
 import { STATE_DIR, STATE_FILE } from '../../config/paths';
 import { hasPluginAuthoringMarkers, isMachineConfigRoot } from '../authoring-root';
 import { readJson, readJsonResult } from '../fsjson';
+import { obj } from '../obj';
 import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import { isNativeState } from '../state';
 import { hasStateFile } from '../tool-classify';
-import { workspaceClaimsDescendant } from './workspace-declaration';
+import { dirDeclaresWorkspace, workspaceClaimsDescendant } from './workspace-declaration';
 import {
   WORKSPACE_PROJECT_MODE,
   type WorkspaceMemberRegistry,
   enclosingRegisteredMember,
   readWorkspaceMemberRegistry,
+  registryEnclosureOf,
   workspaceMemberRegistryOf,
 } from './workspace-members';
 
@@ -183,6 +185,197 @@ function containerRegistry(registry: WorkspaceMemberRegistry): WorkspaceContaine
   return registry.kind === 'none' ? null : registry;
 }
 
+/**
+ * The redirect's answer: the member the walk was handed down to, carrying the
+ * container that registered it — UNLESS that member is a workspace container in
+ * its own right, in which case it carries ITSELF and its own registry.
+ *
+ * The exception is the same one the acceptance clause makes with its
+ * `!container` guard, at the other door into the same wrong answer. A container
+ * nested inside a container is registered in the outer one, so the outer's
+ * redirect names it as a member; reported with the OUTER's registry,
+ * `workspaceAnchoring` finds it in that member list and the fence reports
+ * `kind: 'member'` for a workspace root. Reported with its OWN registry, a call
+ * that names no member of ITS registry is refused, which is the invariant.
+ *
+ * A SECOND DOOR, not a defensive duplicate — instrumented over the 21-shape
+ * probe, this arm fires on exactly the two nested shapes whose inner container
+ * the walk climbs PAST before it can be handed back down: the outer declaring
+ * package-manager workspaces (so the inner container fails the leak test below)
+ * and the inner container owning no project marker of its own. An inner
+ * container the walk stops at never reaches the redirect at all, and is answered
+ * by the `!container` guard instead.
+ *
+ * `root` is untouched either way, and that is what keeps the exception free of
+ * deletion risk: retention compares the resolver's answer against its own input
+ * by string, and this returns `member` in both arms.
+ *
+ * `committedProjectState` rather than `readWorkspaceMemberRegistry`, so an
+ * ILLEGIBLE member state answers "not a container" instead of "a container
+ * whose registry cannot be read". A member whose `.one.json` was torn by a merge
+ * is already resolved through this redirect (the walk cannot read its mode
+ * either, so it climbs past it), and refusing every call in it on the strength
+ * of a file nobody could read would be a new deny for a routine conflict.
+ */
+function handDownToMember(
+  member: string,
+  container: string,
+  registry: WorkspaceContainerRegistry | null,
+): OnboardedRootHit {
+  const own = committedProjectState(member);
+  const nested = own ? containerRegistry(workspaceMemberRegistryOf(own)) : null;
+  return nested
+    ? { root: member, container: member, registry: nested }
+    : { root: member, container, registry };
+}
+
+/**
+ * Could an ancestor of `dir` possibly be a workspace that registered it — asked
+ * with one `existsSync` per level up to `$HOME`, so the acceptance clause below
+ * costs a project that is not inside a workspace one cheap upward pass instead
+ * of a full `workspaceMembershipOf` walk.
+ *
+ * CHEAP IS NOT FREE, and calling it free was wrong twice over — the pass itself
+ * costs a syscall per level, and a project whose ancestor DOES hold state pays
+ * the full `workspaceMembershipOf` walk this exists to avoid, on EVERY
+ * resolution. MEASURED per `resolveProjectRoot`, over 400 warm calls four levels
+ * below a temp root, before this clause existed → with it:
+ *   solo project                          21 → 32 `existsSync`,  7 →  7 `readFileSync`
+ *   under an onboarded (non-ws) ancestor  21 → 37,               7 → 11
+ *   member that declares pm workspaces     7 → 11,               3 →  3
+ * Wall clock sits in the noise at this size (0.1-0.4 ms/call, and the solo case
+ * measured FASTER after), so the counts are the honest figure, not the timings.
+ * For the ordinary `~/code/proj` layout the `$HOME` stop keeps the pass to a
+ * handful of levels, which is why this is not a budget problem in practice.
+ *
+ * This is a PRE-SCAN, never an answer: `workspaceMembershipOf` remains the
+ * authority and re-walks with its own guards whenever this says "maybe". It may
+ * only skip that walk when the walk's answer is already provable, and it is:
+ * membership is granted exclusively by an ancestor whose
+ * `.traffic-one/.one.json` reads `mode: 'workspace'`, so an ancestor chain
+ * holding no `.traffic-one` AT ALL cannot produce one — nor an `illegible` or
+ * `opaque` registry, the other two arms that are not `not-member`.
+ *
+ * The bounds here are deliberately WIDER than the real walk's, which is what
+ * makes the implication sound rather than merely plausible. `isMachineConfigRoot`
+ * and `hasPluginAuthoringMarkers` only ever STOP or SKIP a level, so omitting
+ * them visits a SUPERSET of the directories `workspaceMembershipOf` would read;
+ * a superset that finds no state guarantees the subset finds none either. The
+ * `$HOME` stop is kept, and keeping it is not an optimization: without it every
+ * project under a home directory would see `~/.traffic-one` — the machine-wide
+ * config dir, which is not a workspace and never a project's ancestor for this
+ * purpose — and pay the full walk on every call.
+ *
+ * Starts at the PARENT, matching `workspaceMembershipOf`: a workspace root is
+ * never its own member, so the directory's own state (which the caller has just
+ * read, and which is why we are here) says nothing about this question.
+ *
+ * EXPORTED ONLY TO BE PINNED, and the pin is the point. Everything above is an
+ * argument from inspection, and it stays true only while the two walks agree —
+ * add a stop condition here, or a membership-granting path over there that is
+ * not an ancestor's `.one.json`, and this starts answering `false` for a genuine
+ * member. Nothing would fail: the acceptance clause would simply be skipped, the
+ * member would resolve with no container, and the fence would go quiet again
+ * exactly the way it was quiet before it was fixed — a regression with no
+ * symptom. `shared/__tests__/workspace-prescan-superset.test.ts` therefore
+ * asserts the implication itself over a population of tree shapes, and asserts
+ * that the population still contains members and still contains `false`
+ * answers, because both degeneracies would leave it passing.
+ */
+export function anyAncestorHoldsState(dir: string, ceiling: string): boolean {
+  let home = '';
+  try { home = path.resolve(os.homedir()); } catch { /* no home → MAX_ROOT_WALK-capped */ }
+  let current = path.dirname(path.resolve(dir));
+  for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
+    if (home && current === home) return false;
+    if (ceiling && !isPathWithin(current, ceiling)) return false;
+    if (fs.existsSync(path.join(current, STATE_DIR))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+  return false;
+}
+
+/**
+ * Is there a registered member BELOW `member` that also encloses `start`?
+ *
+ * The acceptance clause below accepts `member` because it is a registered
+ * member of an enclosing workspace, and until this guard existed that was the
+ * whole test — which orphaned the DEEPEST-MATCH rule
+ * (`enclosingRegisteredMember`) for the one registry shape that can disagree
+ * with it. A workspace may register both a directory and a subdirectory of it;
+ * the membership function documents that shape as supported and
+ * `writeWorkspaceMemberRegistry` permits it. When the shallower one is
+ * onboarded and the deeper one is not, the walk from inside the deeper member
+ * STOPS at the shallower one's committed state, accepts it, and never climbs to
+ * the container — so the container's redirect, the only code that implements
+ * "deepest match wins", never runs.
+ *
+ * MEASURED on a container registering `apps` and `apps/web` with `apps`
+ * onboarded: `apps/web` and `apps/web/src` both resolved to `apps` with this
+ * clause and to `apps/web` without it. It is NOT a deletion: the flip lives in
+ * a directory holding no state, so no sweep evaluates it, and it heals the
+ * moment `apps/web` is onboarded. What it costs is ATTRIBUTION: every consumer
+ * that asks this function where it is — session start, prompt submit, the model
+ * gate, subagent bind, the onboarding-gate stop, doctor, the cleanup and reset
+ * runners — puts `apps/web`'s plan, run state and role claims under `apps`.
+ *
+ * NOT the member fence, which is the one place it would be most alarming and is
+ * measured clean: `resolveToolScope` attributes each target through the
+ * container's own registry rather than this walk, so a spanning call and a
+ * cross-member write answer identically with this guard and without it. The
+ * fence's own deepest-match rule is the same `enclosingRegisteredMember`; it
+ * simply never arrives here to be orphaned.
+ *
+ * IT RETURNS THE DEEPER MEMBER RATHER THAN A BOOLEAN, and the earlier boolean
+ * form was a defect rather than a simplification. "Declining costs nothing" was
+ * written on the belief that the walk carries on, reaches the container and is
+ * handed back DOWN — which is true of `root` and FALSE of `container`. Control
+ * falls through to the two exits below the clause, and BOTH RETURN, with
+ * `container: ''`, because the `!container` guard we are inside means there is no
+ * container at this level to report. So a decline left `root` where it already
+ * was AND stripped the member's workspace standing:
+ *
+ *   overlapping entry  root   container  scope.workspace.kind  cross-member span
+ *   absent             apps   ws         unresolved            REFUSED
+ *   present            apps   ''         none                  ALLOWED
+ *
+ * Over the 12-shape matrix (container declares package-manager workspaces ×
+ * member owns a marker × member declares × deeper member onboarded) the boolean
+ * form moved 6 rows: 3 fixed and 3 REGRESSED, each regressed row disabling the
+ * fence for the shape in which a cross-member write is hardest to notice. The
+ * clause's own test passed only because its fixture wrote `workspaces: ['apps']`
+ * at the container, which is what let the walk climb after the decline.
+ *
+ * Handing DOWN directly is the same answer the container's redirect would have
+ * produced, taken at the level that actually knows it: `handDownToMember` is the
+ * identical function, given the container the membership verdict already carries.
+ * The facts are all in hand — the verdict carries the container root and the
+ * registry that granted it — so this is one registry query against a value the
+ * clause just read, on the arm that already paid for a full
+ * `workspaceMembershipOf` walk.
+ *
+ * The result can never be SHALLOWER than `member`: the walk climbs from `start`,
+ * so `member` encloses `start`, so the deepest member enclosing `start` is
+ * `member` or something below it — and `null` here means "it is `member`", which
+ * is the acceptance the caller then makes.
+ *
+ * IT MOVES NO ROOT THAT ANY SWEEP EVALUATES. The population whose root moves is
+ * exactly the starts inside a deeper member that is NOT onboarded: a start that
+ * holds state stops the walk at itself one level earlier and is answered by the
+ * acceptance above, and a start that holds none is not a directory retention
+ * looks at.
+ */
+function deeperRegisteredMember(
+  membership: { readonly workspaceRoot: string; readonly registry: WorkspaceContainerRegistry },
+  member: string,
+  start: string,
+): string | null {
+  const deepest = enclosingRegisteredMember(membership.workspaceRoot, membership.registry, start);
+  return deepest !== null && path.resolve(deepest) !== path.resolve(member) ? deepest : null;
+}
+
 function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: WorkspaceAuthority = 'declared'): OnboardedRootHit | null {
   // The home dir is machine-wide config space (`~/.traffic-one`), never a project
   // root. Stop the walk there (and never above it): a stray mode-bearing
@@ -230,12 +423,208 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: Wor
       // rescue one, which is the safe direction for that consumer.
       const registry = workspaceMemberRegistryOf(committed);
       const member = enclosingRegisteredMember(current, registry, start);
-      if (member) return { root: member, container: current, registry: containerRegistry(registry) };
+      if (member) return handDownToMember(member, current, containerRegistry(registry));
       // An onboarded root that is ITSELF a workspace root is the monorepo root —
       // the NEAREST such root wins, even when a farther ancestor also declares
       // workspaces (a project nested inside an unrelated umbrella repo must not
       // resolve to the umbrella — the tests/claude/3 digests-at-parent incident).
       const container = containerRegistry(registry);
+      // …but a REGISTERED WORKSPACE MEMBER is not a leak and never was, so it is
+      // ACCEPTED here, ahead of BOTH tests below. The redirect at the top of this
+      // branch already answers for a member with no state of its own — the walk
+      // climbs past it to the container and is handed back DOWN — and that is
+      // precisely the member it cannot answer for: a member that IS onboarded
+      // stops the walk at its own committed state, one level below the container,
+      // and the exits below then return it with `container: ''`. The root was
+      // right and the workspace facts were dropped, so `resolveToolScope`
+      // reported `workspace.kind: 'none'` for a real member and the member fence
+      // — the thing that stops a sibling write and names the member in the
+      // claim-debug row — could not engage for the population it exists for.
+      //
+      // AHEAD OF THE DECLARATION EXIT, not merely ahead of the leak test, and
+      // that ordering is the whole of the polyglot case. A workspace registering
+      // `frontend` (a pnpm/npm monorepo in its own right) and `backend` (a Go
+      // module) is the motivating shape, and `frontend` returns at
+      // `dirDeclaresWorkspace(current)` with `container: ''`. MEASURED on that
+      // fixture with this clause placed after that exit: `backend` resolved
+      // `workspace.kind: 'member'` while `frontend` resolved `'none'`, so the
+      // SAME two-member spanning call flipped on target order alone — refused
+      // with `backend` last, allowed with `frontend` last — and every claim-debug
+      // row anchored to `frontend` omitted `workspaceMember`. Ordering costs a
+      // declaring member one `workspaceMembershipOf` walk it did not pay before,
+      // and only when the pre-scan says an ancestor holds state at all.
+      //
+      // NEVER FOR A CONTAINER, which is the `!container` guard and not a detail.
+      // `blockingCommittedMode` returns '' for a directory whose only mode is
+      // `workspace`, so registering members inside a directory that is ITSELF a
+      // registered member is permitted, and flow.ts's container onboarding
+      // carries a `depth` parameter precisely because that nesting is
+      // anticipated. Without the guard such a container is reported with the
+      // OUTER container and the outer's registry, `workspaceAnchoring` finds it
+      // in the outer's member list, and the fence reports `kind: 'member'` for a
+      // workspace root — MEASURED as `unresolved`/refused before and
+      // `member`/allowed after. That is the invariant this clause exists to
+      // strengthen ("No gate may operate on a workspace root", tool-scope.ts)
+      // failing at the one place that is hardest to notice, and it would let
+      // every gate mint a plan, run state and role claims at a container, which
+      // is exactly the state writeWorkspaceMemberRegistry refuses to create on
+      // purpose. The guard is one comparison on a value already in hand.
+      //
+      // NEVER OVER A DEEPER MEMBER either, which is `deeperMemberEncloses` and
+      // is the second guard rather than a variation on the first. `!container`
+      // asks what THIS directory is; that one asks whether accepting it would
+      // answer for a directory the registry gave to somebody else. See its own
+      // note for the overlapping-entry shape it exists for.
+      //
+      // AN ACCEPTANCE, NOT A DECLARATION. The tempting alternative — teaching the
+      // container to declare a workspace — is the catastrophic one: it makes
+      // `nearestWorkspaceRoot(dirname(member))` non-null, so the leak test below
+      // fails for EVERY member, the walk climbs past all of them,
+      // `isLeakedNestedRoot` reports each one, and the next SessionStart sweep
+      // deletes their state. This clause moves in the opposite direction by
+      // construction: it can only ever return `current` itself, which is the
+      // answer that makes retention's `resolveProjectRoot(dir) !== dir` say KEEP.
+      //
+      // WHAT REVERTING THIS CLAUSE COSTS, re-measured — and the answer is no
+      // longer "nothing but `container`". It was, and the paragraph that said so
+      // was true when it was written; the `indeterminate` disjunct above
+      // falsified it, and a paragraph whose whole job is to license a future
+      // deletion of this clause is the last place a stale claim may sit.
+      //
+      // The probe is 21 shapes (nested containers, a member that declares
+      // package-manager workspaces, stray state inside a member, a registry entry
+      // naming no real directory, an opaque and an illegible container registry,
+      // an illegible ORDINARY ancestor with and without a stray beneath it, a
+      // symlinked member, a member with no project marker, a member two levels
+      // below its container, a ceiling cutting the container off, overlapping
+      // entries, an opted-out member holding state, the packages/ui and
+      // mercury/strategies leaks), each driven with this clause present and with
+      // it absent, comparing the retention leaked-root action list and every
+      // state-bearing directory's resolved root and container. Three things move:
+      //
+      //   1. `container`/`registry` on twelve shapes — `''`/null without the
+      //      clause, the registering container with it. The point of the clause,
+      //      and the only thing the old paragraph named.
+      //   2. THE LEAKED-ROOT ACTION LIST, on the illegible-ancestor shape. A
+      //      stray nested root under a git-merge-conflicted `.one.json` is
+      //      `["repo/strategies/.traffic-one"]` without the clause and `[]` with
+      //      it, and the stray's own root moves `repo` → `repo/strategies`. The
+      //      LEGIBLE twin of that shape reports the leak in both builds, which is
+      //      what makes it the disjunct and not the fixture.
+      //   3. `root`, on the overlapping-entry shape: a directory inside a deeper
+      //      registered member that is not itself onboarded resolves to `apps`
+      //      without the clause and to `apps/web` with it (`deeperRegisteredMember`).
+      //      It holds no state, so no sweep evaluates it — see that function's
+      //      own note for why that is the whole of the moved population.
+      //
+      // So `root` moves for two populations and the deletion list moves for one,
+      // and REVERTING ONLY THE `indeterminate` DISJUNCT is the change that moves
+      // the deletion list. The clause is no longer free to delete, and the
+      // sentence three lines above it — that the acceptance can only ever return
+      // `current`, the answer retention reads as KEEP — remains true and is now
+      // the reason the movement is in the safe direction rather than a claim that
+      // there is none.
+      if (!container) {
+        const membership = anyAncestorHoldsState(current, ceil)
+          ? workspaceMembershipOf(current, { ceiling: ceil })
+          : { kind: 'not-member' as const };
+        // VOUCHED BUT NOT A MEMBER — the second arm below — is a registry that
+        // reaches this exact directory without naming it (a symlinked entry), or
+        // that could not tell us whether it does (a transient `statSync`
+        // failure). The two axes want opposite answers, and this is where they
+        // are both given one:
+        //
+        //   DELETION. `root` is `current`, so retention's
+        //   `resolveProjectRoot(dir) !== dir` says KEEP and the SessionStart
+        //   sweep leaves the directory's `.one.json` alone. That matters most for
+        //   the transient failure: a member matched only by identity whose stat
+        //   blips — EACCES, EIO, a network mount, an antivirus hold — would
+        //   otherwise become a leaked nested root and LOSE ITS STATE, which is
+        //   data loss triggered by an error that says nothing about the
+        //   directory. "We could not tell" is not evidence of a leak.
+        //
+        //   AUTHORITY. The container is reported and the registry with it, so
+        //   `resolveToolScope` engages the fence, `enclosingRegisteredMember`
+        //   declines the directory, and the call is REFUSED as unresolved. No
+        //   plan, no run state and no role claim can be minted there. A ghost
+        //   entry pointed at an unnamed directory therefore launders nothing,
+        //   and it needs no privilege to try: nothing has to be overwritten.
+        //
+        // The hand-down is shared with the member arm rather than written twice:
+        // a vouched directory is not a member, so a deeper member the registry
+        // DOES name still owns everything inside it, exactly as it does under a
+        // member that is only the second-deepest match.
+        //
+        // AND `indeterminate` IS HERE FOR THE DELETION HALF OF THE SAME
+        // ARGUMENT, one level up. That verdict is an ancestor whose registry
+        // could not be ENUMERATED, so the walk never asked about this
+        // directory — and until it was read here, falling through meant
+        // climbing to it, which is the answer retention reads as "a leaked
+        // nested root" and the sweep acts on. MEASURED with the container
+        // registering `api`, `api` onboarded and owning no project marker: a
+        // malformed second entry, a non-string entry, an id collision, a
+        // non-array registry key and a corrupt container state file each took
+        // `api/.traffic-one`, on a member the registry named correctly.
+        // `stat`-level indeterminacy was closed by the identity union and
+        // registry-level indeterminacy was not, which left the fix covering the
+        // rarer half of one hazard.
+        //
+        // ── THE POPULATION IS WIDER THAN "A CONTAINER", AND SAYING OTHERWISE
+        // WAS THE UNDERSTATEMENT THAT HID THE REST ─────────────────────────────
+        //
+        // The registry reader classifies ILLEGIBILITY before it ever looks at the
+        // mode — corrupt and unreadable bytes answer `illegible`, and so does a
+        // file that parses to something other than a RECORD (see
+        // memberRegistryOfContainer, the third shape and the one that was
+        // licensing a deletion) — so `workspaceMembershipOf` answers
+        // `indeterminate` for ANY ancestor whose `.one.json` cannot be read as a
+        // state record, workspace or not. An ordinary project with a git-merge-
+        // conflicted state file is therefore in this population, and a merge
+        // conflict is the exact routine trigger the nested-retention item names.
+        // MEASURED on an ordinary git project with a stray nested root: a legible
+        // parent reports the leak, a conflicted parent reports none, and
+        // reverting this disjunct restores the report. So the DEFAULT PATH
+        // demonstrably changed, which the workspace-members test header used to
+        // deny; it says so now.
+        //
+        // KEPT WIDE ON THE DELETION AXIS, and the reason is that the only
+        // available narrowing is the data-loss direction. "Only registries that
+        // actually declare a workspace" is unaskable of bytes that do not
+        // parse — the mode is inside them — so narrowing here means resuming the
+        // sweep under an ancestor nobody could read, which is the confident
+        // negative this module refuses everywhere else. The cost is the honest
+        // one and it is bounded: while an ancestor's state file is unparseable a
+        // GENUINE leak beneath it is kept instead of healed, the state is kept
+        // rather than lost, and the sweep heals on the first parse.
+        //
+        // NARROWED ON THE AUTHORITY AXIS, because there the wide answer is not
+        // safe. Reporting a container makes `resolveToolScope` engage the member
+        // fence, and an `illegible` registry resolves NO member, so every gated
+        // call under that ancestor is refused as `workspace-member-unresolved` —
+        // which for a real workspace is the invariant ("no gate may operate on a
+        // root the registry cannot vouch for") and for an ordinary project under
+        // an ordinary conflicted parent is a freeze with nothing on the other
+        // side of it: that project is nobody's member and the ancestor is not a
+        // workspace. `opaque` keeps reporting the container, because it PARSED
+        // and it said `mode: 'workspace'` — that ancestor is demonstrably a
+        // container with an unusable registry, and refusing its members is the
+        // invariant working. `illegible` withholds the deletion and withholds
+        // the container: `root` is identical on both arms, so retention's
+        // `resolveProjectRoot(dir) !== dir` is unaffected either way.
+        //
+        // `deeperRegisteredMember` is reached on this arm too and answers null
+        // by construction — `enclosingRegisteredMember` grants nothing on a
+        // registry that is not `members` — so the shared call needs no guard.
+        if (membership.kind === 'member'
+          || membership.kind === 'vouched-not-member'
+          || membership.kind === 'indeterminate') {
+          const deeper = deeperRegisteredMember(membership, current, start);
+          if (deeper) return handDownToMember(deeper, membership.workspaceRoot, membership.registry);
+          return membership.kind === 'indeterminate' && membership.registry.kind === 'illegible'
+            ? { root: current, container: '', registry: null }
+            : { root: current, container: membership.workspaceRoot, registry: membership.registry };
+        }
+      }
       if (dirDeclaresWorkspace(current)) return { root: current, container: container ? current : '', registry: container };
       // …and a mode-bearing .one.json BELOW a workspace root is a leak, not a
       // project root: a monorepo has ONE root (the workspace), so a stray
@@ -267,28 +656,37 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: Wor
   return null;
 }
 
-// A directory is a WORKSPACE ROOT when it declares workspaces — npm/yarn/bun
-// `workspaces` in package.json, or a pnpm-workspace.yaml. Lenient by design: the
-// cost of a false positive is resolving up one level; the cost of a miss is a
-// stray .traffic-one minted into a sub-package (see resolveProjectRoot below).
-//
-// It never reads the declared PATTERNS, and under `declared` authority it still
-// does not — this is the resolution hot path and it stays at two existsSync
-// calls plus one readJson. The pattern read lives in hook/workspace-declaration.ts
-// and is reached only through `membership` authority, so a directory that claims
-// nothing still anchors resolution exactly as it always has. The invariant that
-// binds the two — a declaration that CLAIMS a descendant is always a declaration
-// — is pinned in ../__tests__/workspace-declaration.test.ts rather than assumed.
-function dirDeclaresWorkspace(dir: string): boolean {
-  if (fs.existsSync(path.join(dir, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(dir, 'pnpm-workspace.yml'))) {
-    return true;
-  }
-  const pkg = readJson<Rec>(path.join(dir, 'package.json'), {} as Rec);
-  const ws = pkg ? (pkg as Rec).workspaces : undefined;
-  if (Array.isArray(ws)) return ws.length > 0;
-  if (ws && typeof ws === 'object') return Array.isArray((ws as Rec).packages);
-  return false;
-}
+/**
+ * The files that DECLARE members, in every ecosystem this resolver understands
+ * them for. `settings.gradle(.kts)` is Gradle's spelling of npm's `workspaces`
+ * glob: it is the file Gradle itself walks up to in order to find the build,
+ * and its contents are a list of the modules that build contains.
+ *
+ * It used to be in project-membership.ts `MANIFEST_MARKERS` instead, which is
+ * the exact inversion — "these are my members" registered as "I am a project" —
+ * and the inversion was visible in the answers. MEASURED on two identical
+ * layouts, a root declaration plus one submodule carrying its own build file:
+ *
+ *                                          npm            Gradle (before)
+ *   resolveProjectRoot(cwd=member)         workspace root modules/api
+ *   isUnclaimedWorkspaceSubPackage(member) true           false
+ *
+ * With the name moved here the two rows agree, which is the point: the Gradle
+ * submodule is anchored at the root it belongs to and is protected by the same
+ * write-side backstop as a `packages/*` sub-package. It still OWNS a project
+ * through `build.gradle(.kts)`, so a submodule that is a genuine member of a
+ * Traffic One workspace can still hold state.
+ *
+ * THE DEFINITION LIVES IN hook/workspace-declaration.ts and is re-exported here
+ * under the name every caller already knows. It moved because it grew a second
+ * consumer outside this module — state/normalize.ts's state-write veto, which
+ * has to permit a declaration-only container to hold its own state — and
+ * normalize.ts cannot import this file (paths → ../state → normalize is a
+ * cycle). Keeping the filename list in one place is the point of the move: see
+ * that module's header for why a veto and a resolver disagreeing about what a
+ * declaration is reproduces this same defect from the other side.
+ */
+export { dirDeclaresWorkspace } from './workspace-declaration';
 
 // Nearest ancestor-or-self (within the bounded walk, never above $HOME) that is a
 // workspace root. Used as the project-root anchor when no ONBOARDED root exists
@@ -353,9 +751,110 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
  * reason, as state/run-agent/ledger.ts runLedgerClaimAdmission.
  */
 export type WorkspaceMembershipVerdict =
-  | { readonly kind: 'member'; readonly workspaceRoot: string; readonly memberRoot: string }
+  | {
+      readonly kind: 'member';
+      readonly workspaceRoot: string;
+      readonly memberRoot: string;
+      /**
+       * The registry that granted the membership — carried rather than left to
+       * the caller to re-read, for the same reason `committedProjectState`
+       * hands back its record: the walk opened that file to answer this
+       * question and would otherwise throw the answer away. The resolution walk
+       * is the consumer that cannot afford the second read.
+       */
+      readonly registry: WorkspaceContainerRegistry;
+    }
+  /**
+   * A registry we COULD read reaches this exact directory, but not by naming it
+   * — or could not settle the question at all. Standing on the DELETION axis
+   * only: see `registryEnclosureOf`'s `vouched` and `indeterminate` arms, which
+   * this arm carries both of.
+   *
+   * A FOURTH ARM RATHER THAN A FLAG ON `member`, because every consumer that
+   * grants something reads `kind === 'member'` and must keep granting nothing
+   * here. The one consumer that reads this arm is the resolution walk, and what
+   * it does with it is withhold a deletion (keep the directory as its own root)
+   * while still refusing it a member's authority (report the container, so the
+   * fence engages and no gate operates on it).
+   *
+   * NOT folded into `indeterminate`, which stays what it was: a container whose
+   * registry could not be READ at all. That verdict predates this arm and names
+   * a different fact — this one is about THIS directory, that one is about the
+   * container's file. Both withhold a deletion (see below); only this one can
+   * say why in terms of the directory it was asked about.
+   */
+  | {
+      readonly kind: 'vouched-not-member';
+      readonly workspaceRoot: string;
+      readonly registry: WorkspaceContainerRegistry;
+      readonly why: string;
+    }
   | { readonly kind: 'not-member' }
-  | { readonly kind: 'indeterminate'; readonly why: string };
+  /**
+   * The walk met a container whose registry could not be ENUMERATED — the
+   * `.one.json` is torn or unreadable, or it parses and holds a malformed
+   * entry — so no question about any directory under it was ever answered.
+   *
+   * IT CARRIES THE CONTAINER, which it did not until the deletion axis was
+   * measured against it. "Says nothing about this directory in particular" was
+   * offered as the reason to keep it apart from `vouched-not-member`, and it is
+   * exactly the reason it must not be read as a finding: the arm is an
+   * INABILITY. The consumer that reads a non-member answer as licence to sweep
+   * — `nearestOnboardedRoot`'s acceptance clause, through
+   * `resolveProjectRoot(dir) !== dir` — was therefore taking a registered
+   * member's state on the strength of a file nobody could read. MEASURED with
+   * the container registering `api`, `api` onboarded and owning no project
+   * marker: a malformed second entry beside the good one, a non-string entry,
+   * two entries colliding on one id, a non-array `workspaceMembers`, and a
+   * corrupt container state file each deleted `api/.traffic-one`. All five are
+   * bytes an agent's Write tool produces.
+   *
+   * The container and its registry are what let that consumer withhold the
+   * deletion AND still engage the fence, which is the same pair of answers the
+   * arm above needs, for a different reason. `kind` stays the discriminator
+   * every granting consumer reads, so nothing gains authority here.
+   */
+  | {
+      readonly kind: 'indeterminate';
+      readonly why: string;
+      readonly workspaceRoot: string;
+      readonly registry: WorkspaceContainerRegistry;
+    };
+
+/**
+ * `readWorkspaceMemberRegistry` with the one arm the deletion axis cannot read as
+ * a finding: a `.one.json` that PARSES BUT IS NOT A RECORD.
+ *
+ * `workspaceMemberRegistryOf` folds a non-record to `none` on its first line, and
+ * `none` is a POSITIVE negative everywhere downstream — "this ancestor is legible
+ * and it is not a workspace". For `"hello"`, `7` or `[1,2]` that is not what
+ * happened: the bytes parsed and then said nothing about a mode, a registry, or
+ * any member. Everything a registry could have vouched for is unestablished,
+ * which is `illegible`'s meaning exactly.
+ *
+ * The cost of the fold was a DELETION, one level up. A legible nested member
+ * under such a container reached the acceptance clause with `not-member`, fell
+ * through, resolved to the container, and `shared/retention.ts`'s
+ * `resolveProjectRoot(dir) !== dir` therefore read it as a leaked nested root and
+ * swept its state — while the same member under a git-merge-CONFLICTED container
+ * was correctly kept, because unparseable bytes already answer `illegible`. Two
+ * shapes of the same inability, one of them licensing a deletion: the syntactic-
+ * versus-semantic asymmetry retention's own isLeakedNestedRoot fixed on its side
+ * and this side did not. Both shapes are bytes an agent's Write tool produces.
+ *
+ * ONE READ on the hot path, which is why this is not a check bolted after the
+ * call: an `ok` read is classified here and an absent one answers `none` the same
+ * way the delegate would. Only `corrupt` and `unreadable` read twice, and only so
+ * the `why` string for each errno keeps living in one place.
+ */
+function memberRegistryOfContainer(dir: string): WorkspaceMemberRegistry {
+  const read = readJsonResult<Rec>(path.join(dir, STATE_FILE));
+  if (read.kind === 'absent') return { kind: 'none' };
+  if (read.kind !== 'ok') return readWorkspaceMemberRegistry(dir);
+  const record = obj(read.value);
+  if (!record) return { kind: 'illegible', why: `${STATE_FILE} parses but is not a JSON object` };
+  return workspaceMemberRegistryOf(record);
+}
 
 export function workspaceMembershipOf(dir: string, opts: { ceiling?: string } = {}): WorkspaceMembershipVerdict {
   let home = '';
@@ -370,15 +869,27 @@ export function workspaceMembershipOf(dir: string, opts: { ceiling?: string } = 
     if (isMachineConfigRoot(current)) break;
     if (ceil && !isPathWithin(current, ceil)) break;
     if (!hasPluginAuthoringMarkers(current)) {
-      const registry = readWorkspaceMemberRegistry(current);
+      const registry = memberRegistryOfContainer(current);
       if (registry.kind === 'illegible' || registry.kind === 'opaque') {
-        return { kind: 'indeterminate', why: `${current}: ${registry.why}` };
+        return { kind: 'indeterminate', why: `${current}: ${registry.why}`, workspaceRoot: current, registry };
       }
       if (registry.kind === 'members') {
-        const member = enclosingRegisteredMember(current, registry, target);
-        return member !== null && path.resolve(member) === target
-          ? { kind: 'member', workspaceRoot: current, memberRoot: member }
-          : { kind: 'not-member' };
+        // The EXACT query, not the ancestor-or-self walk narrowed afterwards by
+        // a string comparison. The two agree on the `member` arm by
+        // construction — the deepest member enclosing `target` can only BE
+        // `target` when `target` matches at its own depth — and the exact one
+        // additionally answers the two arms a boolean could not carry: a
+        // directory the registry reaches without naming it, and a directory
+        // whose identity we could not establish. It is also strictly cheaper,
+        // because it examines one depth instead of the whole ancestor chain.
+        const enclosure = registryEnclosureOf(current, registry, target);
+        if (enclosure.kind === 'member') {
+          return { kind: 'member', workspaceRoot: current, memberRoot: enclosure.member, registry };
+        }
+        if (enclosure.kind === 'vouched' || enclosure.kind === 'indeterminate') {
+          return { kind: 'vouched-not-member', workspaceRoot: current, registry, why: enclosure.why };
+        }
+        return { kind: 'not-member' };
       }
     }
     const parent = path.dirname(current);

@@ -1,7 +1,6 @@
 // Web component-system resolution: explicit user choice, detected dependency,
 // framework-compatible shadcn default, then framework-native fallback.
 
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { readJson } from '../fsjson';
@@ -18,6 +17,7 @@ import type {
   ShadcnAdapterId,
   WebUiSystemV1,
 } from './types';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 interface UiLibraryDefinition {
   id: string;
@@ -120,7 +120,7 @@ function componentsJsonAdapter(cwd: string): ShadcnAdapterId | null {
     if (/shadcn-svelte/i.test(schema)) return 'shadcn-svelte';
     if (/shadcn/i.test(schema)) return 'shadcn';
     try {
-      const text = fs.readFileSync(file, 'utf8');
+      const text = readRegularFileOrThrow(file);
       if (/shadcn-vue/i.test(text)) return 'shadcn-vue';
       if (/shadcn-svelte/i.test(text)) return 'shadcn-svelte';
     } catch {

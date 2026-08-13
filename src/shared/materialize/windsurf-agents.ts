@@ -9,9 +9,9 @@ import * as path from 'path';
 import { TEAM_ROLES } from '../../config/onboarding';
 import { eligibleRolesForProfile } from '../capabilities';
 import { capabilityProfileForRun } from '../architecture-contract';
-import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
 import { roleAgentBody } from '../skill-filters';
+import { type RoleContractFile, type RoleContractOutcome, writeRoleContracts } from './role-contracts';
 
 type Rec = Record<string, unknown>;
 
@@ -111,27 +111,21 @@ function agentFile(role: string, label: string, blurb: string): string {
   return lines.join('\n');
 }
 
-export function writeWindsurfAgentFiles(cwd: string, state: Rec): number {
+// The one host whose contracts are NESTED (`<role>/AGENT.md`), which is why the
+// shared writer creates each file's own parent: that per-role mkdir used to live
+// here behind a second copy of the same swallow.
+export function writeWindsurfAgentFiles(cwd: string, state: Rec): RoleContractOutcome {
   const dir = path.join(cwd, WINDSURF_AGENTS_REL);
   const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
   const members = TEAM_ROLES.filter((member) => eligible.has(member.role));
   const keep = new Set(members.map((member) => member.role));
-  let written = cleanupGeneratedAgents(dir, keep);
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch {
-    return written;
-  }
+  const removed = cleanupGeneratedAgents(dir, keep);
+  const files: RoleContractFile[] = [];
   for (const member of members) {
-    const roleDir = path.join(dir, member.role);
-    const target = path.join(roleDir, 'AGENT.md');
+    const target = path.join(dir, member.role, 'AGENT.md');
+    // A user-authored contract wins and is not a failure to write.
     if (fs.existsSync(target) && !isGeneratedWindsurfAgent(target)) continue;
-    try {
-      fs.mkdirSync(roleDir, { recursive: true });
-      if (writeTextIfChanged(target, agentFile(member.role, member.label, member.blurb))) written += 1;
-    } catch {
-      // best-effort per role
-    }
+    files.push({ path: target, content: agentFile(member.role, member.label, member.blurb) });
   }
-  return written;
+  return writeRoleContracts(dir, removed, files);
 }

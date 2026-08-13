@@ -40,6 +40,7 @@ import {
   AGENT_ACTIVITY_WARN_THRESHOLD,
   hookSessionIdentity,
   isMaintenancePhase,
+  isNewProjectMode,
   readEffectiveState,
   readRunAgentActivity,
   resolveRunAgentContext,
@@ -58,6 +59,7 @@ import {
 import { materializeFromProjectMemoryWrite, materializeFromToolInputHints, type ReportOneMcp } from './converge-from-write';
 import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromStateFilePath, runStartMsForDigest } from './post-helpers';
 import { normalizeDigestFinishedAt } from './digest-finished-at';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent)$/i;
@@ -97,7 +99,7 @@ function architectDigestProjectRoot(filePath: string): string | null {
 // the digest hook must never block or fail the write.
 function hostStampDigestFinishedAt(targetPath: string, role: string): string {
   try {
-    const content = fs.readFileSync(targetPath, 'utf8');
+    const content = readRegularFileOrThrow(targetPath);
     const fix = normalizeDigestFinishedAt(content, Date.now(), { runStartMs: runStartMsForDigest(targetPath) });
     if (!fix) return '';
     fs.writeFileSync(targetPath, fix.content);
@@ -195,7 +197,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // isMaintenancePhase short-circuits. Independent of one-mcp; runs before the auth
   // gate so it also works in explicit auth-bypass dev/test runs.
   if (!isSpawnAgentLifecycleTool
-    && state.mode === 'new-project'
+    && isNewProjectMode(state)
     && !isMaintenancePhase(state, 'new-project')
     && computeOnboarding(reportRoot).done) {
     maybeFlipToMaintenance(reportRoot, state);
@@ -238,7 +240,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // 2a. Architect PLAN_READY → re-inject OpenCode Step-0 while batch is pending.
   if (architectDigest && fs.existsSync(architectDigest.path)) {
     let content = '';
-    try { content = fs.readFileSync(architectDigest.path, 'utf8'); } catch { content = ''; }
+    try { content = readRegularFileOrThrow(architectDigest.path); } catch { content = ''; }
     if (/\bPLAN_READY\b/.test(content)) {
       const planReadyDirective = buildPostPlanReadyOpenCodeDirective(reportRoot);
       if (planReadyDirective) {

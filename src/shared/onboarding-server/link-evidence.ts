@@ -15,6 +15,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { openRegularFd } from '../bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -36,7 +37,7 @@ function readTail(filePath: string): string {
   const start = Math.max(0, stat.size - TAIL_BYTES);
   const length = stat.size - start;
   if (length <= 0) return '';
-  const fd = fs.openSync(filePath, 'r');
+  const fd = openRegularFd(filePath);
   try {
     const buffer = Buffer.alloc(length);
     fs.readSync(fd, buffer, 0, length, start);

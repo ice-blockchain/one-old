@@ -147,11 +147,28 @@ test('common rules stay stack-native and defer classification to runtime contrac
   assert.match(clean, /numeric size budget lives in the project's own linter config/);
   assert.match(clean, /max-lines[\s\S]*eslint\.config\.js[\s\S]*ruff\.toml[\s\S]*\.golangci\.yml/);
   assert.match(clean, /Do not weaken it to pass your own change/);
-  // What stays blocking is only what a linter cannot see, because it compares
-  // against the compiled architecture rather than the source alone.
-  assert.match(clean, /Runtime structural findings remain blocking where a linter cannot see them/);
+  // What the runtime findings see is what a linter cannot, because they compare
+  // against the compiled architecture rather than the source alone — but "what
+  // BLOCKS" is now mode-dependent, and a shipped rule that promises a deny the
+  // hook no longer fires teaches a role to skip a check. So the prose must carry
+  // the split (all of them on a scaffolded project, ownership and plan delivery
+  // only on an existing one).
+  assert.match(clean, /Runtime structural findings see what a linter cannot/);
   assert.match(clean, /route\/contract mismatches[\s\S]*allowlist gaps/);
-  assert.match(clean, /Collapsed source is also still rejected at the write/);
+  assert.match(clean, /On a project\s+Traffic One scaffolded, every one of them blocks/);
+  // And the demotion must be described where it actually exists. The wider
+  // filter, the one the previous sweep had no cell for: a claim that a
+  // COMPENSATION exists is as false as a claim that a deny fires, and this
+  // paragraph made it for three scans the impact floor never covered. Three
+  // clauses, three outcomes: a skipped entry costs the entry, a bound costs
+  // browser evidence, an unresolvable root blocks.
+  assert.match(clean, /demoted only where the run's verification contract\s+actually compensates/);
+  assert.match(clean, /skipped, recorded by path/);
+  assert.match(clean, /pins `uiImpact` to the truncated-scan\s+floor/);
+  assert.match(clean, /source\s+root that does not resolve stays an error in both modes/);
+  assert.doesNotMatch(clean, /An incomplete scan blocks in neither mode/);
+  assert.doesNotMatch(clean, /incomplete\s+scans\./);
+  assert.match(clean, /Collapsed source is still rejected at the write in every mode/);
 
   const tooling = fs.readFileSync(path.join(common, 'quality-tooling.md'), 'utf8');
   // The compiled config is the single expression of the quality bar, and the

@@ -76,7 +76,19 @@ export function hostSpawnType(host: HostId | string, role: string, cwd = ''): Ho
         contractPath: `.traffic-one/agents/${role}.md`,
       };
     case 'copilot':
-      return { primary: role, fallback: null, parameter: 'name', contractPath: `.copilot/${role}.agent.md` };
+      // `.github/agents/` is where `writeCopilotAgentFiles` puts these, and this
+      // path is only ever consulted through an `existsSync` — so a directory that
+      // nothing writes does not fail loudly, it degrades to the kernel excerpt and
+      // says nothing, which is the state the guard in session-start-setup.ts
+      // records as observed on Codex. It read `.copilot/` until now, and no
+      // project-local `.copilot/` is written anywhere in this product. Spelled as
+      // a literal rather than imported from the writer because that module pulls
+      // in the architecture contract, capabilities and skill filters, and this is
+      // a leaf the hook runtime resolves everywhere; the two are held together in
+      // host-spawn-types.test.ts, which derives the expectation from
+      // COPILOT_AGENTS_REL so a rename of the directory cannot drift past here
+      // again.
+      return { primary: role, fallback: null, parameter: 'name', contractPath: `.github/agents/${role}.agent.md` };
     case 'kilo':
       // `.kilo/agents/*.md` are role-contract files, not Task type names, so the
       // built-in writable worker is the ONLY path — it is the primary, not a

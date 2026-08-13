@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { WINDSURF_AGENT_MARKER, WINDSURF_AGENTS_REL, writeWindsurfAgentFiles } from '../windsurf-agents';
+import { roleContractsWritten } from '../role-contracts';
 
 const FULL_STATE = {
   stack: 'default',
@@ -20,8 +21,9 @@ function tmp(): string {
 test('writeWindsurfAgentFiles writes model-agnostic contracts without local preferences', () => {
   const cwd = tmp();
   try {
-    const written = writeWindsurfAgentFiles(cwd, FULL_STATE);
-    assert.ok(written >= 6);
+    const outcome = writeWindsurfAgentFiles(cwd, FULL_STATE);
+    assert.equal(outcome.kind, 'complete');
+    assert.ok(roleContractsWritten(outcome) >= 6);
     const architect = fs.readFileSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-architect', 'AGENT.md'), 'utf8');
     assert.ok(architect.includes(WINDSURF_AGENT_MARKER));
     assert.doesNotMatch(architect, /^model:/m);

@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { KILO_HOST_AGENTS_REL } from '../../../config/kilo-host';
 import { KILO_AGENT_MARKER, writeKiloAgentFiles } from '../kilo-agents';
+import { roleContractsWritten } from '../role-contracts';
 
 const FULL_STATE = {
   stack: 'default',
@@ -36,8 +37,9 @@ function withPlugin(fn: (project: string) => void): void {
 
 test('writeKiloAgentFiles writes model-agnostic role contracts without local preferences', () => {
   withPlugin((project) => {
-    const written = writeKiloAgentFiles(project, FULL_STATE);
-    assert.ok(written >= 6);
+    const outcome = writeKiloAgentFiles(project, FULL_STATE);
+    assert.equal(outcome.kind, 'complete');
+    assert.ok(roleContractsWritten(outcome) >= 6);
     const architect = fs.readFileSync(path.join(project, KILO_HOST_AGENTS_REL, 'senior-architect.md'), 'utf8');
     assert.ok(architect.includes(KILO_AGENT_MARKER));
     assert.match(architect, /^mode: subagent$/m);

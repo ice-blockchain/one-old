@@ -14,11 +14,11 @@
 // has been recorded yet (no spawn has happened), nothing is suppressed — the real wizard shows.
 // TTL'd so a later session isn't blocked by a stale set. fs-only, never throws.
 
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
 import { writeJson } from '../fsjson';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 const ONBOARDING_MAIN_SESSIONS_REL = path.join('.traffic-one', '.onboarding-main-sessions.json');
 
@@ -41,7 +41,7 @@ function storePath(cwd: string): string {
 
 function readStore(cwd: string): Record<string, number> {
   try {
-    const raw = JSON.parse(fs.readFileSync(storePath(cwd), 'utf8')) as { sessions?: unknown };
+    const raw = JSON.parse(readRegularFileOrThrow(storePath(cwd))) as { sessions?: unknown };
     const s = raw && typeof raw === 'object' && raw.sessions && typeof raw.sessions === 'object' ? (raw.sessions as Record<string, unknown>) : {};
     const out: Record<string, number> = {};
     for (const [k, v] of Object.entries(s)) if (typeof v === 'number') out[k] = v;

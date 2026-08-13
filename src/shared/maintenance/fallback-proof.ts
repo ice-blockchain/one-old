@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { sha256 } from '../text';
+import { readRegularBytesOrThrow } from '../bounded-read';
 
 const FALLBACK_SOURCE_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 const PAID_FALLBACK_COMPLETION_SCHEMA_VERSION = 1 as const;
@@ -96,7 +97,7 @@ export function captureFallbackSourceSnapshot(
     try {
       const stat = fs.lstatSync(absolute);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FALLBACK_SOURCE_BYTES) return null;
-      const bytes = fs.readFileSync(absolute);
+      const bytes = readRegularBytesOrThrow(absolute);
       files.push({
         path: relative,
         state: 'file',

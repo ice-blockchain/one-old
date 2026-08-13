@@ -22,6 +22,7 @@ import {
 import * as fs from 'fs';
 
 import { TEAM_MODE_CHANGE_APPROVAL_TTL_MS } from '../../config/onboarding';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export function hashPromptText(promptText: unknown): string {
   return sha256(String(promptText || '').trim());
@@ -182,7 +183,7 @@ function proposedStateTextFromToolInput(cwd: string, toolName: unknown, toolInpu
   const normalized = normalizedToolName(toolName);
   const ti = obj(toolInput) || {};
   const currentStatePath = existingStateFilePath(cwd);
-  const currentText = fs.existsSync(currentStatePath) ? fs.readFileSync(currentStatePath, 'utf8') : '';
+  const currentText = fs.existsSync(currentStatePath) ? readRegularFileOrThrow(currentStatePath) : '';
   if (/^Write$/i.test(normalized)) return typeof ti.content === 'string' ? ti.content : null;
   if (/^Edit$/i.test(normalized)) return replaceOneOrAll(currentText, ti.old_string, ti.new_string, ti.replace_all === true);
   if (/^MultiEdit$/i.test(normalized)) {

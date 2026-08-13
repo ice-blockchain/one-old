@@ -33,6 +33,7 @@ export const TERMINAL_BATCH_OUTCOMES = new Set<OpenCodePlanBatchOutcome>(['succe
 
 export { type PlanDelegationUnit } from '../opencode-plan/unit-types';
 import { type PlanDelegationUnit } from '../opencode-plan/unit-types';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 // The configured roles, sanitized. Falls back to the default array when unset or
 // malformed, so a typo can't silently disable delegation.
@@ -123,7 +124,7 @@ export function parsePlanDelegationBlock(plan: string): { roles: string[]; unitC
 
 export function planDelegationQueueRoles(cwd: string): string[] {
   let plan = '';
-  try { plan = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { return []; }
+  try { plan = readRegularFileOrThrow(path.join(cwd, '.traffic-one', 'plan.md')); } catch { return []; }
   return parsePlanDelegationBlock(plan).roles;
 }
 
@@ -133,7 +134,7 @@ function runScopedQueueRoles(cwd: string, runId: string): string[] | null {
   const file = path.join(cwd, trafficDir, 'runs', runId, 'opencode-queue.json');
   if (!fs.existsSync(file)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Rec;
+    const parsed = JSON.parse(readRegularFileOrThrow(file)) as Rec;
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.units)) return [];
     if (typeof parsed.runId === 'string' && parsed.runId && parsed.runId !== runId) return [];
     const roles: string[] = [];

@@ -21,13 +21,18 @@ import {
 } from '../../config/opencode-host';
 import { eligibleRolesForProfile } from '../capabilities';
 import { capabilityProfileForRun } from '../architecture-contract';
-import { writeTextIfChanged } from '../fs-text';
 import { detectHost } from '../host';
 import { detectHostPlan } from '../host/plan';
 import { buildTeamLineup } from '../onboarding-server/flow';
 import { roleAgentBody } from '../skill-filters';
 import { projectRootHash } from '../state/local-prefs';
 import { GENERATED_MARKER, isGenerated, removeGeneratedFile, removeGeneratedSkillDir } from './generated';
+import {
+  type RoleContractFile,
+  type RoleContractOutcome,
+  roleContractsSwept,
+  writeRoleContracts,
+} from './role-contracts';
 
 type Rec = Record<string, unknown>;
 
@@ -40,7 +45,10 @@ function openCodeProjectAgentPrefix(cwd: string): string {
   return `traffic-one-${projectRootHash(cwd).slice(0, OPENCODE_PROJECT_HASH_PREFIX_LENGTH)}`;
 }
 
-function openCodeGlobalAgentsDir(env: NodeJS.ProcessEnv = process.env): string {
+// Exported because role-contract-status.ts has to name the same directory to
+// answer whether it is writable, and a second spelling of an XDG-or-HOME lookup
+// is a second thing to get wrong.
+export function openCodeGlobalAgentsDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.XDG_CONFIG_HOME) return path.join(env.XDG_CONFIG_HOME, 'opencode', OPENCODE_HOST_AGENTS_DIR);
   const home = env.HOME || env.USERPROFILE || os.homedir();
   return path.join(home, OPENCODE_HOST_GLOBAL_CONFIG_DIR_REL, OPENCODE_HOST_AGENTS_DIR);
@@ -145,12 +153,19 @@ function agentFile(profileName: string, role: string, label: string, blurb: stri
   return lines.join('\n');
 }
 
-function writeOpenCodeGlobalAgentFiles(cwd: string, state: Rec): number {
+// `roleContractsSwept` is the shape every early return below has: this project's
+// generated global profiles are removed and nothing is written. It was previously
+// returned as a WRITE count — the same deletions-as-writes conflation the mkdir
+// swallow carried, but on the ordinary main-agent path rather than a filesystem
+// failure. The constructor lives in role-contracts.ts because the outcome type is
+// sealed there: this file cannot spell one, which is what stops the conflation
+// coming back as a local object literal.
+function writeOpenCodeGlobalAgentFiles(cwd: string, state: Rec): RoleContractOutcome {
   const team = state.team && typeof state.team === 'object' ? (state.team as Rec) : null;
   const performance = state.performance && typeof state.performance === 'object' ? (state.performance as Rec) : null;
   const mode = team && typeof team.mode === 'string' ? team.mode : null;
   const level = performance && typeof performance.level === 'string' ? performance.level : null;
-  if (mode !== 'subagents' || !level) return cleanupGlobalProjectAgents(cwd, new Set());
+  if (mode !== 'subagents' || !level) return roleContractsSwept(cleanupGlobalProjectAgents(cwd, new Set()));
 
   const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
   const modelSelections = team && team.modelSelections && typeof team.modelSelections === 'object'
@@ -161,32 +176,28 @@ function writeOpenCodeGlobalAgentFiles(cwd: string, state: Rec): number {
     const planCtx = { host: 'opencode', plan: detectHostPlan('opencode') };
     lineup = buildTeamLineup(level, 'opencode', overrides, planCtx, process.env, modelSelections);
   } catch {
-    return cleanupGlobalProjectAgents(cwd, new Set());
+    return roleContractsSwept(cleanupGlobalProjectAgents(cwd, new Set()));
   }
-  if (!lineup || lineup.length === 0) return cleanupGlobalProjectAgents(cwd, new Set());
+  if (!lineup || lineup.length === 0) return roleContractsSwept(cleanupGlobalProjectAgents(cwd, new Set()));
   const eligible = eligibleRolesForProfile(capabilityProfileForRun(cwd, state));
   lineup = lineup.filter((member) => eligible.has(member.role));
-  if (lineup.length === 0) return cleanupGlobalProjectAgents(cwd, new Set());
+  if (lineup.length === 0) return roleContractsSwept(cleanupGlobalProjectAgents(cwd, new Set()));
 
   const keep = new Set(lineup.map((member) => member.role));
-  let written = cleanupGlobalProjectAgents(cwd, keep);
+  const removed = cleanupGlobalProjectAgents(cwd, keep);
   const dir = openCodeGlobalAgentsDir();
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch {
-    return written;
-  }
+  const files: RoleContractFile[] = [];
   for (const member of lineup) {
     const target = openCodeGlobalAgentPath(cwd, member.role);
+    // A user-authored profile wins and is not a failure to write.
     if (fs.existsSync(target) && !isGenerated(target)) continue;
-    try {
-      const profileName = openCodeGlobalAgentName(cwd, member.role);
-      if (writeTextIfChanged(target, agentFile(profileName, member.role, member.label, member.blurb, member.model))) written += 1;
-    } catch {
-      // best-effort per role
-    }
+    const profileName = openCodeGlobalAgentName(cwd, member.role);
+    files.push({
+      path: target,
+      content: agentFile(profileName, member.role, member.label, member.blurb, member.model),
+    });
   }
-  return written;
+  return writeRoleContracts(dir, removed, files);
 }
 
 // Skills are intentionally NOT mirrored to `.opencode/skills` (see file header):
@@ -214,11 +225,36 @@ export function cleanupLegacyOpenCodeProjectAssets(cwd: string): number {
 
 // Global profiles are model-pinned, user-local state. Guard this helper itself so
 // a caller on Claude/Codex/Cursor cannot create an OpenCode lineup accidentally.
-export function refreshOpenCodeGlobalAgentFiles(cwd: string, state: Rec): number {
-  return detectHost() === 'opencode' ? writeOpenCodeGlobalAgentFiles(cwd, state) : 0;
+export function refreshOpenCodeGlobalAgentFiles(cwd: string, state: Rec): RoleContractOutcome {
+  return detectHost() === 'opencode' ? writeOpenCodeGlobalAgentFiles(cwd, state) : roleContractsSwept(0);
 }
 
-export function writeOpenCodeHostAssets(cwd: string, state: Rec, _skills: readonly string[]): number {
-  return cleanupLegacyOpenCodeProjectAssets(cwd)
-    + refreshOpenCodeGlobalAgentFiles(cwd, state);
+/**
+ * What a session-time OpenCode refresh did — as two facts, because they are two.
+ *
+ * It used to return their SUM as a `number`, which collapsed the outcome union
+ * back to the shape the whole class of defect lived in, one function above the
+ * fix: an unwritable global profile directory was indistinguishable from
+ * "nothing to do", and BOTH callers (session-start-lib.ts, onboarding-wait's
+ * setup-complete branch) discarded the number anyway. Worse than indistinguishable
+ * — the sum added a REMOVAL count to a WRITE count, so the ordinary main-agent
+ * path returned a positive "write" total with no fault present at all (measured
+ * round 1: returned 2 for 1 file on disk).
+ *
+ * Fixed at the boundary rather than at the callers: a caller cannot recover a
+ * distinction the return type does not carry, and the next caller would inherit
+ * the same blindness.
+ */
+export interface OpenCodeHostAssets {
+  /** Legacy project-local OpenCode files swept. Never a write. */
+  readonly legacyRemoved: number;
+  /** The global model-pinned profiles: what the filesystem allowed. */
+  readonly roleContracts: RoleContractOutcome;
+}
+
+export function writeOpenCodeHostAssets(cwd: string, state: Rec, _skills: readonly string[]): OpenCodeHostAssets {
+  return {
+    legacyRemoved: cleanupLegacyOpenCodeProjectAssets(cwd),
+    roleContracts: refreshOpenCodeGlobalAgentFiles(cwd, state),
+  };
 }

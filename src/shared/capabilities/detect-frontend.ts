@@ -13,6 +13,7 @@ import {
   prefixed,
   candidateWebRoots,
 } from './fs-probe';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 interface FrontendFrameworkDetectionV1 {
   frontend: string;
@@ -57,7 +58,7 @@ function laravelJavascriptUiPresent(cwd: string): boolean {
   }
   for (const entrypoint of ['resources/js/app.js', 'resources/js/app.ts']) {
     let source = '';
-    try { source = fs.readFileSync(path.join(cwd, entrypoint), 'utf8').slice(0, 256_000); } catch { continue; }
+    try { source = readRegularFileOrThrow(path.join(cwd, entrypoint)).slice(0, 256_000); } catch { continue; }
     // A stock Laravel Vite entrypoint imports only bootstrap.js. Treat it as
     // backend scaffolding; actual mount/router/Inertia code is UI evidence.
     const withoutImports = source

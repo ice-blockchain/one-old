@@ -10,6 +10,7 @@ import {
   BACKEND_NONE,
   MAX_WORKSPACE_ROOTS,
 } from './types';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 export function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
@@ -47,7 +48,7 @@ export function safeNames(cwd: string): string[] {
 
 function fileContains(cwd: string, rel: string, pattern: RegExp): boolean {
   try {
-    return pattern.test(fs.readFileSync(path.join(cwd, rel), 'utf8').slice(0, 512_000));
+    return pattern.test(readRegularFileOrThrow(path.join(cwd, rel)).slice(0, 512_000));
   } catch {
     return false;
   }

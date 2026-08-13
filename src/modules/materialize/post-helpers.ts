@@ -11,6 +11,7 @@ import * as path from 'path';
 import { hasPluginAuthoringMarkers } from '../../shared/authoring-root';
 import { isOnboardedProjectRoot } from '../../shared/hook/paths';
 import { hasStateFile } from '../../shared/tool-classify';
+import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 type Rec = Record<string, unknown>;
 
@@ -35,7 +36,7 @@ export function runStartMsForDigest(digestPath: string): number | undefined {
   const root = normalized.replace(/\/\.traffic-one\/digests\/.*$/, '');
   const runJson = path.join(root, '.traffic-one', 'runs', runId, 'run.json');
   try {
-    const parsed = JSON.parse(fs.readFileSync(runJson, 'utf8')) as { createdAt?: unknown };
+    const parsed = JSON.parse(readRegularFileOrThrow(runJson)) as { createdAt?: unknown };
     if (typeof parsed.createdAt !== 'string') return undefined;
     const ms = Date.parse(parsed.createdAt);
     return Number.isFinite(ms) ? ms : undefined;

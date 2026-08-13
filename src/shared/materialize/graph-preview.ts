@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, graphifyGraphIsEmpty } from '../codegraph';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 const GRAPH_PREVIEW_MAX_BYTES = 2048;
 const GRAPH_PREVIEW_MAX_MODULES = 30;
@@ -32,7 +33,7 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
       return `${lines.join('\n')}\n`;
     }
     let text: string;
-    try { text = fs.readFileSync(reportPath, 'utf8'); } catch { return null; }
+    try { text = readRegularFileOrThrow(reportPath); } catch { return null; }
     const modules: string[] = [];
     const headingRe = /^##\s+(.+?)\s*$/gm;
     let m: RegExpExecArray | null;
@@ -56,7 +57,7 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
     // empty files; say it is empty and how it refreshes instead.
     let meta: Rec | null = null;
     try {
-      meta = JSON.parse(fs.readFileSync(path.join(gnDir, 'meta.json'), 'utf8')) as Rec;
+      meta = JSON.parse(readRegularFileOrThrow(path.join(gnDir, 'meta.json'))) as Rec;
     } catch {
       meta = null;
     }
@@ -76,7 +77,7 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
     let listed = false;
     if (fs.existsSync(indexPath)) {
       try {
-        const idx = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as Rec;
+        const idx = JSON.parse(readRegularFileOrThrow(indexPath)) as Rec;
         const rawModules = Array.isArray(idx.modules)
           ? (idx.modules as unknown[]).slice(0, GRAPH_PREVIEW_MAX_MODULES)
           : [];

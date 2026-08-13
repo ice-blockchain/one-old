@@ -34,6 +34,7 @@ import {
   type Rec,
 } from './cache-schema';
 import { acquireCacheLock, releaseCacheLock } from './cache-lock';
+import { readRegularFileOrThrow } from '../bounded-read';
 
 
 export function oneMcpCachePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -51,7 +52,7 @@ function readRawCache(filePath: string): RawCacheRead {
   if (!fs.existsSync(filePath)) return { status: 'missing', raw: null };
   let raw: Rec | null;
   try {
-    raw = record(JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown);
+    raw = record(JSON.parse(readRegularFileOrThrow(filePath)) as unknown);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing', raw: null };
     return { status: 'malformed', raw: null };

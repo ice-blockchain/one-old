@@ -7,6 +7,7 @@ import * as path from 'path';
 
 import { BOOTSTRAP_SKILLS, PROJECT_UNAVAILABLE_SKILLS } from '../../config/skill-filters';
 import { capabilityStateForRun } from '../architecture-contract';
+import { readRegularFileOrThrow } from '../bounded-read';
 import { toPosix } from '../fs-text';
 import { detectHost } from '../host';
 import { activeSkillsForProject } from '../skill-filters';
@@ -18,7 +19,7 @@ type Rec = Record<string, unknown>;
 
 function readManifest(cwd: string): Rec | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8'));
+    const parsed = JSON.parse(readRegularFileOrThrow(path.join(cwd, '.traffic-one', 'manifest.json')));
     return parsed && typeof parsed === 'object' ? (parsed as Rec) : null;
   } catch {
     return null;

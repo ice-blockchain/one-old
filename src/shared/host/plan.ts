@@ -36,6 +36,7 @@ import { DEFAULT_HOST_PLAN, type HostModelKey, type UserPlan } from '../../confi
 import { readJson } from '../fsjson';
 import { canonicalHost, canonicalPlan, planIsRecognized } from '../model-tiers';
 import { obj } from '../obj';
+import { openRegularFd, readRegularFileOrThrow } from '../bounded-read';
 
 const cache = new Map<string, UserPlan>();
 
@@ -131,7 +132,7 @@ function newestDirEntries(dir: string): string[] {
 
 function lastPlanTypeInTail(file: string): string | null {
   try {
-    const fd = fs.openSync(file, 'r');
+    const fd = openRegularFd(file);
     try {
       const size = fs.fstatSync(fd).size;
       const len = Math.min(size, CODEX_SESSION_TAIL_BYTES);
@@ -311,7 +312,7 @@ function detectWindsurfPlan(env: NodeJS.ProcessEnv): string | null {
 function detectOpenCodePlan(env: NodeJS.ProcessEnv): string | null {
   const authPath = openCodeAuthPath(env);
   try {
-    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+    const auth = JSON.parse(readRegularFileOrThrow(authPath));
     if (auth && typeof auth === 'object' && Object.keys(auth).some((k) => /^opencode-\w/.test(k))) return 'go';
   } catch {
     // auth.json absent / unreadable / not JSON → no detectable paid plan

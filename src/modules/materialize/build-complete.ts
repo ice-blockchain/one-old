@@ -29,11 +29,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { readRegularFile } from '../../shared/bounded-read';
+
 import { scanSourceFiles } from '../../shared/detection';
 import { sweepAfterTerminalSettlement } from '../../shared/retention';
 import {
   hasActiveRunClaims,
   isMaintenancePhase,
+  isNewProjectMode,
   markMaintenance,
   pruneExpiredPendingClaims,
   releaseRunClaims,
@@ -58,7 +61,14 @@ function timestampForLegacyRun(root: string, runId: string): number {
   let ledgerCreatedAt = NaN;
   let newestFallback = 0;
   try {
-    const parsed = JSON.parse(fs.readFileSync(ledger, 'utf8')) as Record<string, unknown>;
+    // BOUNDED (shared/bounded-read.ts). A non-regular object throws into the
+    // catch below — the "legacy run has no ledger" arm this already falls
+    // through for — rather than parsing the EOF an O_NONBLOCK FIFO returns into
+    // a ledger with no timestamps, which would silently promote the run's
+    // artifact mtimes over a `createdAt` that was never read.
+    const text = readRegularFile(ledger);
+    if (text === null) throw new Error(`not-a-regular-file: ${ledger}`);
+    const parsed = JSON.parse(text) as Record<string, unknown>;
     ledgerCreatedAt = typeof parsed.createdAt === 'string' ? Date.parse(parsed.createdAt) : NaN;
     for (const key of ['updatedAt', 'statusUpdatedAt', 'finishedAt']) {
       const at = typeof parsed[key] === 'string' ? Date.parse(parsed[key] as string) : NaN;
@@ -150,7 +160,30 @@ function buildSettlement(root: string, state: unknown, atPromptBoundary: boolean
       // The report is discarded DELIBERATELY, not overlooked: this is a hook path
       // whose only answer is "did the build flip to maintenance", and how much
       // disk cleanup reclaimed cannot change that. The sweep announces a refused
-      // or failed reclaim on stderr itself, which is the only channel here.
+      // or failed reclaim on stderr itself, which is the only channel THIS
+      // function has.
+      //
+      // That includes the report's `notices`. What this comment used to say about
+      // them was false in the same way the census in shared/retention.ts was
+      // before it was corrected: it claimed the caller has no banner to put them
+      // in. It does. `buildSettlement` → `maybeFlipToMaintenance` has two
+      // non-test callers, and BOTH compose user-visible context — VERIFIED, not
+      // repeated: in session/prompt-submit.ts every exit path BELOW the call
+      // site returns `context(...)`, the last of them unconditional, and
+      // materialize/post-stack-setup.ts composes `context(...)` at six sites.
+      // (The `noop()` returns in prompt-submit all sit ABOVE the call site, so
+      // they are not exits this path can take.) A surface exists.
+      //
+      // The cost is DECLINED rather than absent, which is the honest version:
+      // carrying a notice from here to either of them means widening two return
+      // types — `BuildSettlement`, which answers three booleans and a run id, and
+      // `maybeFlipToMaintenance`, which answers one boolean — so that a hook path
+      // whose question is "did this flip" can also carry retention prose. That is
+      // a real change to two signatures for a disclosure the user already gets:
+      // SessionStart's advisory reports the same standing conditions on the same
+      // project, and `traffic-one-cleanup` prints them on demand. Declined for
+      // that reason. If either signature ever widens for its own reasons, thread
+      // this through rather than re-deriving the argument.
       sweepAfterTerminalSettlement(root, runId);
     }
   }
@@ -177,7 +210,7 @@ function buildSettlement(root: string, state: unknown, atPromptBoundary: boolean
 export function maybeFlipToMaintenance(root: string, state: unknown, opts: { atPromptBoundary?: boolean } = {}): boolean {
   try {
     const mode = state && typeof state === 'object' ? (state as { mode?: unknown }).mode : undefined;
-    if (mode !== 'new-project') return false;
+    if (!isNewProjectMode({ mode })) return false;
     if (isMaintenancePhase(state, 'new-project')) return false;
     const settlement = buildSettlement(root, state, !!opts.atPromptBoundary);
     if (!settlement.settled) return false;
