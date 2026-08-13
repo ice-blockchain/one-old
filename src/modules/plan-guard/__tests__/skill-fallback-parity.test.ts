@@ -56,12 +56,22 @@ const PAIRS: readonly Pair[] = [
   // site, guarded so the sentence cannot render an empty pair of backticks.
   { block: 'run-team-quick-fix-contract', source: 'plan-runteam.ts', vars: { TARGETS: '${targets}' } },
   { block: 'architecture-input-owner-gate', source: 'plan-readiness/index.ts', vars: { ROLE: '${writerRole}' } },
+  // The seventh, and the only one whose fallback was a SINGLE-QUOTED string
+  // rather than a template literal — so `asTemplateLiteralBody` below could not
+  // match it at all until the call site was converted, escaped backticks and
+  // all. It renders no placeholder, hence `vars: {}`.
+  { block: 'reset-record-owner-gate', source: 'plan-readiness/index.ts', vars: {} },
 ];
 
-// A TS template literal escapes every backtick; SKILL.md does not. Undo that
-// one difference and nothing else — anything else that differs is drift.
+// A TS template literal has exactly three characters it CANNOT hold as itself —
+// a backtick, a backslash, and the two-character sequence `${` — and SKILL.md
+// holds all three plainly. Undo those escapes and nothing else; anything else
+// that differs is drift. The list is the language's, not a judgement call: a
+// paragraph that spells a shell expansion (`${v%pat}`) or an ANSI-C escape
+// (`\x73`) can only reach a fallback template escaped, so refusing to model
+// that would mean the prose could never say either.
 function asTemplateLiteralBody(markdown: string, vars: Readonly<Record<string, string>>): string {
-  let out = markdown.split('`').join('\\`');
+  let out = markdown.split('\\').join('\\\\').split('`').join('\\`').split('${').join('\\${');
   for (const [name, expression] of Object.entries(vars)) out = out.split(`{{${name}}}`).join(expression);
   return out;
 }

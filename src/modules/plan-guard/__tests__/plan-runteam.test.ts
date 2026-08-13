@@ -1407,3 +1407,167 @@ test('the deny\'s full render space: 12 inputs, 12 distinct texts, each ending i
   }
   assert.equal(seen.size, 12, 'all 12 cells must render distinctly');
 });
+
+// ── Scope attribution MINTS authority; it must never DESTROY it ──────────────
+//
+// `attributeForeignWriteBySpawnScope` is the one path in this gate that hands a
+// session a role on the strength of where its targets landed rather than on
+// anything it proved about itself. It used to do that with no
+// `refuseOccupiedRole`, and a fresh claim runs
+// `releaseSupersededRoleClaimsLocked` — so the mint retired whatever thread
+// already held the role. The victim's claim then reads `claim-superseded`,
+// which `claimRejectReason` refuses and `claimThreadRole` will not let it
+// re-bind, so the working role agent lost write authority for the rest of the
+// run (or SUBAGENT_STALE_MS, whichever came first).
+//
+// The population that reaches it is exactly the population that must not be
+// trusted with that: `isForeignOnboardingThread` is a NEGATIVE membership test
+// over a default-open set, so every stray or parallel session qualifies, and a
+// session belonging to another project most reliably of all.
+//
+// Measured on this fixture before the guard: the stray write was ALLOWED, the
+// holder's claim came back `released`/`superseded-by-…`, its next in-scope
+// write was denied, and `claimThreadRole` refused to rebuild it.
+
+const HOLDER = 'cursor-child-fe';
+const STRAY = 'stray-parallel-session';
+const FE_TARGET = 'src/app/(public)/news/page.tsx';
+
+function claimRecord(dir: string, sessionId: string, runId = RUN): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, `${sessionId}.json`), 'utf8'));
+}
+
+test('an unattributable session cannot displace a live same-role claim, and the holder keeps writing', () => {
+  withDir((dir) => {
+    const state = baseState();
+    recordMainOnboardingSession(dir, 'orchestrator');
+    writeManifest(dir, FE_BE_MANIFEST);
+    assert.ok(claimThreadRole(dir, state, HOLDER, 'senior-frontend', { parentSessionId: 'orchestrator' }),
+      'fixture: the victim must really hold the role, or this row measures the rescue case');
+    assert.equal(gate(dir, state, FE_TARGET, { session_id: HOLDER, tool_name: 'Write' }), null,
+      'fixture: and its in-scope write must be allowed BEFORE the stray arrives');
+
+    // The stray is in-scope and unattributable — the exact shape the rescue path
+    // was written for, minus the one thing that made the rescue safe.
+    const denied = gate(dir, state, FE_TARGET, { session_id: STRAY, tool_name: 'Write' });
+    assert.ok(denied, 'a session that proved nothing may not take an occupied role');
+    assert.match(denied!, /Spawn the owning role, or message its already-live agent/,
+      'the deny that replaces the silent displacement must name the live agent as the addressee\'s option');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', RUN, `${STRAY}.json`)), false,
+      'a refused attribution must stake no claim at all');
+
+    const held = claimRecord(dir, HOLDER);
+    assert.equal(held.status, 'claimed', 'the holder\'s claim must survive intact');
+    assert.equal(held.releasedReason, undefined, 'nothing may have superseded it');
+
+    // The lockout, measured where it hurt: the next write, and the rebind that
+    // a `claim-superseded` record makes impossible.
+    assert.equal(gate(dir, state, FE_TARGET, { session_id: HOLDER, tool_name: 'Write' }), null,
+      'the live holder\'s next in-scope write still succeeds');
+    assert.ok(claimThreadRole(dir, state, HOLDER, 'senior-frontend', { parentSessionId: 'orchestrator' }),
+      'and it can still re-bind — a superseded claim is refused by claim-thread-role.ts and never recovers');
+  });
+});
+
+// The cross-project reach, and the reason no workspace is needed to get there:
+// `projectRoot` is derived from the write's TARGET, so a session that belongs to
+// member A arrives at member B's gate carrying B's project root, B's manifest
+// and B's run. B has its own recorded orchestrator, so A's session is foreign to
+// it by construction — the most reliable way there is into this path, not the
+// least.
+function memberProject(root: string, id: string): string {
+  const dir = path.join(root, 'ws', id);
+  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+    mode: 'new-project', onboardingComplete: true, currentRunId: RUN,
+  }), 'utf8');
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: id }), 'utf8');
+  return dir;
+}
+
+test('a session from a SIBLING workspace member does not release that member\'s claim', () => {
+  withDir((root) => {
+    const container = path.join(root, 'ws');
+    fs.mkdirSync(path.join(container, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(container, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'workspace', onboardingComplete: true, workspaceMembers: [{ path: 'api' }, { path: 'web' }],
+    }), 'utf8');
+    const web = memberProject(root, 'web');
+    memberProject(root, 'api');
+
+    const state = baseState();
+    // `web` is a project in its own right: its own orchestrator, its own
+    // manifest, its own frontend agent holding the role.
+    recordMainOnboardingSession(web, 'orchestrator-web');
+    writeManifest(web, FE_BE_MANIFEST);
+    assert.ok(claimThreadRole(web, state, 'web-frontend-child', 'senior-frontend', { parentSessionId: 'orchestrator-web' }),
+      'fixture: web\'s own frontend agent must hold the role');
+
+    // A session that belongs to `api` writes into `web`. Nothing about it is
+    // known to `web` except that it is not `web`'s orchestrator.
+    const denied = gate(web, state, FE_TARGET, { session_id: 'api-child-be', tool_name: 'Write' });
+    assert.ok(denied, 'a sibling member\'s session may not stake a role in this member\'s run');
+    assert.equal(fs.existsSync(path.join(web, '.traffic-one', 'runs', RUN, 'api-child-be.json')), false,
+      'and it stakes nothing in the neighbour it wandered into');
+
+    const held = claimRecord(web, 'web-frontend-child');
+    assert.equal(held.status, 'claimed');
+    assert.equal(held.releasedReason, undefined,
+      'the sibling write must not retire the member\'s own agent — that is the cross-member lockout');
+    assert.equal(gate(web, state, FE_TARGET, { session_id: 'web-frontend-child', tool_name: 'Write' }), null,
+      'and the member\'s agent keeps writing');
+  });
+});
+
+// ── The control: the rescue this path EXISTS for is untouched ────────────────
+//
+// `refuseOccupiedRole` counts only claims `claimAllowsState` accepts, so the
+// guard is invisible to every population the rescue serves. Both halves are
+// pinned here because a guard that also broke the rescue would be the wrong
+// fix — the tests/3c deadlock (frontend BLOCKED → respawn spin → dead build) is
+// what this path was written to end.
+test('control: with no rival claim the Cursor rescue still binds, in parallel, for both roles', () => {
+  withDir((dir) => {
+    const state = baseState();
+    recordMainOnboardingSession(dir, 'orchestrator');
+    writeManifest(dir, FE_BE_MANIFEST);
+
+    assert.equal(gate(dir, state, FE_TARGET, { session_id: 'cursor-fe', tool_name: 'Write' }), null,
+      'an unlinked worker whose targets fall in ONE role\'s scope is still attributed');
+    assert.equal(claimRecord(dir, 'cursor-fe').role, 'senior-frontend');
+    // The disjoint-scope half: a parallel backend worker is not a rival for the
+    // frontend role, so it binds beside it rather than instead of it.
+    assert.equal(gate(dir, state, 'src/app/api/route.ts', { session_id: 'cursor-be', tool_name: 'Write' }), null);
+    assert.equal(claimRecord(dir, 'cursor-be').role, 'senior-backend');
+    assert.equal(claimRecord(dir, 'cursor-fe').status, 'claimed',
+      'staking the backend role must not have retired the frontend one');
+  });
+});
+
+// The second control, on the discriminator itself rather than on the gate.
+// `codex-child-model.ts` adopts a registry-named child with an explicit
+// `refuseOccupiedRole: false`, and that is deliberate: there the parent's spawn
+// recorder has already vouched for the child by id, so a stale same-role claim
+// must not deadlock the adoption. The gate's attribution has no such voucher,
+// which is the whole reason the two call sites differ. Pinned BEHAVIOURALLY —
+// both settings run against one live holder here — so a later "make these
+// consistent" sweep has to argue with a measurement. An earlier revision also
+// grepped `codex-child-model.ts` for the literal `refuseOccupiedRole: false`;
+// that asserted the source text of another module, broke on any reformat, and
+// added nothing the two calls below do not already prove.
+test('control: refuseOccupiedRole is the discriminator between the gate and the codex adoption path', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, HOLDER, 'senior-frontend', { parentSessionId: 'orchestrator' }),
+      'fixture: a live rival for the role');
+
+    assert.equal(claimThreadRole(dir, state, 'rival-refused', 'senior-frontend', {
+      parentSessionId: 'orchestrator', refuseOccupiedRole: true,
+    }), null, 'refuseOccupiedRole: true is what the gate now passes — it refuses over a live holder');
+    assert.equal(claimRecord(dir, HOLDER).status, 'claimed', 'and the refusal leaves the holder alone');
+
+    assert.ok(claimThreadRole(dir, state, 'rival-adopted', 'senior-frontend', {
+      parentSessionId: 'orchestrator', refuseOccupiedRole: false,
+    }), 'refuseOccupiedRole: false still adopts — the codex path depends on exactly this');
+  });
+});

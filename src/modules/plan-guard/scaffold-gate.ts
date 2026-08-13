@@ -31,7 +31,7 @@ import { canonicalHost } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { readEffectiveState } from '../../shared/state';
+import { isNewProjectMode, readEffectiveState } from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scope';
 import { allowsNextjs } from './forbidden';
@@ -84,7 +84,7 @@ export function scaffoldGate(ctx: Ctx): HookResult {
   // past this line only ever DENIES a command the agent proposed, so a
   // misclassified repo gets an unwanted refusal it can argue with, never an
   // unasked-for change to itself.
-  if (mode !== 'new-project') return noop();
+  if (!isNewProjectMode({ mode })) return noop();
 
   // (A) On-stack enforcement: compare the requested scaffolder with the
   // runtime-derived framework instead of assuming every project is React/Vite.

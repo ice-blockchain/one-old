@@ -123,6 +123,16 @@ test('clean write in a materialized main-agent project → noop', () => {
 // validator via `node -e` (read-only) and was denied 3× with "architecture
 // input must be valid JSON" while the on-disk file was valid. Unverifiable
 // shell references must judge the DISK artifact, not an empty pseudo-payload.
+// Split into a read leg and a write leg, because the two assertions wanted
+// opposite things from one command. The row's write-ness came ENTIRELY from
+// `process.stdout.write(…)` being read as a file write — a false positive — so
+// the read leg asserted "a read is permitted" about a command the gate believed
+// was a write, and the invalid-input leg could only reach the architecture-input
+// validator through that same false positive. Removing the false positive (the
+// right fix: a print is not a write) would therefore have turned the second
+// assertion green-to-red, which is a defect enshrined in a passing test. Now the
+// read leg names a read and the write leg names four commands that genuinely
+// write, all reaching the identical deny id.
 test('node -e referencing a VALID on-disk architecture-input is not denied as invalid JSON', () => {
   withMaterialized({ currentRunId: 'R', activeAgentRole: 'senior-architect' }, (cwd) => {
     const inputPath = path.join(cwd, '.traffic-one', 'runs', 'R', 'architecture-input-v1.json');
@@ -135,19 +145,38 @@ test('node -e referencing a VALID on-disk architecture-input is not denied as in
         { id: 'home', name: 'Home', kind: 'page' },
       ],
     }), 'utf8');
-    const command = 'node -e "const fs=require(\'node:fs\'); const x=JSON.parse(fs.readFileSync(\'.traffic-one/runs/R/architecture-input-v1.json\',\'utf8\')); process.stdout.write(JSON.stringify(x.schemaVersion))"';
-    const result = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
-    assert.equal(result.kind, 'noop', JSON.stringify(result));
-
-    // The extraction path is alive: the same command against an INVALID disk
-    // file still denies — now blaming the unverifiable command, not the file.
+    const command = 'node -e "const fs=require(\'node:fs\'); const x=JSON.parse(fs.readFileSync(\'.traffic-one/runs/R/architecture-input-v1.json\',\'utf8\')); console.log(JSON.stringify(x.schemaVersion))"';
+    assert.equal(planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command })).kind, 'noop');
+    // Still a read when the file on disk is INVALID: a read cannot be blamed for
+    // the contents it reads (the 3co refusal was exactly that blame).
     fs.writeFileSync(inputPath, '{ not json', 'utf8');
-    const denied = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
-    assert.equal(denied.kind, 'deny');
-    if (denied.kind === 'deny') {
-      assert.match(denied.reason, /cannot be reconstructed|not valid ArchitectureInputV1/);
-    }
+    assert.equal(planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command })).kind, 'noop');
   });
+});
+
+test('an unverifiable shell WRITE of the architecture input is judged on the disk artifact', () => {
+  // The extraction path the 3co fix installed, exercised by commands whose write
+  // is not in doubt. Every one denies with the same id, so the test pins the
+  // BEHAVIOUR (an unverifiable shell write is judged against the artifact on
+  // disk) rather than one command's accidental classification.
+  for (const command of [
+    `node -e "require('fs').appendFileSync('.traffic-one/runs/R/architecture-input-v1.json','')"`,
+    `python3 -c "open('.traffic-one/runs/R/architecture-input-v1.json','a').close()"`,
+    'cat other.json > .traffic-one/runs/R/architecture-input-v1.json',
+    `sed -i '' 's/a/b/' .traffic-one/runs/R/architecture-input-v1.json`,
+  ]) {
+    withMaterialized({ currentRunId: 'R', activeAgentRole: 'senior-architect' }, (cwd) => {
+      const inputPath = path.join(cwd, '.traffic-one', 'runs', 'R', 'architecture-input-v1.json');
+      fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+      fs.writeFileSync(inputPath, '{ not json', 'utf8');
+      const denied = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      assert.equal(denied.kind, 'deny', command);
+      if (denied.kind === 'deny') {
+        assert.equal((denied as { denyId?: string }).denyId, 'architecture-input-shell-unverified', command);
+        assert.match(denied.reason, /cannot be reconstructed|not valid ArchitectureInputV1/);
+      }
+    });
+  }
 });
 
 test('plugin authoring cwd does not exempt an absolute project file from the plan/structure gate', () => {
@@ -1197,23 +1226,43 @@ test('existing codebase: an Edit near a pre-existing wide line is not collapse-d
 });
 
 // Mode is set at onboarding: a confirmed new-project state must not flip
-// itself to an existing-* mode mid-run — that single write would disarm the
-// whole architecture-gate family the stand-down keys on.
-test('a confirmed new-project state cannot rewrite itself to an existing mode', () => {
+// itself to ANY other mode mid-run — that single write would disarm the whole
+// architecture-gate family the stand-down keys on.
+//
+// "Any other" is the correction. The guard used to refuse only a proposed mode
+// starting with `existing`, which read the family backwards: the gates stand
+// down on `!isNewProjectMode`, so `{"mode": ""}`, a `.one.json` with no `mode`
+// at all, or `"workspace"` disarmed exactly as much as `existing-codebase` did
+// and walked straight past the guard — while the run's compiled architecture
+// and verification contracts stayed frozen against the old profile.
+test('a confirmed new-project state cannot rewrite itself to any other mode', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-    const flip = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
-      file_path: '.traffic-one/.one.json',
-      content: JSON.stringify({ ...onDisk, mode: 'existing-codebase' }),
-    }));
-    assert.equal(flip.kind, 'deny');
-    if (flip.kind === 'deny') assert.match(flip.reason, /State mode gate/);
-    // Rewrites that keep the mode stay allowed.
-    const keep = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
-      file_path: '.traffic-one/.one.json',
-      content: JSON.stringify({ ...onDisk, stack: 'default' }),
-    }));
-    assert.equal(keep.kind, 'noop');
+    const rewrite = (state: Record<string, unknown>): ReturnType<typeof planWriteGate> => planWriteGate(
+      writeCtx(cwd, 'Write', 'file-write', {
+        file_path: '.traffic-one/.one.json',
+        content: JSON.stringify(state),
+      }),
+    );
+    const { mode: _dropped, ...withoutMode } = onDisk as Record<string, unknown>;
+    for (const [label, proposed] of [
+      ['existing-codebase', { ...onDisk, mode: 'existing-codebase' }],
+      ['existing-with-supabase', { ...onDisk, mode: 'existing-with-supabase' }],
+      ['the empty string', { ...onDisk, mode: '' }],
+      ['no mode key at all', withoutMode],
+      ['workspace', { ...onDisk, mode: 'workspace' }],
+      ['an unrecognized word', { ...onDisk, mode: 'brownfield' }],
+      ['a non-string', { ...onDisk, mode: 42 }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      const flip = rewrite(proposed);
+      assert.equal(flip.kind, 'deny', `${label} must be refused`);
+      if (flip.kind === 'deny') assert.match(flip.reason, /State mode gate/);
+    }
+    // Rewrites that keep the mode stay allowed, including a hand-edited casing
+    // that every gate already reads as the same mode.
+    assert.equal(rewrite({ ...onDisk, stack: 'default' }).kind, 'noop');
+    assert.equal(rewrite({ ...onDisk, mode: ' New-Project ' }).kind, 'noop',
+      'the guard normalizes what it compares, or it refuses a no-op');
   });
   // CREATING the state file (no `.one.json` on disk) with an existing mode is
   // what the state-gate prose instructs on first detection of an existing
@@ -1534,4 +1583,447 @@ test('a paid write into a RUNNING unit reservation is denied; terminal/stale uni
     }));
     if (stale.kind === 'deny') assert.doesNotMatch(stale.reason, /OpenCode reservation/);
   });
+});
+
+// ── Runtime sidecars: the shell channels that name no file ──────────────────
+// `scan-bound.json` decides how much browser evidence a run owes, and
+// `runtime-sidecar-owner-gate`'s shipped prose promises no agent may "create,
+// edit, delete, widen, replace, or repair it through Write/Edit/apply_patch/
+// shell". Seventeen channels were driven against it: Write, Edit, apply_patch
+// (update and delete), a heredoc, a redirect, `: >`, `rm`, `rm -f`, `mv`,
+// `sed -i` and MultiEdit all denied, because each NAMES the file and
+// `shellTrafficOneWriteTargets` makes a named path a gate target. Four returned
+// `noop` while deleting it — and the same four also deleted `verification-v2.json`,
+// `assignments.json` and `run.json` unchallenged.
+function sidecarProject(fn: (cwd: string) => void): void {
+  withMaterialized({ currentRunId: 'run-1', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'run-1');
+    fs.mkdirSync(runDir, { recursive: true });
+    for (const [name, body] of Object.entries({
+      'scan-bound.json': { bound: true, reason: 'source scan exceeds 10000 files', recordedAt: 'x' },
+      'verification-v2.json': { schemaVersion: 2, runId: 'run-1' },
+      'run.json': { schemaVersion: 1, runId: 'run-1', status: 'planned' },
+    })) fs.writeFileSync(path.join(runDir, name), JSON.stringify(body), 'utf8');
+    fn(cwd);
+  });
+}
+
+function shellResult(cwd: string, command: string) {
+  return planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+}
+
+test('a shell command that destroys a run sidecar without naming it is refused', () => {
+  sidecarProject((cwd) => {
+    for (const command of [
+      // the directory, not the file: the sidecar regex needs a file under the run id
+      'rm -rf .traffic-one/runs/run-1',
+      'rm -rf .traffic-one/runs',
+      'rm -rf .traffic-one',
+      'mv .traffic-one/runs/run-1 /tmp/parked',
+      // no path token the target scan can see
+      "find .traffic-one/runs -name 'scan-bound.json' -delete",
+      'find . -name "verification-v2.json" -delete',
+      "find .traffic-one/runs -name '*.json' -exec rm {} \\;",
+      // These two DO arm the target scan now: the interpreter arm reads the
+      // destructive verb as a callee rather than requiring an `fs.` handle, so
+      // the path each names is extracted. The two rows are then refused by a
+      // DIFFERENT number of routes, which is worth stating because the earlier
+      // comment here claimed neither was extracted at all: the first names a
+      // sidecar and is refused twice over, while the second's extracted target
+      // is the run DIRECTORY, which `runtimeOwnedRunSidecar` does not match, so
+      // it still rests on the sidecar gate alone.
+      `node -e "require('fs').unlinkSync('.traffic-one/runs/run-1/scan-bound.json')"`,
+      `node -e "require('fs').rmSync('.traffic-one/runs/run-1', { recursive: true })"`,
+      // names nothing whatsoever
+      'git clean -fdx',
+      'git clean -fd',
+      // EVERY git spelling that rewrites the worktree, not just the ones that
+      // take untracked files. The rows below `git stash -u` were asserted FREE
+      // in this file until round 3, on the premise that "a runtime sidecar is
+      // untracked by construction" — which is a claim about the repository, not
+      // about the path. `.gitignore` never untracks what is already committed,
+      // and `scaffold-content.ts` records `.traffic-one/runs/**` shipping
+      // committed in the field. In that state each of these reverts
+      // `scan-bound.json` to its committed bytes with the ignore entry present
+      // and doing nothing about it, and each was `noop` at this gate.
+      'git stash push -u .traffic-one/runs',
+      'git stash push --include-untracked .traffic-one/runs',
+      'git stash -u',
+      'git stash push .traffic-one/runs',
+      'git stash',
+      'git checkout -- .traffic-one/runs',
+      'git checkout .',
+      'git restore .',
+      'git restore --worktree --staged .traffic-one',
+      'git reset --hard',
+      'git reset --hard HEAD~1',
+      'git rm -r .traffic-one/runs',
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.equal(r.kind, 'deny', command);
+      assert.match(r.kind === 'deny' ? r.reason : '', /Runtime sidecar gate/, command);
+      assert.equal(r.kind === 'deny' ? r.denyId : '', 'runtime-sidecar-owner-gate', command);
+      // and the refusal names a real runtime artifact rather than a glob
+      assert.match(r.kind === 'deny' ? r.reason : '', /\.traffic-one\/runs\/run-1\/[a-z0-9.-]+\.json/, command);
+    }
+  });
+});
+
+test('the same channels stay free where they destroy no runtime sidecar', () => {
+  sidecarProject((cwd) => {
+    for (const command of [
+      // scoped away from the runs tree
+      'rm -rf node_modules',
+      'rm -rf apps/web/dist',
+      'git clean -fdx apps/web',
+      // a dry run deletes nothing; without force `git clean` refuses to run
+      'git clean -nxd',
+      'git clean',
+      // The git rows that stay free are the ones whose SCOPE misses the runs
+      // tree, or that do not touch the worktree at all — not the ones that
+      // "only" move tracked files, which is the premise the rows above correct.
+      'git stash push apps/web/src',
+      'git checkout -- apps/web/src',
+      'git checkout main',
+      'git checkout -b feature/x',
+      'git restore --staged .traffic-one',
+      'git reset .traffic-one/runs',
+      'git reset --soft HEAD~1',
+      'git rm --cached -r .traffic-one/runs',
+      'git diff -- .traffic-one/runs',
+      'git log --oneline -- .traffic-one/runs',
+      // a find sweep whose own predicate cannot match a sidecar
+      "find . -name '.DS_Store' -delete",
+      "find . -name '*.log' -delete",
+      // reading a sidecar is explicitly allowed by the gate's own prose
+      `node -e "console.log(require('fs').readFileSync('.traffic-one/runs/run-1/run.json','utf8'))"`,
+      'cat .traffic-one/runs/run-1/scan-bound.json',
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason : ''}`);
+    }
+  });
+});
+
+// The class this guard has to survive: a reviewer digest is written as a heredoc
+// whose findings QUOTE the destructive commands above (observed 8c-codex for
+// `sed -i`). A body is data, not a command.
+test('a heredoc body quoting a destructive command is not a destructive command', () => {
+  sidecarProject((cwd) => {
+    const r = shellResult(cwd, [
+      "cat > .traffic-one/digests/run-1/reviewer.md <<'EOF'",
+      'verdict: CHANGES_REQUESTED — one finding.',
+      '1. Do not run `rm -rf .traffic-one/runs/run-1` to reset the floor.',
+      "2. `find .traffic-one/runs -name 'scan-bound.json' -delete` is refused too.",
+      'EOF',
+    ].join('\n'));
+    if (r.kind === 'deny') assert.doesNotMatch(r.reason, /Runtime sidecar gate/);
+  });
+});
+
+// A NESTED shell was the whole family's blind spot, and the shape of the miss
+// is worth keeping in front of the next reader: `stripQuotedSegments` keeps a
+// `bash -c` body raw on purpose, but every verb anchor was `(?:^|[\s;&|(])`,
+// which does not accept a quote. So the verb sitting FIRST inside the body —
+// the one preceded by `'` and nothing else — was invisible, while the identical
+// deletion with any no-op in front of it was refused. Measured on a fixture
+// holding four real sidecars: `bash -c 'rm …'` open, `bash -c 'cd . && rm …'`
+// refused. Five nested spellings open before, zero after.
+//
+// The paired rows below are the assertion that matters. A test that only listed
+// the open spellings would pass again the moment a sixth shell name or a
+// different flag spelling appeared; asserting that a body is judged EXACTLY as
+// the same text at the top level is a statement about the two being one thing.
+test('a destructive command inside a nested shell is judged as the same command', () => {
+  const BODIES = [
+    'rm .traffic-one/runs/run-1/scan-bound.json',
+    'rm -rf .traffic-one/runs/run-1',
+    'rm -rf .traffic-one/runs',
+    'mv .traffic-one/runs/run-1/run.json parked.json',
+    "find .traffic-one/runs -name '*.json' -delete",
+    'git clean -fdx',
+  ];
+  sidecarProject((cwd) => {
+    for (const body of BODIES) {
+      const bare = shellResult(cwd, body);
+      assert.equal(bare.kind, 'deny', body);
+      for (const wrapper of [
+        `bash -c '${body}'`,
+        `sh -c '${body}'`,
+        `zsh -c '${body}'`,
+        `bash -lc '${body}'`,
+        `/bin/bash -c '${body}'`,
+        `bash -c "${body}"`,
+        // Compound, so the outer half is real work and the inner half is the
+        // deletion — the shape an agent reaches for first.
+        `npm run build && bash -c '${body}'`,
+      ]) {
+        const nested = shellResult(cwd, wrapper);
+        assert.equal(nested.kind, 'deny', wrapper);
+        assert.equal(nested.kind === 'deny' ? nested.denyId : '',
+          'runtime-sidecar-owner-gate', wrapper);
+      }
+    }
+  });
+});
+
+// And the negative half, without which the rule above would be satisfied by
+// refusing every nested shell there is.
+test('a nested shell that destroys nothing stays free', () => {
+  sidecarProject((cwd) => {
+    for (const command of [
+      `bash -c 'npm test'`,
+      `bash -c 'rm -rf node_modules'`,
+      `bash -c 'rm -rf dist build'`,
+      `sh -c "git clean -fdx apps/web"`,
+      `bash -c 'cat .traffic-one/runs/run-1/scan-bound.json'`,
+      `bash -c "find . -name '*.log' -delete"`,
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason : ''}`);
+    }
+  });
+});
+
+// The shell's own expansion, written out. Traffic One is handed the literal
+// token and never the expansion, so `.traffic-one/*` used to resolve to a path
+// that is under nothing at all. A bare `*` stays free in the same breath,
+// because the shell does not expand it over dotfiles and refusing it would be
+// the same error pointed the other way.
+test('a trailing glob is the directory it expands to, and a bare glob is not', () => {
+  sidecarProject((cwd) => {
+    for (const command of [
+      'rm -rf .traffic-one/*',
+      'rm -rf .traffic-one/runs/*',
+      'rm -rf ./.traffic-one/runs/*',
+      `bash -c 'rm -rf .traffic-one/*'`,
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.equal(r.kind, 'deny', command);
+      assert.equal(r.kind === 'deny' ? r.denyId : '', 'runtime-sidecar-owner-gate', command);
+    }
+    const bare = shellResult(cwd, 'rm -rf *');
+    if (bare.kind === 'deny') assert.doesNotMatch(bare.reason, /Runtime sidecar gate/);
+  });
+});
+
+// Nothing on disk to destroy → nothing to refuse. A project with no run state
+// Five routes a peer drove through both detectors against the previous round,
+// none of them in the four families the module header discloses as open. Each
+// row below is the exact spelling that was invisible, and the paired PERMIT row
+// is the ordinary agent idiom the fix must not start refusing — `bash -o
+// pipefail -c` in particular is far more often `npm test | tee` than it is a
+// deletion.
+test('the nested-shell, flag-run, stash-message, heredoc and directory-literal routes are refused', () => {
+  sidecarProject((cwd) => {
+    for (const command of [
+      // 1. Two levels of `-c`. The single extraction pass appended the inner
+      //    `bash -c 'rm …'` and then tokenized it to the verb `bash`, which has
+      //    no arm — while the module header claimed this exact shape re-entered.
+      `bash -c "bash -c 'rm -rf .traffic-one/runs'"`,
+      // 2. Any flag between the shell name and `-c`.
+      `bash --norc -c 'rm -rf .traffic-one/runs'`,
+      `bash --noprofile --norc -c 'rm -rf .traffic-one/runs'`,
+      `bash -o pipefail -c 'rm -rf .traffic-one/runs'`,
+      // 3. `-m`'s ARGUMENT read as a pathspec, so the whole-tree fallback never
+      //    fired; and `save`, whose operands are a message and never a path.
+      'git stash push -u -m wip',
+      'git stash push --include-untracked -m wip',
+      'git stash save -u wip',
+      // `save` without `-u` moved from the permitted list below to here in
+      // round 3: it still reverts every TRACKED modification in the worktree,
+      // and a sidecar is only untracked in a repository that never committed it.
+      'git stash save wip',
+      // 4. A heredoc fed to an INTERPRETER is code, not the data a digest body is.
+      "python3 <<'PY'\nimport os\nos.remove('.traffic-one/runs/run-1/run.json')\nPY",
+      "node <<'JS'\nrequire('fs').rmSync('.traffic-one/runs',{recursive:true})\nJS",
+      // 5. The runs DIRECTORY itself — the most destructive target there is —
+      //    did not match a literal pattern that required a further character.
+      `node -e "require('fs').rmSync('.traffic-one/runs', {recursive:true})"`,
+      `python3 -c "import shutil; shutil.rmtree('.traffic-one/runs')"`,
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.equal(r.kind, 'deny', command);
+      assert.equal(r.kind === 'deny' ? r.denyId : '', 'runtime-sidecar-owner-gate', command);
+      assert.match(r.kind === 'deny' ? r.reason : '',
+        /\.traffic-one\/runs\/run-1\/[a-z0-9.-]+\.json/, command);
+    }
+    for (const command of [
+      `bash -o pipefail -c 'npm test | tee out.txt'`,
+      `bash --norc -c 'npm run lint'`,
+      'git stash push -u -m wip apps/web/src',
+      "python3 <<'PY'\nopen('out.txt','w').write('x')\nPY",
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason : ''}`);
+    }
+  });
+});
+
+// ROUND 6, AT THE GATE. Eleven spellings a peer drove through the previous
+// round's inversion and measured as `noop` — with the file shorter or gone on
+// disk — plus the five ORDINARY commands the same round refused with a paragraph
+// about runtime state they do not touch. Both halves are here because each was
+// bought with the other: the inversion is only affordable if the refusals it
+// adds are real destructions, and only defensible if the permits it keeps are
+// real work.
+//
+// The four families the module header discloses as unseen are deliberately NOT
+// here: `'.traffic' + '-one/…'`, `chr(45)`, base64/hex and `os.path.join` over
+// split segments stay `noop` and stay disclosed.
+test('a destruction BESIDE the path, behind a quoted separator, or under an unlisted verb is refused', () => {
+  sidecarProject((cwd) => {
+    for (const command of [
+      // SIBLING POSITION. The occurrence's ancestors are all read entries and
+      // the destruction is next to it, not above it.
+      `python3 -c "import zipfile; list(map(lambda f: zipfile.ZipFile(f,'w'), ['.traffic-one/runs/run-1/run.json']))"`,
+      `python3 -c "import glob,zipfile; [zipfile.ZipFile(f,'w') for f in glob.glob('.traffic-one/runs/run-1/run.json')]"`,
+      `python3 -c "import glob,zipfile; [zipfile.ZipFile(f,'w') for f in sorted(glob.glob('.traffic-one/runs/run-1/run.json'))]"`,
+      `ruby -e "require 'pathname'; Dir.glob('.traffic-one/runs/run-1/run.json').each { |f| Pathname.new(f).delete }"`,
+      // The bare runs DIRECTORY reached by a read chain, unlinked in the
+      // comprehension body — the same shape, one path extractor away.
+      `python3 -c "import pathlib; [p.unlink() for p in pathlib.Path('.traffic-one/runs').glob('*/run.json')]"`,
+      // A STATEMENT SEPARATOR INSIDE A STRING. `'; cat x'[0:0]` is empty, so the
+      // path is unchanged; the quoted `;` used to end the statement early and the
+      // verb `cat` was then read out of the middle of a Python string literal.
+      `python3 -c "import zipfile; zipfile.ZipFile('; cat x'[0:0] + '.traffic-one/runs/run-1/run.json','w')"`,
+      `python3 -c "import zipfile; zipfile.ZipFile('| head x'[0:0] + '.traffic-one/runs/run-1/run.json','w')"`,
+      // AN UNLISTED VERB. None of these four is in any verb set this gate keeps;
+      // each is refused for not being a read, which is the whole point of the
+      // inversion.
+      `awk 'BEGIN{print "" > ".traffic-one/runs/run-1/run.json"}'`,
+      'curl -s -o .traffic-one/runs/run-1/run.json file:///dev/null',
+      'openssl enc -base64 -in /dev/null -out .traffic-one/runs/run-1/run.json',
+      `ex -sc '%d|x' .traffic-one/runs/run-1/run.json`,
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.equal(r.kind, 'deny', command);
+      assert.equal(r.kind === 'deny' ? r.denyId : '', 'runtime-sidecar-owner-gate', command);
+    }
+    // THE PRICE THE PREVIOUS ROUND PAID FOR THE SAME FENCE, now back to work:
+    // a path whose FIRST segment is interpolated names no scope this gate can
+    // answer for, and answering anyway is how a fence gets deleted.
+    for (const command of [
+      'rm -rf "$(pwd)/dist"',
+      'rm -f "$f"',
+      'rm -rf "$TMPDIR/scratch"',
+      'mv "$src" dist/out.js',
+      'cp assets/logo.svg "$dest"',
+      // …while a literal first segment is still answered for, refused or not:
+      // this one is ordinary cache housekeeping and was already permitted.
+      'rm -rf node_modules/.cache/$PKG',
+      // A SEPARATOR INSIDE A QUOTED ARGUMENT OF A READ. This is the permit side
+      // of the quoted-separator fix and the row that makes the quote tracking in
+      // `statementBounds` observable: read quote-blind, the statement starts
+      // after the `;`, the verb becomes the fragment `bar"`, and an unrecognised
+      // verb refuses — so a grep with a semicolon in its pattern would be
+      // answered with a paragraph about atomic publication.
+      'grep "foo;bar" .traffic-one/runs/run-1/run.json',
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason : ''}`);
+    }
+  });
+});
+
+// Deleting a FINISHED run's directory is housekeeping, and the previous round
+// refused it: `runtimeOwnedRunSidecar` is run-id-agnostic, so the enumeration
+// reached into every run on disk and answered `rm -rf .traffic-one/runs/run-0`
+// with a paragraph about atomic publication of a file belonging to a run that
+// ended. The narrowing is to the LIVE run, and the control rows are the point —
+// a whole-tree spelling still reaches `run-1` and is still refused.
+test('destroying a finished run is housekeeping; destroying the live one is not', () => {
+  sidecarProject((cwd) => {
+    const old = path.join(cwd, '.traffic-one', 'runs', 'run-0');
+    fs.mkdirSync(old, { recursive: true });
+    for (const name of ['scan-bound.json', 'run.json', 'verification-v2.json']) {
+      fs.writeFileSync(path.join(old, name), '{}', 'utf8');
+    }
+    for (const command of [
+      'rm -rf .traffic-one/runs/run-0',
+      "find .traffic-one/runs/run-0 -name '*.json' -delete",
+      'mv .traffic-one/runs/run-0 /tmp/parked',
+    ]) {
+      const r = shellResult(cwd, command);
+      if (r.kind === 'deny') assert.doesNotMatch(r.reason, /Runtime sidecar gate/, command);
+    }
+    for (const command of [
+      'rm -rf .traffic-one/runs/run-1',
+      'rm -rf .traffic-one/runs',
+      'rm -rf .traffic-one',
+      'git clean -fdx',
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.equal(r.kind, 'deny', command);
+      assert.equal(r.kind === 'deny' ? r.denyId : '', 'runtime-sidecar-owner-gate', command);
+    }
+  });
+});
+
+// keeps every one of these commands, which is what keeps the fence narrow.
+test('destructive commands are free before any run sidecar exists', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    for (const command of ['rm -rf .traffic-one/runs', 'git clean -fdx', "find . -name '*.json' -delete"]) {
+      const r = shellResult(cwd, command);
+      if (r.kind === 'deny') assert.doesNotMatch(r.reason, /Runtime sidecar gate/, command);
+    }
+  });
+});
+
+// THE OTHER HALF OF THE WRITE DETECTOR, PRICED AT A GATE OUTCOME.
+//
+// Every measurement in this lane so far landed on `.traffic-one/**`, where a
+// missed spelling costs a runtime sidecar. `shellCommandHasWritePrimitive` also
+// decides whether a shell command is a FEATURE-SOURCE write, and there the cost
+// is the run-team contract: a parent that can rewrite `src/**` through a
+// spelling the detector cannot read has no assignment, no WorkUnit and no
+// reviewer, and the deny that should have stopped it never renders.
+//
+// A peer measured these four at the PREDICATE and reported the gate outcome as
+// UNDETERMINED because it did not build a run-team fixture. This is that
+// fixture: each row below returned `noop` — the parent's write executing
+// unowned — and each now draws the run-team refusal. The rows are the same
+// CLASSES as the sidecar ones (a mode behind a keyword, a mode as the first
+// argument, a pathlib receiver, a spawned shell), which is the point: one
+// vocabulary, two judgements, and the classes had to close in both.
+test('subagents project: a feature-source write spelled past the old vocabulary is denied', () => {
+  const TARGET = 'src/components/Button.tsx';
+  for (const command of [
+    `python3 -c "open('${TARGET}', mode='w')"`,
+    `python3 -c "from pathlib import Path; Path('${TARGET}').open('w')"`,
+    `python3 -c "from pathlib import Path; Path('/dev/null').replace('${TARGET}')"`,
+    `ruby -e "system('rm -f ${TARGET}')"`,
+    `php -r "fclose(fopen('${TARGET}','w'));"`,
+    `ruby -e "require 'fileutils'; FileUtils.rm_f('${TARGET}')"`,
+    `ruby -i -pe 'gsub(/.*/,"")' ${TARGET}`,
+    `awk -i inplace '{next}' ${TARGET}`,
+    `gzip -f ${TARGET}`,
+    `sort -o ${TARGET} /dev/null`,
+  ]) {
+    withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+      const r = shellResult(cwd, command);
+      assert.equal(r.kind, 'deny', command);
+      if (r.kind === 'deny') assert.match(r.reason, /Run-team enforcement gate|runtime contract|allowlist/i, command);
+    });
+  }
+});
+
+test('subagents project: reads of feature source stay free', () => {
+  const TARGET = 'src/components/Button.tsx';
+  for (const command of [
+    `python3 -c "print(open('${TARGET}').read())"`,
+    `python3 -c "print(open('${TARGET}','rb').read())"`,
+    `ruby -e "puts File.read('${TARGET}')"`,
+    `php -r "echo file_get_contents('${TARGET}');"`,
+    `gzip -c ${TARGET} | wc -c`,
+    `sort ${TARGET} | head -3`,
+    `awk '{print $1}' ${TARGET}`,
+    `sed -n '1,20p' ${TARGET}`,
+    "perl -MList::Util -e 'print 1'",
+  ]) {
+    withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+      const r = shellResult(cwd, command);
+      assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason.slice(0, 200) : ''}`);
+    });
+  }
 });

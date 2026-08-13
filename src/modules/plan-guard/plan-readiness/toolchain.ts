@@ -2,8 +2,8 @@
 // Toolchain parity: emit-config, prettier format parity/coverage, typecheck
 // ownership, crawl-origin, test-runner gaps, and self-reported skips.
 
-import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFile } from '../../../shared/bounded-read';
 import {
   webPackageRoot,
   type CompiledArchitectureV1,
@@ -120,7 +120,12 @@ export function eslintRuleSurvivalProblems(
   for (const rel of candidates) {
     let text: string;
     try {
-      text = fs.readFileSync(path.join(projectRoot, rel), 'utf8');
+      // BOUNDED (shared/bounded-read.ts). A config that is not a regular file
+      // joins the `continue` every unreadable candidate already took — the loop
+      // moves to the next spelling rather than the hook never returning.
+      const read = readRegularFile(path.join(projectRoot, rel));
+      if (read === null) continue;
+      text = read;
     } catch {
       continue;
     }

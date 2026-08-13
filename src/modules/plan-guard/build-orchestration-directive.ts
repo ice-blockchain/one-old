@@ -12,12 +12,13 @@ import { architectPhaseIncompleteReasons } from './plan-readiness';
 import { capabilityProfileForRun } from '../../shared/architecture-contract';
 import type { CapabilityProfileV1 } from '../../shared/capabilities';
 import { hostFlags } from '../../shared/host/capability-flags';
+import { hostSpawnType } from '../../shared/host/spawn-types';
 import { canonicalHost } from '../../shared/model-tiers';
 import { obj, type Rec } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { teamModeForLevel } from '../../shared/performance';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { ensureCurrentRunId, isMaintenancePhase, readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId, isMaintenancePhase, isNewProjectMode, readEffectiveState } from '../../shared/state';
 import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -106,7 +107,7 @@ function qaDirective(profile: CapabilityProfileV1): string {
 }
 
 function kiloOpenCodeSubagentsBuild(state: Rec, host: string): boolean {
-  if (state.mode !== 'new-project') return false;
+  if (!isNewProjectMode(state)) return false;
   // `mode` deliberately remains `new-project` after the first build so the
   // original stack/plan gates stay available. The lifecycle is what tells us the
   // greenfield build is over. Never inject an architect-first build directive for
@@ -155,9 +156,23 @@ export function buildOrchestrationDirective(cwd: string, host: string, stateIn?:
   const spawnRule = kilo
     ? 'use Kilo\'s built-in `general` Task type. It is a real subagent; do not use `explore` and do not fall back to main-agent mode.'
     : `use the project-scoped global agent \`${architectSubagentType}\` materialized at ${openCodeGlobalAgentPath(cwd, 'senior-architect')}; do not use built-in \`general\`/\`explore\`.`;
-  const roleContractInstruction = kilo
-    ? 'Immediately after the role marker, tell the child to read `.kilo/agents/senior-architect.md` before acting; that file is the full Traffic One role contract.'
-    : 'The named OpenCode agent already carries the full Traffic One role contract.';
+  // CHECKED, not assumed. This clause hands the orchestrator a path to read, and
+  // on Kilo that path is a materialized file: a host whose `.kilo/agents` could
+  // not be written (a plain file at that path, an unwritable directory) makes the
+  // instruction name a file that does not exist, which costs the child a failed
+  // read and then leaves it with no contract at all and no idea it is missing.
+  // Same check, same reason, as the fallback-child contract line in
+  // session-start-setup.ts. OpenCode needs none: its contract travels INSIDE the
+  // named global agent, so there is nothing for the child to open.
+  const kiloContractRel = kilo ? hostSpawnType('kilo', 'senior-architect', cwd).contractPath : null;
+  const kiloContractPresent = Boolean(kiloContractRel && fs.existsSync(path.join(cwd, kiloContractRel)));
+  const roleContractInstruction = !kilo
+    ? 'The named OpenCode agent already carries the full Traffic One role contract.'
+    : kiloContractPresent
+      ? `Immediately after the role marker, tell the child to read \`${kiloContractRel}\` before acting; that file is the full Traffic One role contract.`
+      : `Do NOT tell the child to read \`${kiloContractRel}\` — Traffic One could not write it, so that file is not there. `
+        + 'State the role\'s task and scope inline instead; the `[t1-role: …]` marker is what binds the role. '
+        + 'Report to the user that whatever occupies that path has to be cleared.';
 
   if (shouldEmitBuildOrchestration(cwd, state, host)) {
     const runId = ensureCurrentRunId(cwd, state);

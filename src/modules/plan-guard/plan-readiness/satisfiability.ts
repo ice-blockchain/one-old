@@ -56,12 +56,13 @@ interface SweepOptions {
   /** Mirror of the hot path's `enforceI18n` (new-project or declared runtime). */
   enforceI18n: boolean;
   /**
-   * Mirror of the write gates' existing-codebase stand-down (existing-* modes):
-   * the sweep must judge outputs by the gates the implementer will ACTUALLY
-   * face, so where those gates stand down — the prescribed-stack static checks
-   * (asset integrity excepted), route/module mismatch, lexical i18n copy —
-   * their findings are not contract conflicts either. Ownership/scope findings
-   * keep counting in every mode.
+   * Mirror of the write gates' not-scaffolded stand-down (`!isNewProjectMode`,
+   * so every mode but `new-project`, undeclared included): the sweep must judge
+   * outputs by the gates the implementer will ACTUALLY face, so where those
+   * gates stand down — the prescribed-stack static checks (asset integrity
+   * excepted), route/module mismatch, lexical i18n copy — their findings are
+   * not contract conflicts either. Ownership/scope findings keep counting in
+   * every mode. The name is historical; the predicate is what has to match.
    */
   existingMode?: boolean;
   /** Test seam, same shape as validateI18nCatalogs' contentOverrides. */

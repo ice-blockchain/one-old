@@ -10,12 +10,16 @@ import {
   readRuntimeAssignments,
   uiAstLintLayer,
 } from '../../../shared/architecture-contract';
-import { readQaReportV2 } from '../../../shared/qa-report-v2';
+import {
+  TEST_EVIDENCE_CHECK_IDS,
+  readQaReportV2,
+  reportSettledWithoutTestEvidence,
+} from '../../../shared/qa-report-v2';
 import {
   formatFileWithPrettier,
   resolveProjectPrettier,
 } from '../../../shared/prettier-fix';
-import { isExistingProjectMode } from '../../../shared/state';
+import { isNewProjectMode } from '../../../shared/state';
 import { consolidateQualityFindings } from '../../../shared/state/quality-findings';
 import {
   readVerificationContract,
@@ -30,6 +34,8 @@ import {
   type Block,
   type Rec,
   exists,
+  recordScanBoundHit,
+  recordScanIncomplete,
 } from './context';
 import {
   builtAppIdentities,
@@ -104,6 +110,48 @@ function repairCollapsedSource(
   return collapsed;
 }
 
+/**
+ * The collapse scan's own compensation, at every branch that runs the scan.
+ *
+ * It used to live inline in the FRONTEND branch only, keyed on
+ * `collapsed.incomplete`, and the non-frontend implementer branch read
+ * `collapsed.file` and nothing else. So a backend collapse scan that hit
+ * COLLAPSE_MAX_FILES returned `file: null`, the gate passed, and no floor was
+ * raised — and with the scope filter absent (a missing or hash-invalid
+ * manifest) that walk is whole-project, where 600 files is ordinary. Measured
+ * end to end through `planReadinessViolations` over one tree with the cap blown:
+ * frontend digest `scan-bound.json` present, ledger entry 1; backend digest
+ * `scan-bound.json` absent, ledger entry 0.
+ *
+ * `incomplete` is no longer the whole question either. The scan now reports
+ * what it did NOT read (`withdrawn`), and an unread subtree is the same fact as
+ * an unfinished walk: the floor compensates both identically, so both are
+ * recorded here rather than one of them.
+ */
+function recordCollapseCoverage(
+  projectRoot: string,
+  runId: string,
+  role: string,
+  collapsed: ReturnType<typeof collapsedProductSourceFile>,
+  block: Block,
+): void {
+  if (!collapsed.incomplete && collapsed.withdrawn.length === 0) return;
+  const cause = collapsed.incomplete
+    ? `collapse scan bound: ${collapsed.scanned} product source files`
+    : `collapse scan did not read ${collapsed.withdrawn.length} entr`
+      + `${collapsed.withdrawn.length === 1 ? 'y' : 'ies'} it walked past: ${collapsed.withdrawn[0]}`;
+  // Record the BOUND before the message that leans on it. The verification
+  // contract raises `uiImpact` to the truncated-scan floor from this flag, and
+  // that raise is the entire licence for recording rather than denying — an
+  // unrecorded bound would leave the prose promising a compensation that never
+  // happened, which is what the demotion originally shipped as.
+  recordScanBoundHit(projectRoot, runId, cause);
+  recordScanIncomplete(projectRoot, runId,
+    block('frontend-structure-scan-incomplete',
+      `Frontend completion gate: STRUCT_SCAN_INCOMPLETE after ${collapsed.scanned} product source files. This is recorded, not blocking: hitting the scan bound raises \`uiImpact\` to the truncated-scan floor on this run's verification contract, so the run owes more browser evidence rather than less. Narrow generated/output roots or split the project contract so the whole owned tree is judged.`,
+      { SCANNED: collapsed.scanned, ROLE: role, CAUSE: cause }));
+}
+
 export function digestCompletionGates(ctx: {
   projectRoot: string;
   state: Rec;
@@ -132,11 +180,7 @@ export function digestCompletionGates(ctx: {
       state,
       assignmentScopesForRole(projectRoot, frontendRunId, 'senior-frontend'),
     );
-    if (collapsed.incomplete) {
-      violations.push(block('frontend-structure-scan-incomplete',
-        `Frontend completion gate: STRUCT_SCAN_INCOMPLETE after ${collapsed.scanned} product source files. A truncated scan is never a pass; narrow generated/output roots or split the project contract before re-emitting \`IMPLEMENTED\`.`,
-        { SCANNED: collapsed.scanned }));
-    }
+    recordCollapseCoverage(projectRoot, frontendRunId, 'senior-frontend', collapsed, block);
     if (collapsed.file) {
       violations.push(block('frontend-collapse-gate',
         // No character threshold in this text. Two detectors feed it — JS/TS
@@ -153,7 +197,7 @@ export function digestCompletionGates(ctx: {
     // never dead-end on them). Formatter parity is implementer-owner scoped
     // below and intentionally does not share this frontend-only branch.
     const frontendProfile = capabilityProfileForRun(projectRoot, state);
-    if (state.mode === 'new-project' && frontendProfile.profileId === 'vite-react') {
+    if (isNewProjectMode(state) && frontendProfile.profileId === 'vite-react') {
       const emitProblems = emitConfigProblems(projectRoot, frontendProfile);
       if (emitProblems.length > 0) {
         const problems = emitProblems.join('; ');
@@ -167,7 +211,7 @@ export function digestCompletionGates(ctx: {
     // implementer rewrote eslint.config.js, `max-lines` vanished silently, and
     // its absence later cost the whole news delegation batch. New-project only:
     // an existing codebase's lint config is the user's.
-    if (state.mode === 'new-project') {
+    if (isNewProjectMode(state)) {
       const missingRules = eslintRuleSurvivalProblems(projectRoot, frontendProfile);
       if (missingRules.length > 0) {
         const problems = missingRules.join('; ');
@@ -189,19 +233,25 @@ export function digestCompletionGates(ctx: {
         // STRUCT_ORPHAN_MODULE, STRUCT_API_CLIENT_UNUSED and
         // STRUCT_TAILWIND_NO_TOOLCHAIN to warnings on NEW projects too — the very
         // case Traffic One owns the structure and must block.
+        //
+        // The two arguments are exact complements, and one predicate decides
+        // both. An UNDECLARED mode used to be neither: greenfield false (so the
+        // gates around this one stood down) and notScaffolded false (so these
+        // findings stayed error-grade). That is the most opinion applied where
+        // the least is known.
         const report = runFullStructureScan(
           projectRoot,
           runId,
           architecture,
           'senior-frontend',
-          state.mode === 'new-project',
-          isExistingProjectMode(state),
+          isNewProjectMode(state),
+          !isNewProjectMode(state),
         );
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
-            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint \`max-lines\` rule — the project's own \`lint\` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (\`STRUCT_I18N_RUNTIME\`), and catalog validation (\`STRUCT_I18N_CATALOG\` — keys non-empty in every declared locale). Hardcoded-copy findings (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_REACT_TRANS\`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own \`lint\` run owns them. React child copy uses \`<Trans>\` with namespace, key, and fallback.`,
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint \`max-lines\` rule — the project's own \`lint\` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (\`STRUCT_I18N_RUNTIME\`), and catalog validation (\`STRUCT_I18N_CATALOG\` — keys non-empty in every declared locale). Hardcoded-copy findings (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_REACT_TRANS\`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own \`lint\` run owns them. React child copy uses \`<Trans>\` with namespace, key, and fallback. On a project Traffic One did NOT scaffold — an existing codebase, or one whose \`.one.json\` declares no mode at all — every finding named above is an opinion about code the plugin did not write and is recorded as a warning instead; only ownership (\`STRUCT_ASSIGNMENT_ALLOWLIST_GAP\`) and plan delivery (\`STRUCT_MISSING_PLANNED_MODULE\`) can reach this gate there.`,
             { FINDINGS: summary }));
         }
       }
@@ -224,7 +274,7 @@ export function digestCompletionGates(ctx: {
   if (
     implementedDigest
     && digestClaimsVerdict(implementerBody, 'IMPLEMENTED')
-    && state.mode === 'new-project'
+    && isNewProjectMode(state)
   ) {
     const runId = implementedDigest[2] || '';
     const ownerRole = `senior-${implementedDigest[3] || ''}`;
@@ -242,6 +292,7 @@ export function digestCompletionGates(ctx: {
         state,
         assignmentScopesForRole(projectRoot, runId, ownerRole),
       );
+      recordCollapseCoverage(projectRoot, runId, ownerRole, collapsed, block);
       if (collapsed.file) {
         violations.push(block('implementer-collapse-gate',
           `Implementer completion gate: do not write \`IMPLEMENTED\` with collapsed source. \`${collapsed.file}\` packs an entire function/component onto a single line — collapsed/minified source is a defect even when build, typecheck and lint pass, and the project formatter could not repair it. Write one statement per line, run the project formatter, and re-emit \`IMPLEMENTED\`.`,
@@ -520,8 +571,8 @@ export function digestCompletionGates(ctx: {
           runId,
           architecture,
           undefined,
-          state.mode === 'new-project',
-          isExistingProjectMode(state),
+          isNewProjectMode(state),
+          !isNewProjectMode(state),
         );
         const errors = report.findings.filter((finding) => finding.severity === 'error');
         if (errors.length > 0) {
@@ -612,8 +663,51 @@ export function digestCompletionGates(ctx: {
         const d = result.dimensions;
         const breakdown = `functional=${d.functionalQaStatus} accessibility=${d.accessibilityStatus} responsive=${d.responsiveStatus} lighthouse=${d.lighthouseStatus}`;
         violations.push(block('tester-qa-v2-gate',
-          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Dimensions: ${breakdown}. Re-run only the failing dimension for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`, and an \`advisory-warning\` is never the thing to fix. The sidecar is runtime evidence: produce it with the canonical runner — \`node ~/.traffic-one/bin/qa-evidence-runner.cjs browser …\` per the browser-qa skill, or \`stack --run-id <id>\` for no-browser contracts (the shim runs the plugin's \`scripts/qa-evidence-runner.cjs\`) — never by hand-editing \`report-v2.json\`; a hand-authored report cannot carry the machine evidence this gate verifies.`,
+          `Tester completion gate: VerificationContractV2 rejected this verdict (${result.code}: ${result.message}). Dimensions: ${breakdown}. Re-run only the failing dimension for uiImpact=${verification.uiImpact}; a blocked environment is not \`TESTS_GREEN\`, and an \`advisory-warning\` is never the thing to fix. The sidecar is runtime evidence: produce it with the canonical runner — \`node ~/.traffic-one/bin/qa-evidence-runner.cjs browser …\` per the browser-qa skill, or \`stack --run-id <id>\` for no-browser contracts (the shim runs the plugin's \`scripts/qa-evidence-runner.cjs\`) — never by hand-editing \`report-v2.json\`. Hand-authoring it does not work: on a browser contract the runtime Playwright evidence is content-hashed against the report, and on a no-browser contract every excused check is cross-checked against the runner's own resolution record under \`.traffic-one/runs/<id>/\`, which is a runtime-owned sidecar no agent may write.`,
           { ERROR: `${result.code}: ${result.message}`, DIMENSIONS: breakdown, UI_IMPACT: verification.uiImpact }));
+      }
+      // THE DISCLOSURE, ON THE PATH THAT HAD NO USER-FACING TEXT AT ALL.
+      //
+      // The product decision: a Node or plain-PHP project with a build script
+      // and no test script may still settle as verified, but the ABSENCE of test
+      // evidence must be explicit in the verdict, in the durable artifact, and
+      // in what the user is told. The first two are the validator's advisory and
+      // `settledWithoutTestEvidence` in report-v2.json. This is the third, and
+      // before it the only route that existed stopped at the artifact: the
+      // verdict said `passed`, `publishStackReport` dropped advisories from its
+      // return type, and this gate read `result.code` and `result.message` on
+      // failure and nothing at all on success.
+      //
+      // A DENY RATHER THAN A NOTICE, because this gate has no notice channel —
+      // `planReadinessViolations` returns blocking strings and nothing else —
+      // and inventing one is a cross-cutting change to every hook entry. It is
+      // still DISCLOSE and not REFUSE: the run settles, and what is refused is a
+      // verdict that omits the disclosure. The tester already learned this at
+      // the moment it ran the sweep (the runner prints the same advisory to
+      // stderr and into its stdout JSON), so the well-behaved path never reaches
+      // here, and the remedy is one line rather than a re-run.
+      //
+      // Derived from the CHECKS the validator accepted, not from the report's
+      // own `settledWithoutTestEvidence` flag: the flag is a convenience for a
+      // later reader of the artifact, and a gate that trusted it would be
+      // trusting the report to volunteer its own bad news.
+      if (result.ok && reportSettledWithoutTestEvidence(result.report.checks)) {
+        // The TEST-EVIDENCE ids only. The same run usually excuses `stack-lint`
+        // and `stack-format` too — an ordinary Node project declares neither —
+        // and naming those here would tell the tester to disclose a missing
+        // formatter as missing test coverage, which is both false and the
+        // fastest way to make the token meaningless.
+        const excused = result.report.checks
+          .filter((check) => (TEST_EVIDENCE_CHECK_IDS as readonly string[]).includes(check.id)
+            && check.status === 'not-applicable'
+            && check.notApplicable === 'no-command-declared')
+          .map((check) => check.id)
+          .join(', ');
+        if (!/NO_TEST_EVIDENCE/.test(content)) {
+          violations.push(block('tester-no-test-evidence-disclosure',
+            `Tester completion gate: this run settled with NO TEST EVIDENCE and the digest does not say so. The QA runner excused ${excused} because this project declares no such command — no manifest script and no pinned language default — so nothing was measured for it and nothing here says the code is covered. That is allowed to settle, and it is not allowed to settle quietly: a reader of this digest must not have to open \`report-v2.json\` to discover that the test dimension was skipped rather than passed. Add a line to this digest containing the token \`NO_TEST_EVIDENCE\` and naming what was not measured (for example: "NO_TEST_EVIDENCE — ${excused} was excused: this project declares no test command, so no tests ran"), then re-emit \`TESTS_GREEN\`. Do not add a placeholder test script to silence this; a script that runs nothing is worse than the honest absence.`,
+            { EXCUSED: excused }));
+        }
       }
     }
     if (!verification) {

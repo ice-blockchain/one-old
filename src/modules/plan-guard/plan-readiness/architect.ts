@@ -4,12 +4,14 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFile } from '../../../shared/bounded-read';
 import { packageJsonDeclaresWorkspace } from '../../../shared/hook/paths';
 import { hostFlags } from '../../../shared/host/capability-flags';
 import { canonicalHost } from '../../../shared/model-tiers';
 import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits, planDelegationUnitCount } from '../../../shared/opencode-roles';
 import { openCodeQueuePolicyViolations, type OpenCodeQueuePolicyOptions } from '../../../shared/opencode-queue';
 import { obj } from '../../../shared/obj';
+import { isNewProjectMode } from '../../../shared/state';
 
 import {
   type Rec,
@@ -79,7 +81,7 @@ function hasDecisionRecordWhenNeeded(projectRoot: string, state: Rec): boolean {
 }
 
 export function missingProjectMemoryBaseline(projectRoot: string, state: Rec): string[] {
-  if (state.mode !== 'new-project') return [];
+  if (!isNewProjectMode(state)) return [];
   const missing: string[] = [];
   for (const relPath of [
     '.traffic-one/product.md',
@@ -123,10 +125,35 @@ export function openCodeQueuePolicyErrors(content: string): string[] {
   return openCodeQueuePolicyViolations(parsePlanDelegationUnits(content));
 }
 
+/**
+ * `.traffic-one/plan.md`, BOUNDED (shared/bounded-read.ts), for the three
+ * readers below.
+ *
+ * The bare `fs.readFileSync` these replace had no bound at all on two shapes,
+ * and this is the file that MEASURED it: a FIFO at `.traffic-one/plan.md`
+ * SIGKILLed `planReadinessViolations` at 12 023 ms and a symlink to `/dev/zero`
+ * at 12 080 ms (.tmp/bounded-reads, load 9.54 of 10 cpus, one child per shape
+ * under a hard alarm, the planted path logged as the last read before the
+ * hang) — against a regular-file control that returned
+ * `architect-opencode-queue-gate` in 2.4 s. That is a PreToolUse hook, so the
+ * outcome is the one this codebase ranks below failing closed: no deny, no
+ * timeout, nothing logged, the editor session wedged until somebody finds the
+ * process.
+ *
+ * `null` — something is there and it is not a regular file — is deliberately
+ * folded into each caller's existing catch arm rather than into "the plan is
+ * empty". An `O_NONBLOCK` FIFO READS AS EMPTY, so a reader that mapped it onto
+ * `''` would hand `missingOpenCodeDelegateBlock` bytes nobody read; the fold
+ * below lands it exactly where an unreadable plan already landed.
+ */
+function readPlanOnDisk(projectRoot: string): string | null {
+  return readRegularFile(path.join(projectRoot, T1_MEMORY_DIR, 'plan.md'));
+}
+
 export function planOnDiskMissingOpenCodeBlock(projectRoot: string): boolean {
   try {
-    const plan = fs.readFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), 'utf8');
-    return missingOpenCodeDelegateBlock(plan);
+    const plan = readPlanOnDisk(projectRoot);
+    return plan === null ? true : missingOpenCodeDelegateBlock(plan);
   } catch {
     return true;
   }
@@ -134,8 +161,8 @@ export function planOnDiskMissingOpenCodeBlock(projectRoot: string): boolean {
 
 export function planOnDiskHasOpenCodeDelegateMarker(projectRoot: string): boolean {
   try {
-    const plan = fs.readFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), 'utf8');
-    return hasOpenCodeDelegateMarker(plan);
+    const plan = readPlanOnDisk(projectRoot);
+    return plan === null ? false : hasOpenCodeDelegateMarker(plan);
   } catch {
     return false;
   }
@@ -146,8 +173,8 @@ export function planOnDiskOpenCodeQueuePolicyErrors(
   options: OpenCodeQueuePolicyOptions = {},
 ): string[] {
   try {
-    const plan = fs.readFileSync(path.join(projectRoot, T1_MEMORY_DIR, 'plan.md'), 'utf8');
-    return openCodeQueuePolicyViolations(parsePlanDelegationUnits(plan), options);
+    const plan = readPlanOnDisk(projectRoot);
+    return plan === null ? [] : openCodeQueuePolicyViolations(parsePlanDelegationUnits(plan), options);
   } catch {
     return [];
   }

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { performance } from 'node:perf_hooks';
 
+import { assertLatencyBudget } from '../../../test-support/__tests__/latency-budget';
 import {
   compileArchitecture,
   validateArchitectureInput,
@@ -59,6 +59,20 @@ function prepare(cwd: string, input: ArchitectureInputV1 = INPUT): CompiledArchi
 
 function ids(report: ReturnType<typeof analyzeProjectStructure>): string[] {
   return [...new Set(report.findings.filter((finding) => finding.severity === 'error').map((finding) => finding.id))].sort();
+}
+
+// Everything the scan REPORTED, at any severity. Scan integrity is reported in
+// every mode and blocks in none (see the push site in scan.ts), so its
+// assertions read this list and pin the severity separately.
+function reportedIds(report: ReturnType<typeof analyzeProjectStructure>): string[] {
+  return [...new Set(report.findings.map((finding) => finding.id))].sort();
+}
+
+function severityOf(
+  report: ReturnType<typeof analyzeProjectStructure>,
+  id: string,
+): string | undefined {
+  return report.findings.find((finding) => finding.id === id)?.severity;
 }
 
 function writeResolvedUiSystem(
@@ -403,10 +417,13 @@ test('route-module matching is route-specific and ignores unused imports in the 
 });
 
 // StructureScanOptions.existing (existing-* modes): the complete scan judges
-// every pre-existing file, so the remaining architectural hard-errors demote
-// to warnings — a maintenance run must not dead-end on the user's own
-// entrypoint conventions, line width, or routing. Ownership stays blocking.
-test('existing option demotes the remaining architectural hard-errors to warnings', () => {
+// every pre-existing file, so every architectural finding it can raise is an
+// OPINION about code Traffic One did not write and demotes to a warning — a
+// maintenance run must not dead-end on the user's own entrypoint conventions,
+// line width, routing, primitive sharing or catalog shape. The exclusion is
+// stated rather than enumerated: ownership and plan delivery are the only two
+// findings that are not conventions, so they are the only two that stay errors.
+test('existing option demotes every architectural opinion, leaving only ownership and plan delivery', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
     fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), [
@@ -438,22 +455,33 @@ test('existing option demotes the remaining architectural hard-errors to warning
       assert.ok(ids(strict).includes(id), `${id} must be an error without the existing option`);
     }
 
-    const relaxed = analyzeProjectStructure(cwd, contract, { existing: true });
+    const relaxed = analyzeProjectStructure(cwd, contract, { notScaffolded: true });
     for (const id of DEMOTED) {
-      assert.ok(!ids(relaxed).includes(id), `${id} must not be an error with existing: true`);
+      assert.ok(!ids(relaxed).includes(id), `${id} must not be an error with notScaffolded: true`);
       assert.ok(
         relaxed.findings.some((finding) => finding.id === id && finding.severity === 'warning'),
         `${id} is still reported, as a warning`,
       );
     }
     assert.equal(relaxed.status, 'warnings');
+    assert.deepEqual(ids(relaxed), [], 'an opinion about the user own code never blocks');
 
     // Ownership is not architecture: allowlist gaps stay errors in every mode.
     const scoped = analyzeProjectStructure(cwd, contract, {
-      existing: true,
+      notScaffolded: true,
       allowlist: ['apps/web/src/main.tsx'],
     });
-    assert.ok(ids(scoped).includes('STRUCT_ASSIGNMENT_ALLOWLIST_GAP'));
+    assert.deepEqual(ids(scoped), ['STRUCT_ASSIGNMENT_ALLOWLIST_GAP']);
+  });
+
+  // Plan delivery is the other exclusion, and it is a fact about the compiled
+  // contract rather than a convention: the module this run promised does not
+  // exist on disk. Nothing about an existing codebase makes that legitimate.
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), 'export {};\n');
+    const report = analyzeProjectStructure(cwd, contract, { notScaffolded: true });
+    assert.deepEqual(ids(report), ['STRUCT_MISSING_PLANNED_MODULE']);
   });
 });
 
@@ -552,7 +580,14 @@ test('comments, JSX strings, config, tests, and stories do not create structural
   });
 });
 
-test('scanner limit is fail-closed and planned output gaps are blocking', () => {
+// The scanner limit is REPORTED rather than blocking: the bound it trips is a
+// file count over a tree the writer usually cannot shrink, and the deny it used
+// to raise named no remedy. What replaces the block lives in the verification
+// contract — an incomplete diff pins `uiImpact` to the domain maximum, so a
+// truncated run owes more browser evidence than a complete one. Truncation is
+// one-directional as evidence besides: a walk that stopped early can only miss a
+// finding, never fabricate one, so the allowlist gap it DID see still blocks.
+test('scanner limit is reported as a warning and planned output gaps stay blocking', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
     fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), 'export {};\n');
@@ -562,13 +597,45 @@ test('scanner limit is fail-closed and planned output gaps are blocking', () => 
       allowlist: ['apps/web/src/main.tsx'],
     });
     assert.equal(report.complete, false);
-    const findingIds = ids(report);
-    assert.ok(findingIds.includes('STRUCT_SCAN_INCOMPLETE'));
-    assert.ok(findingIds.includes('STRUCT_ASSIGNMENT_ALLOWLIST_GAP'));
+    assert.ok(reportedIds(report).includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.equal(severityOf(report, 'STRUCT_SCAN_INCOMPLETE'), 'warning');
+    assert.ok(ids(report).includes('STRUCT_ASSIGNMENT_ALLOWLIST_GAP'));
   });
 });
 
-test('source-tree symbolic links make the structural scan incomplete', () => {
+// The scan's skip list and COLLAPSE_SKIP_DIR_RE must name the same build-output
+// roots. A cache the framework wrote inside a source root is not just scan
+// budget the walk spends for nothing — it is ANALYZED, and emitted bundles are
+// collapsed, oversized and full of hardcoded copy, so the run is judged on
+// output the user never authored and cannot fix. `target` is deliberately
+// segment-anchored: a source file called `target.ts` is still scanned.
+test('framework build caches inside a source root are skipped, not judged as authored code', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), 'export {};\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/target.ts'), 'export const target = 1;\n');
+    // One packed bundle per cache root: collapsed source is an error-severity
+    // finding, so an unskipped root announces itself.
+    const bundle = `${'function chunk(){return 1};'.repeat(40)}\n`;
+    for (const cache of ['.svelte-kit/output', '.nuxt/dist', '.angular/cache', 'target/classes']) {
+      fs.mkdirSync(path.join(cwd, 'apps/web/src', cache), { recursive: true });
+      fs.writeFileSync(path.join(cwd, 'apps/web/src', cache, 'bundle.js'), bundle);
+    }
+    const report = analyzeProjectStructure(cwd, contract, {
+      allowlist: ['apps/web/src/**'],
+    });
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+      report.findings.filter((finding) => /\.svelte-kit|\.nuxt|\.angular|(^|\/)target\//.test(finding.file)),
+      [],
+      JSON.stringify(report.findings),
+    );
+    assert.equal(report.filesScanned, 2,
+      'main.tsx and target.ts only — a source file merely NAMED target is still scanned');
+  });
+});
+
+test('a source-tree symbolic link is skipped and recorded, and the walk continues', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
     fs.mkdirSync(path.join(cwd, 'external-source'), { recursive: true });
@@ -584,24 +651,120 @@ test('source-tree symbolic links make the structural scan incomplete', () => {
     );
 
     const report = analyzeProjectStructure(cwd, contract);
-    assert.equal(report.complete, false);
-    assert.ok(ids(report).includes('STRUCT_SCAN_INCOMPLETE'));
+    // Not followed — the linked tree is source the contract does not govern —
+    // and not fatal either. The link is one entry; the rest of the tree is still
+    // walked, so `complete` stays true. It is not FREE, though: nothing read the
+    // subtree behind it, so the entry is counted and the caller turns that count
+    // into the same `uiImpact` floor the file cap earns (B1).
+    assert.equal(report.complete, true);
+    assert.equal(report.truncationKind, undefined);
+    assert.equal(report.skippedEntries, 1, 'counted, because the subtree behind it went unread');
+    assert.ok(!reportedIds(report).includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.equal(severityOf(report, 'STRUCT_SCAN_SKIPPED'), 'warning');
     assert.match(
-      report.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || '',
+      report.findings.find((finding) => finding.id === 'STRUCT_SCAN_SKIPPED')?.message || '',
       /symbolic link.*apps\/web\/src\/linked/i,
     );
   });
 });
 
-test('missing or escaped compiled source roots fail closed instead of producing a partial pass', () => {
+test('one planted link cannot withdraw an error-grade finding from the rest of the tree', () => {
+  // The B1 attack, verbatim: `walkSourceFiles` used to RETURN at the link, so
+  // an entry sorting before the real source took every finding after it off
+  // the report while `filesScanned` still read plausible. Measured before the
+  // fix: STRUCT_ENTRYPOINT_COMPONENT present without the link, absent with it,
+  // and the git diff complete throughout, so nothing pinned `uiImpact` either.
   withProject((cwd) => {
     const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), [
+      "import { createRoot } from 'react-dom/client';",
+      'export function Inline() { return <div>inline</div>; }',
+      "createRoot(document.getElementById('root')!).render(<Inline />);",
+      '',
+    ].join('\n'));
+    const withoutLink = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.ok(reportedIds(withoutLink).includes('STRUCT_ENTRYPOINT_COMPONENT'));
+
+    // `aaa-` so the link is read before `main.tsx` in directory order.
+    fs.symlinkSync(
+      path.join(cwd, 'apps/web/src/pages'),
+      path.join(cwd, 'apps/web/src/aaa-linked'),
+      'dir',
+    );
+    const withLink = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.ok(reportedIds(withLink).includes('STRUCT_ENTRYPOINT_COMPONENT'),
+      'the defect must still be found with a link planted ahead of it');
+    assert.equal(withLink.status, 'failed');
+    assert.equal(withLink.filesScanned, withoutLink.filesScanned);
+    // And this link costs nothing to COUNT either: it resolves to
+    // `apps/web/src/pages`, which this same walk reads under its real path, so
+    // there is no unread subtree behind it and no floor to owe. Counting it
+    // would price a loop or an in-tree alias as lost coverage it never lost.
+    assert.equal(withLink.skippedEntries, 0);
+    assert.ok(!reportedIds(withLink).includes('STRUCT_SCAN_SKIPPED'));
+  });
+});
+
+test('an unreadable source file costs that file and no other', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/main.tsx'), [
+      "import { createRoot } from 'react-dom/client';",
+      'export function Inline() { return <div>inline</div>; }',
+      "createRoot(document.getElementById('root')!).render(<Inline />);",
+      '',
+    ].join('\n'));
+    // Sorts before `main.tsx`, so the old `break` dropped the entrypoint with
+    // it — measured as `filesScanned: 0` on a project with three source files.
+    const blocked = path.join(cwd, 'apps/web/src/aaa-blocked.tsx');
+    fs.writeFileSync(blocked, 'export const x = 1;\n');
+    fs.chmodSync(blocked, 0o000);
+    try {
+      const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+      assert.equal(report.complete, true);
+      assert.ok(reportedIds(report).includes('STRUCT_ENTRYPOINT_COMPONENT'));
+      assert.equal(report.skippedEntries, 1, 'costs that file — and the evidence floor for it');
+      assert.match(
+        report.findings.find((finding) => finding.id === 'STRUCT_SCAN_SKIPPED')?.message || '',
+        /cannot read source file .*aaa-blocked\.tsx/,
+      );
+    } finally {
+      fs.chmodSync(blocked, 0o644);
+    }
+  });
+});
+
+test('the file bound is the one truncation left, and it stays a warning', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/a.tsx'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/b.tsx'), 'export const b = 1;\n');
+    const report = analyzeProjectStructure(cwd, contract, { maxFiles: 1 });
+    assert.equal(report.complete, false);
+    assert.equal(report.truncationKind, 'bound');
+    assert.equal(severityOf(report, 'STRUCT_SCAN_INCOMPLETE'), 'warning');
+    assert.match(
+      report.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || '',
+      /exceeds 1 files/,
+    );
+  });
+});
+
+test('an unresolvable source root blocks, because no floor compensates a report about nothing', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    // The coupling condition, literally: STRUCT_SCAN_INCOMPLETE is a warning
+    // only where the verification contract raises `uiImpact` for it. The floor
+    // is fed by the BOUND, so a walk that found no tree at all keeps the error
+    // — otherwise a run whose source roots do not resolve clears the completion
+    // gates on the strength of having judged no files.
     const missing = analyzeProjectStructure(cwd, {
       ...contract,
       sourceRoots: ['missing-src'],
     });
     assert.equal(missing.complete, false);
-    assert.ok(ids(missing).includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.equal(missing.truncationKind, 'unresolvable');
+    assert.equal(severityOf(missing, 'STRUCT_SCAN_INCOMPLETE'), 'error');
     assert.match(
       missing.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || '',
       /cannot resolve source root missing-src/,
@@ -612,11 +775,19 @@ test('missing or escaped compiled source roots fail closed instead of producing 
       sourceRoots: ['../outside'],
     });
     assert.equal(escaped.complete, false);
-    assert.ok(ids(escaped).includes('STRUCT_SCAN_INCOMPLETE'));
+    assert.equal(escaped.truncationKind, 'unresolvable');
+    assert.equal(severityOf(escaped, 'STRUCT_SCAN_INCOMPLETE'), 'error');
     assert.match(
       escaped.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || '',
       /source root escapes project boundary/,
     );
+    // Scan integrity is not an opinion, so the not-scaffolded demotion does not
+    // reach it — that demotion runs before this finding is pushed.
+    const unowned = analyzeProjectStructure(cwd, {
+      ...contract,
+      sourceRoots: ['missing-src'],
+    }, { notScaffolded: true });
+    assert.equal(severityOf(unowned, 'STRUCT_SCAN_INCOMPLETE'), 'error');
   });
 });
 
@@ -873,7 +1044,17 @@ test('Laravel controller routes defer target resolution to compiled page existen
   });
 });
 
-test('hot single-file structural analysis remains below the 150 ms p95 budget', () => {
+// THROUGH THE THREE-VALUED INSTRUMENT, not a bare `assert.ok(p95 < 150)`.
+// This was the same 150 ms threshold, the same 250 samples, the same 20 warmups
+// and the same percentile index as the Write pre-tool budget the instrument was
+// built for — written two-valued, so a contended machine could only report it as
+// a code regression, which is the flake that instrument exists to remove. It also
+// imported nothing, so the coverage check in
+// src/test-support/__tests__/latency-budget-ci.test.ts could not see it, and it
+// ran only inside the parallel suite, where an INCONCLUSIVE verdict is a warning
+// by design. Un-enforced and flake-prone at once; both halves are closed by
+// measuring it here and naming this file in the serial `latency-budget` job.
+test('hot single-file structural analysis remains below the 150 ms p95 budget', (t) => {
   withProject((cwd) => {
     const contract = prepare(cwd);
     const source = [
@@ -883,18 +1064,13 @@ test('hot single-file structural analysis remains below the 150 ms p95 budget', 
       '}',
       '',
     ].join('\n');
-    for (let warmup = 0; warmup < 20; warmup += 1) {
-      analyzeStructureText('apps/web/src/pages/Dashboard.tsx', source, contract.profile);
-    }
-    const durations: number[] = [];
-    for (let sample = 0; sample < 250; sample += 1) {
-      const started = performance.now();
-      analyzeStructureText('apps/web/src/pages/Dashboard.tsx', source, contract.profile);
-      durations.push(performance.now() - started);
-    }
-    durations.sort((a, b) => a - b);
-    const p95 = durations[Math.floor(durations.length * 0.95)]!;
-    assert.ok(p95 < 150, `hot structural p95 ${p95.toFixed(2)} ms exceeds 150 ms`);
+    assertLatencyBudget(t, {
+      label: 'hot single-file structural analysis',
+      budgetMs: 150,
+      samples: 250,
+      warmup: 20,
+      run: () => { analyzeStructureText('apps/web/src/pages/Dashboard.tsx', source, contract.profile); },
+    });
   });
 });
 
@@ -1276,7 +1452,7 @@ test('an in-project symlink does not make the source scan incomplete', () => {
   });
 });
 
-test('a directory symlink still makes the scan incomplete', () => {
+test('a directory symlink out of the project is skipped, not followed, and not fatal', () => {
   withProject((cwd) => {
     const contract = prepare(cwd, {
       schemaVersion: 1,
@@ -1294,9 +1470,16 @@ test('a directory symlink still makes the scan incomplete', () => {
       fs.symlinkSync(outside, path.join(cwd, 'apps/web/src/linked'));
       const report = analyzeProjectStructure(cwd, contract);
       assert.ok(
-        report.findings.some((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE'),
-        'a directory link can graft source the contract does not govern',
+        report.findings.some((finding) => (
+          finding.id === 'STRUCT_SCAN_SKIPPED' && /linked/.test(finding.message)
+        )),
+        'a directory link can graft source the contract does not govern, so it is not followed',
       );
+      assert.ok(
+        !report.findings.some((finding) => finding.file.includes('linked')),
+        'and nothing under it is judged',
+      );
+      assert.equal(report.complete, true);
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }
@@ -1339,5 +1522,188 @@ test('a headless .ts feature entry satisfies its compiled module and stays wired
     fs.rmSync(path.join(cwd, variant));
     const missing = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
     assert.ok(missing.includes('STRUCT_MISSING_PLANNED_MODULE'));
+  });
+});
+
+// B1, the walk-notions table as a test. One collapsed source file planted in a
+// compiled source root, then hidden from the walk four different ways. Measured
+// before the fix, every hidden row read `status: warnings`, `complete: true`,
+// `truncationKind: null`, the defect ABSENT, and no floor owed — while the file
+// cap, the one route that was compensated, read `failed`/`bound`/floor raised.
+// Both halves matter: a report that cannot say the defect is there must at least
+// say it did not look, and pay for the looking it skipped.
+test('every way of not reading a subtree is counted, and none of them hides a defect silently', () => {
+  const COLLAPSED = 'export function Widget(){ const a=1; const b=2; const c=3; return <div>'
+    + '<span>{a}</span><span>{b}</span><span>{c}</span></div>; }\n';
+  const rows: Array<{
+    label: string;
+    plant: (cwd: string) => void;
+    restore?: (cwd: string) => void;
+  }> = [
+    {
+      label: 'directory symlink over the subtree',
+      plant: (cwd) => {
+        fs.mkdirSync(path.join(cwd, 'outside/widgets'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'outside/widgets/Widget.tsx'), COLLAPSED);
+        fs.symlinkSync(path.join(cwd, 'outside/widgets'),
+          path.join(cwd, 'apps/web/src/features/widgets'), 'dir');
+      },
+    },
+    {
+      label: 'unreadable directory',
+      plant: (cwd) => {
+        fs.mkdirSync(path.join(cwd, 'apps/web/src/features/widgets'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'apps/web/src/features/widgets/Widget.tsx'), COLLAPSED);
+        fs.chmodSync(path.join(cwd, 'apps/web/src/features/widgets'), 0o000);
+      },
+      restore: (cwd) => fs.chmodSync(path.join(cwd, 'apps/web/src/features/widgets'), 0o755),
+    },
+    {
+      label: 'unreadable file',
+      plant: (cwd) => {
+        fs.writeFileSync(path.join(cwd, 'apps/web/src/features/Widget.tsx'), COLLAPSED);
+        fs.chmodSync(path.join(cwd, 'apps/web/src/features/Widget.tsx'), 0o000);
+      },
+      restore: (cwd) => fs.chmodSync(path.join(cwd, 'apps/web/src/features/Widget.tsx'), 0o644),
+    },
+    {
+      label: 'symlinked source file',
+      plant: (cwd) => {
+        fs.mkdirSync(path.join(cwd, 'outside'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'outside/Widget.tsx'), COLLAPSED);
+        fs.symlinkSync(path.join(cwd, 'outside/Widget.tsx'),
+          path.join(cwd, 'apps/web/src/features/Widget.tsx'));
+      },
+    },
+  ];
+
+  // The control: read normally, the defect is an ERROR finding, and nothing is
+  // owed because nothing went unread.
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    fs.writeFileSync(path.join(cwd, 'apps/web/src/features/Widget.tsx'), COLLAPSED);
+    const control = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.equal(control.status, 'failed');
+    assert.ok(reportedIds(control).includes('STRUCT_COLLAPSED_LINE'));
+    assert.equal(control.skippedEntries, 0);
+    assert.equal(control.complete, true);
+  });
+
+  for (const row of rows) {
+    withProject((cwd) => {
+      const contract = prepare(cwd);
+      row.plant(cwd);
+      try {
+        const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+        // Still not a truncation, and deliberately so: `complete: false` is
+        // terminal at settlement, and a run whose only sin is an unreadable
+        // vendor link must not become an unexplained QA rejection after the
+        // work is paid for.
+        assert.equal(report.complete, true, row.label);
+        assert.equal(report.truncationKind, undefined, row.label);
+        // But the count is nonzero, which is what the verification contract
+        // reads to raise the truncated-scan floor — so the run owes MORE
+        // browser evidence for the code this report could not judge.
+        assert.ok(report.skippedEntries >= 1, `${row.label} must be counted`);
+        assert.equal(severityOf(report, 'STRUCT_SCAN_SKIPPED'), 'warning', row.label);
+      } finally {
+        row.restore?.(cwd);
+      }
+    });
+  }
+});
+
+// A link into a build output the project DECLARED. The peer's measurement was
+// exact and the cost is real: `apps/web/src/features/widgets ->
+// apps/web/dist/widgets` sits inside a compiled source root, its own name is
+// not excluded, and nothing else reads its target, so the walk records an
+// unfollowed link and the run owes the truncated-scan floor for a directory of
+// build output. Eight such links produce eight findings, and a reviewer reads
+// eight of those as eight problems — the "it is only one bit" defence was wrong.
+//
+// The two narrowings previously considered were both rejected for good reason:
+// re-admitting the SKIP_RE clause forgives a laundered source tree, and reading
+// the target to see whether it looks derived is a guess the walk cannot make.
+// This is the third option. The contract ANSWERS. A declaration is the run's own
+// frozen input, hashed into `contractHash`, refused at compile time if it would
+// swallow a source root, and it costs zero filesystem reads.
+test('a link into a DECLARED build output is a no-loss; the same link undeclared is not', () => {
+  const COLLAPSED = 'export function W(){ const a=1; const b=2; const c=3; return <div>'
+    + '<span>{a}</span><span>{b}</span><span>{c}</span></div>; }\n';
+  const plantLinks = (cwd: string, count: number): void => {
+    for (let index = 0; index < count; index += 1) {
+      fs.mkdirSync(path.join(cwd, `apps/web/dist/widgets${index}`), { recursive: true });
+      fs.writeFileSync(path.join(cwd, `apps/web/dist/widgets${index}/W.tsx`), COLLAPSED);
+      fs.symlinkSync(
+        path.join(cwd, `apps/web/dist/widgets${index}`),
+        path.join(cwd, `apps/web/src/features/widgets${index}`),
+        'dir',
+      );
+    }
+  };
+
+  // Undeclared, one link: the disclosed cost, restated as a measurement.
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    plantLinks(cwd, 1);
+    const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.equal(report.skippedEntries, 1);
+    assert.equal(severityOf(report, 'STRUCT_SCAN_SKIPPED'), 'warning');
+  });
+
+  // Undeclared, eight links: eight findings, which is the correction.
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    plantLinks(cwd, 8);
+    const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.equal(report.skippedEntries, 8);
+    assert.equal(
+      report.findings.filter((finding) => finding.id === 'STRUCT_SCAN_SKIPPED').length,
+      8,
+      'eight links are eight findings, not one bit',
+    );
+  });
+
+  // Declared: free, on both counts, with no filesystem read of the target.
+  withProject((cwd) => {
+    const contract = prepare(cwd, { ...INPUT, buildOutputs: ['apps/web/dist'] });
+    assert.deepEqual(contract.buildOutputs, ['apps/web/dist']);
+    plantLinks(cwd, 8);
+    const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.equal(report.skippedEntries, 0, JSON.stringify(report.findings));
+    assert.ok(!reportedIds(report).includes('STRUCT_SCAN_SKIPPED'));
+    assert.equal(report.complete, true);
+  });
+
+  // A declaration that names a directory nothing resolves under forgives
+  // nothing. The clause is about where the TARGET lands, not about the word.
+  withProject((cwd) => {
+    const contract = prepare(cwd, { ...INPUT, buildOutputs: ['apps/web/elsewhere'] });
+    plantLinks(cwd, 1);
+    const report = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.equal(report.skippedEntries, 1);
+  });
+});
+
+// The declaration's one abuse, refused where it is made rather than where it is
+// read: `buildOutputs: ["apps/web/src"]` would tell the scan that this project's
+// own compiled source is derived, and every link into it would go free.
+test('a declared build output may not swallow a compiled source root or output', () => {
+  withProject((cwd) => {
+    for (const swallowing of ['apps/web/src', 'apps/web', 'apps/web/src/pages']) {
+      assert.throws(
+        () => prepare(cwd, { ...INPUT, buildOutputs: [swallowing] }),
+        /declared build output .* contains compiled source or a compiled output/,
+        swallowing,
+      );
+    }
+    // And the shapes a path validator has to refuse before the compiler sees them.
+    for (const malformed of ['/etc', '../escape', 'dist/*', '', '.']) {
+      assert.throws(
+        () => prepare(cwd, { ...INPUT, buildOutputs: [malformed] }),
+        /buildOutputs\[0\] is invalid/,
+        malformed,
+      );
+    }
   });
 });

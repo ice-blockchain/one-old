@@ -27,6 +27,7 @@ export type StructureFindingId =
   | 'STRUCT_LAYER_MISMATCH'
   | 'STRUCT_ASSIGNMENT_ALLOWLIST_GAP'
   | 'STRUCT_SCAN_INCOMPLETE'
+  | 'STRUCT_SCAN_SKIPPED'
   | 'STRUCT_COMPONENT_LOC'
   | 'STRUCT_FUNCTION_COUNT'
   | 'STRUCT_COMPONENTS_PER_FILE'
@@ -47,6 +48,40 @@ export interface StructureReportV1 {
   contractHash: string;
   status: 'passed' | 'warnings' | 'failed';
   complete: boolean;
+  /**
+   * Present only when `complete` is false, and the whole reason the demotion is
+   * legible: `bound` is the file CAP, which the verification contract
+   * compensates for by pinning `uiImpact` to the truncated-scan floor, so
+   * STRUCT_SCAN_INCOMPLETE is a warning there. `unresolvable` is a walk with no
+   * tree to read, which nothing compensates, so the finding stays an error.
+   * A consumer that must feed the floor reads THIS rather than re-deriving the
+   * distinction from the finding's severity.
+   *
+   * `unaccounted` is the walk's own entry accounting failing to balance:
+   * `readdir` returned entries no plan function ever disposed of. Also an
+   * error, and unreachable in a correct walk — it exists so that a future edit
+   * which drops entries by ANY spelling (a filter upstream of the walker, a
+   * `break`, a `slice`, an index stride, a helper that swallows the exit)
+   * surfaces as a report the reader can see, rather than as a smaller number.
+   */
+  truncationKind?: 'bound' | 'unresolvable' | 'unaccounted';
+  /**
+   * How many entries inside a compiled source root the walk stepped over and
+   * kept going (`STRUCT_SCAN_SKIPPED`). NOT a truncation — the walk reached the
+   * end of every other branch, so `complete` and `truncationKind` stay silent —
+   * but not free either: what a skipped entry costs is the whole SUBTREE behind
+   * it, including error-grade findings that will never appear in `findings`
+   * because the files carrying them were never read. Measured with one collapsed
+   * source file planted behind a directory link: `status: warnings`, the defect
+   * absent, and no evidence owed.
+   *
+   * So this is the THIRD state — neither complete nor truncated — and the floor
+   * reads it exactly as it reads `truncationKind: 'bound'`: any nonzero count
+   * makes the run owe the truncated-scan `uiImpact` floor (see
+   * `runFullStructureScan`). A count rather than a flag because the message list
+   * is already in `findings`; this is the number the floor decision keys on.
+   */
+  skippedEntries: number;
   filesScanned: number;
   findings: StructureFinding[];
 }
@@ -68,16 +103,32 @@ export interface StructureScanOptions {
    */
   greenfield?: boolean;
   /**
-   * True only for existing-* modes (`existing-codebase`, `existing-with-supabase`).
-   * NOT the negation of `greenfield`: an absent/unknown mode is neither. On an
-   * existing codebase the remaining architectural hard-errors — route/module
-   * wiring, entrypoint conventions, strict collapse on pre-existing files —
-   * demote to warnings so a maintenance run can never dead-end on the user's
-   * own code. Ownership (`STRUCT_ASSIGNMENT_ALLOWLIST_GAP`), scan integrity
-   * (`STRUCT_SCAN_INCOMPLETE`), plan delivery (`STRUCT_MISSING_PLANNED_MODULE`),
-   * and catalog data validation stay blocking in every mode.
+   * True for any project Traffic One did not scaffold — the exact negation of
+   * `greenfield`, which is why it is spelled as one: `!isNewProjectMode`.
+   *
+   * It was `isExistingProjectMode` (existing-* modes only), which left the
+   * UNDECLARED mode as neither, and that is the mode where Traffic One knows
+   * least about the project. It received the most opinion of the three: the
+   * error-grade architectural findings all fired, while the nine toolchain
+   * gates and the install table stood down around them. Undeclared is not
+   * scaffolded, so it takes the same demotion an existing codebase takes.
+   *
+   * On a codebase Traffic One did not write, every architectural finding is an
+   * OPINION about someone else's conventions — route/module wiring, entrypoint
+   * conventions, strict collapse on pre-existing files, primitive sharing,
+   * styling systems, the project's own catalog shape — so all of them demote to
+   * warnings and a maintenance run can never dead-end on the user's own code.
+   * Only ownership (`STRUCT_ASSIGNMENT_ALLOWLIST_GAP`) and plan delivery
+   * (`STRUCT_MISSING_PLANNED_MODULE`) stay blocking, because neither is a
+   * convention: one says this run wrote outside its WorkUnitContract, the other
+   * that a module the compiled plan promised does not exist.
+   *
+   * Scan integrity is not in the demotion's reach at all: STRUCT_SCAN_INCOMPLETE
+   * and STRUCT_SCAN_SKIPPED are pushed after it, because what a scan did not
+   * read is a fact about the scan rather than an opinion about the code — see
+   * their push sites in scan.ts for which of them blocks and why.
    */
-  existing?: boolean;
+  notScaffolded?: boolean;
 }
 
 export interface ComponentDeclaration {
@@ -142,4 +193,13 @@ export interface CacheEntry {
 
 export const STRUCTURAL_SOURCE_RE = /\.(?:tsx?|jsx?|mjs|cjs|vue|svelte|astro|html|php|css|scss|swift|kt|dart)$/i;
 export const ANALYZABLE_UI_RE = /\.(?:tsx?|jsx?|mjs|cjs|vue)$/i;
-export const SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|coverage|out|\.turbo|\.next|\.vite|generated|__generated__|tests?|__tests__|fixtures?|stories)(?:\/|$)|\.(?:test|spec|stories?)\.[^.]+$/i;
+// The build-output roots must stay in step with COLLAPSE_SKIP_DIR_RE in
+// plan-readiness/context.ts. Anything missing here is not merely counted
+// against STRUCTURE_SCAN_DEFAULT_MAX_FILES — it is ANALYZED, so a framework
+// cache inside a source root gets structurally judged as if the user had
+// authored it, and its emitted bundles are exactly the collapsed, oversized,
+// hardcoded-copy shapes every finding here looks for. `.svelte-kit`, `.nuxt`
+// and `.angular` are the SvelteKit/Nuxt/Angular equivalents of `.next`;
+// `target` is the Rust/Maven one. Each matches a whole path segment, so a
+// source file named `target.ts` is untouched.
+export const SKIP_RE = /(^|\/)(?:\.git|\.traffic-one|node_modules|dist|build|coverage|out|target|\.turbo|\.next|\.nuxt|\.vite|\.svelte-kit|\.angular|generated|__generated__|tests?|__tests__|fixtures?|stories)(?:\/|$)|\.(?:test|spec|stories?)\.[^.]+$/i;

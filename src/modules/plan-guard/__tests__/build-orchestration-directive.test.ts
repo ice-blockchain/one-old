@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { buildOrchestrationDirective, shouldEmitArchitectCompletionReminder, shouldEmitBuildOrchestration } from '../build-orchestration-directive';
+import { hostSpawnType } from '../../../shared/host/spawn-types';
 import { writeArchitectPhaseComplete } from '../../../shared/../modules/plan-guard/__tests__/architect-phase-fixtures';
 
 function withProject(fn: (cwd: string) => void): void {
@@ -78,12 +79,29 @@ test('build-start architect directive is never emitted for a maintenance project
   });
 });
 
+/**
+ * The Kilo contract is written from `hostSpawnType` rather than a literal, and
+ * the assertion below still spells the path: a fixture that wrote to a stale
+ * literal would leave the directive on its NO-CONTRACT arm while the test read
+ * as an ordinary pass, which is how this row came to assert the present-tense
+ * wording against a project that had no contract on disk at all.
+ */
+function writeKiloArchitectContract(cwd: string): string {
+  const rel = hostSpawnType('kilo', 'senior-architect', cwd).contractPath;
+  assert.ok(rel, 'kilo declares no contract path for senior-architect');
+  const abs = path.join(cwd, rel as string);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, '# senior-architect role contract\n', 'utf8');
+  return rel as string;
+}
+
 test('buildOrchestrationDirective: Kilo uses general with the senior-architect role contract', () => {
   withProject((dir) => {
     const state = subagentsState();
     const t1 = path.join(dir, '.traffic-one');
     fs.mkdirSync(t1, { recursive: true });
     fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    writeKiloArchitectContract(dir);
     const d = buildOrchestrationDirective(dir, 'kilo', state);
     assert.match(d, /senior-architect/i);
     assert.match(d, /subagent_type/i);
@@ -97,6 +115,29 @@ test('buildOrchestrationDirective: Kilo uses general with the senior-architect r
     assert.match(d, /apps\/web/i);
     assert.match(d, /profile=vite-react/);
     assert.match(d, /playwright/i);
+  });
+});
+
+/**
+ * The converse of the row above, and the direction that had no coverage: with the
+ * contract ABSENT the orchestrator must be told NOT to send its child to a path
+ * that holds nothing, because a child told to read a missing file either invents
+ * the contract's contents or proceeds unconstrained. Both arms are pinned here so
+ * the disk check cannot be deleted — with only the present-tense row, hard-coding
+ * the instruction back to the unconditional wording stays green.
+ */
+test('buildOrchestrationDirective: Kilo is told NOT to cite the contract when it is absent', () => {
+  withProject((dir) => {
+    const state = subagentsState();
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    const d = buildOrchestrationDirective(dir, 'kilo', state);
+    assert.match(d, /Do NOT tell the child to read `\.kilo\/agents\/senior-architect\.md`/);
+    assert.doesNotMatch(d, /read `\.kilo\/agents\/senior-architect\.md` before acting/i);
+    assert.match(d, /State the role's task and scope inline instead/i);
+    assert.match(d, /senior-architect/i);
+    assert.match(d, /subagent_type: "general"/);
   });
 });
 

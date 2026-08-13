@@ -71,6 +71,26 @@ export interface RunTeamArgs {
   writingFeatureSourceViaCommand: boolean;
   writingBuildArtifact?: boolean;
   writingBuildArtifactViaCommand?: boolean;
+  /**
+   * "This write is going to be ALLOWED" — false when the dispatcher has already
+   * judged a violation the gate will refuse on.
+   *
+   * It governs the two things this gate MINTS, and nothing else: the per-path
+   * first-write claim and, through `attributeForeignWriteBySpawnScope`, the
+   * per-ROLE claim a scope-attributed Cursor worker would take. Both lock
+   * something to a session for the rest of the run (or SUBAGENT_STALE_MS), and
+   * neither may be bought by a write that never lands.
+   *
+   * IT SUPPRESSES NO CHECK. Every question this gate asks — who holds the path,
+   * who owns the scope, whether the role is occupied — is asked identically
+   * either way, so a doomed write still earns the exact deny it would have
+   * earned. That separation is the fix for a defect this flag itself caused: as
+   * a gate over the whole claim call it also withheld the ownership-conflict
+   * deny, precisely when another violation coexisted.
+   *
+   * Named for the first of the two mints, which is the name every caller
+   * already passes.
+   */
   recordFallbackClaims?: boolean;
   block: Block;
 }
@@ -116,6 +136,7 @@ function attributeForeignWriteBySpawnScope(
   rawData: unknown,
   manifest: RunManifest | null,
   targets: string[],
+  writeWillBeAllowed: boolean,
 ): RunAgentContext | null {
   if (!manifest || targets.length === 0) return null;
   const identity = hookSessionIdentity(rawData);
@@ -130,7 +151,87 @@ function attributeForeignWriteBySpawnScope(
   }
   const role = [...roles][0];
   if (!role) return null;
-  return claimThreadRole(projectRoot, state, sessionId, role, { parentSessionId: identity.parentSessionId || null });
+  // NEVER OVER A LIVE HOLDER. Minting on the strength of scope alone is already
+  // the one authority-creating path here; doing it while another thread demonstrably
+  // owns the role turns it into an authority-DESTROYING one, because the fresh
+  // claim's own `releaseSupersededRoleClaimsLocked` retires the incumbent — and a
+  // retired claim reads `claim-superseded`, which claim-thread-role.ts refuses to
+  // re-bind, so the real role agent is locked out for the rest of the run (or 30
+  // minutes of SUBAGENT_STALE_MS, whichever is shorter). Measured: a stray
+  // same-project session, and a session belonging to a SIBLING workspace member,
+  // both displaced a working senior-frontend and left its next in-scope write denied.
+  // `isForeignOnboardingThread` is a negative membership test over a default-open
+  // population, so it admits exactly those strays.
+  //
+  // It costs the two populations the rescue EXISTS for nothing.
+  // `activeClaimForOtherThread` counts only claims `claimAllowsState` accepts, so
+  // a role with no rival at all (the tests/3c Cursor worker) still binds, and a
+  // role whose only rival is an identity-REJECTED claim still binds too — the fact
+  // the run-team-not-subagent drift clause below already rests on, and the reason a
+  // contracted replacement recovers a drifted child.
+  //
+  // WHAT IT DOES COST, named because it is not nothing. A RESPAWNED Cursor worker
+  // for the same role arrives with a NEW session id — carrying no parent,
+  // transcript or agent linkage is the entire premise of this path — so at this
+  // point the stray and the legitimate replacement are indistinguishable by
+  // construction, and the replacement is denied for as long as the incumbent claim
+  // stays live. Two things end that, both MEASURED on the same fixture (a bound
+  // worker #1, then a second session with a fresh id writing the same in-scope
+  // path):
+  //   - THE PARENT RETIRES THE INCUMBENT, and the door is real rather than
+  //     hypothetical. The bind below also records a reuse-registry row for the role
+  //     (claimThreadRole mirrors it whenever `subagentContinuationAvailable`, which
+  //     is true on Cursor), and `markRunAgentReplacedIfMatches` stamps that row
+  //     `replaced`. `roleRegistryDisownsClaim` reads exactly that, so the incumbent
+  //     stops counting as a live rival: measured DENIED with the row live and
+  //     ALLOWED immediately after the retirement, with no other change. On Cursor
+  //     the caller that reaches it is the JUSTIFIED `[t1-replace-agent]` respawn in
+  //     agent-model/gate-reuse.ts, and that one only. The presumed-dead escape
+  //     beside it is NOT a second door for this population, however it reads: it
+  //     needs `continuationAgentId(live, 'cursor')` to be empty, and the bind mints
+  //     the row's `resumeId` FROM THE SESSION ID at the instant the row is created
+  //     (registry.ts derives it from `agentId` whenever that is not a Cursor
+  //     tool-call id, which a bind's session id never is), so the incumbent cannot
+  //     be an agent that "went without a resume id". Measured on the row this path
+  //     produces: `resumeId` present, `continuationAgentId` non-empty, escape
+  //     condition false. So this bullet is ONE door, not two.
+  //     (`disownConflictedRoleAgent` clears the same marker but its only production
+  //     caller is Codex model-conflict, so it is not the door on this host.)
+  //   - FAILING THAT, THE CLAIM AGES OUT at SUBAGENT_STALE_MS — 30 minutes, and
+  //     that is the hard bound on the lockout.
+  // Accepted deliberately: the silent displacement this guard replaces cost the
+  // LIVE agent the REST OF THE RUN, because its claim reads `claim-superseded` and
+  // never re-binds, while the deny costs a genuine replacement at most that
+  // 30-minute window.
+  //
+  // THE PARENT-SIDE EXIT IS NOT UNIVERSAL, and the paragraph above is scoped to
+  // the hosts that have it rather than describing every host. It needs a reuse
+  // row to stamp, and `claimThreadRole` records one only when
+  // `subagentContinuationAvailable()` — measured over five host configurations:
+  // present on Cursor, on Codex, and on Claude WITH the agent-teams flag; absent
+  // on bare Claude and on opencode, where the bind still succeeds but
+  // `agents.json` stays empty, so `markRunAgentReplacedIfMatches` has nothing to
+  // stamp and answers false. On those two the 30-minute age-out is the ONLY bound
+  // on the lockout, with no parent-side exit inside it — still bounded, and still
+  // shorter than the rest-of-run displacement it replaces, but the parent cannot
+  // shorten it.
+  //
+  // AND NOT AT ALL FOR A WRITE THAT IS ALREADY DOOMED. Everything above is an
+  // argument about what a MINT costs the role's rightful owner, and the same
+  // argument applies with nothing on the other side of the scale when the write
+  // is going to be refused anyway. Round 5 closed that for the PATH claim (see
+  // `recordFallbackClaims`) and left it open here: measured with the role held
+  // by NOBODY, a stray session, and a write whose sole violation is a static
+  // rule, the deny was issued AND a live role claim was minted for the stray —
+  // which then denies the next legitimate rescue for up to the 30 minutes
+  // bounded above, on the strength of a write that never landed. `mint: false`
+  // takes the same decision by the same reads and stakes nothing; the returned
+  // context is byte-identical, so the deny this write does earn is unchanged.
+  return claimThreadRole(projectRoot, state, sessionId, role, {
+    parentSessionId: identity.parentSessionId || null,
+    refuseOccupiedRole: true,
+    mint: writeWillBeAllowed,
+  });
 }
 
 // How a parent re-spawns a role so the child's identity actually binds. Shared by
@@ -197,9 +298,15 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const suffix = block('run-team-suffix',
     'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
   const deny = (reason: string): string => `${reason} ${suffix}`;
+  // ALWAYS ASK WHO HOLDS THE PATH; record only when the write will be allowed.
+  // Gating the whole call on the flag conflated a CHECK with a RECORD, and the
+  // check is the half a doomed write still needs: measured, a path held by one
+  // child and written by another with an unrelated static violation denied with
+  // the static rule alone, where the old ordering named the ownership conflict
+  // too. See `tryFallbackClaim`'s own note for the two costs that cost.
   const recordFallbackClaims = args.recordFallbackClaims !== false;
   const fallbackClaim = (ctx: RunAgentContext, target: string): { blocked: boolean; holder?: string } => (
-    recordFallbackClaims ? tryFallbackClaim(projectRoot, ctx, target) : { blocked: false }
+    tryFallbackClaim(projectRoot, ctx, target, { record: recordFallbackClaims })
   );
 
   // Shell writes can't be ownership-verified from a command line.
@@ -221,7 +328,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     // attribute by assigned scope (see attributeForeignWriteBySpawnScope). Uses the same
     // writeTargetPaths the scope checks below enforce on, so an attributed write is, by
     // construction, inside its role's scope.
-    || attributeForeignWriteBySpawnScope(projectRoot, state, rawData, preManifest, writeTargetPaths);
+    || attributeForeignWriteBySpawnScope(projectRoot, state, rawData, preManifest, writeTargetPaths, recordFallbackClaims);
   const acRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
   const inSubagent = Boolean(agentContext) || (!hasRunAgentState(projectRoot, state) && isSubagentSession(state));
   const role = acRole || activeAgentRole(state) || 'main agent';
@@ -554,9 +661,31 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   if (!runtimeAssignments && acRole === 'senior-tester' && ownershipTargets.length > 0
     && ownershipTargets.every((target) => isTestScopePath(target) || isTestInfraConfigPath(target))) return null;
 
+  // EVERY TARGET IS JUDGED BEFORE ANY TARGET IS STAKED, in both ownership loops
+  // below. Staking inside the per-target loop meant a two-target write took the
+  // lease on target A and then denied on target B's scope conflict — so A stayed
+  // locked to this session for the rest of the run on the strength of a write
+  // that never landed, which is the same defect `recordFallbackClaims` closes
+  // for the static rules, one loop further in. The check half still runs in the
+  // judging pass (`record: false`), so a held path denies exactly where it did;
+  // only the WRITE moves to the end, where the verdict is known.
+  const stakeAll = (ctx: RunAgentContext, targets: readonly string[]): { target: string; holder?: string } | null => {
+    for (const target of targets) {
+      const decision = fallbackClaim(ctx, target);
+      // A path taken between the judging pass and here — the same race the
+      // single pass had, now with an answer instead of a silent overwrite.
+      if (decision.blocked) return { target, holder: decision.holder };
+    }
+    return null;
+  };
+  const checkClaim = (ctx: RunAgentContext, target: string): { blocked: boolean; holder?: string } => (
+    tryFallbackClaim(projectRoot, ctx, target, { record: false })
+  );
+
   if (manifest && agentContext) {
     const mine = assignmentForContext(manifest, agentContext);
     const myKey = (mine && (mine.agentKey || mine.role)) || role;
+    const unowned: string[] = [];
     for (const target of ownershipTargets) {
       if (mine && matchesScope(target, mine.scope)) continue; // inside my scope -> allowed
       const conflict = manifest.assignments.find((a) => a !== mine
@@ -579,12 +708,19 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
           { TARGET: target, ROLE: String(myKey) }));
       }
       // Outside every assignment -> dynamic first-write claim (no hard deadlock).
-      const decision = fallbackClaim(agentContext, target);
+      const decision = checkClaim(agentContext, target);
       if (decision.blocked) {
         return deny(block('run-team-fallback-taken',
           `Run-team enforcement gate: \`${target}\` is outside every role's legacy scope and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path. For a compiled run, change ArchitectureInputV1 and let runtime regenerate the exact WorkUnitContract; never add paths to assignments.json manually.`,
           { TARGET: target, HOLDER: String(decision.holder) }));
       }
+      unowned.push(target);
+    }
+    const taken = stakeAll(agentContext, unowned);
+    if (taken) {
+      return deny(block('run-team-fallback-taken',
+        `Run-team enforcement gate: \`${taken.target}\` is outside every role's legacy scope and is already being written by \`${taken.holder}\` in this run. Coordinate so a single role owns this path. For a compiled run, change ArchitectureInputV1 and let runtime regenerate the exact WorkUnitContract; never add paths to assignments.json manually.`,
+        { TARGET: taken.target, HOLDER: String(taken.holder) }));
     }
     return null;
   }
@@ -595,6 +731,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     && ownershipTargets.every((target) => roleCanWriteFeatureSource(acRole, target));
   if (ownedByActiveRole) return null;
 
+  const legacyUnowned: string[] = [];
   for (const target of ownershipTargets) {
     const ownedBySomeRole = roleCanWriteFeatureSource('senior-frontend', target)
       || roleCanWriteFeatureSource('senior-backend', target);
@@ -608,12 +745,21 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     }
     // Owned by no role -> dynamic first-write claim (was the run-team-not-owned deadlock).
     if (agentContext) {
-      const decision = fallbackClaim(agentContext, target);
+      const decision = checkClaim(agentContext, target);
       if (decision.blocked) {
         return deny(block('run-team-fallback-taken',
           `Run-team enforcement gate: \`${target}\` is outside every Traffic One role's owned paths and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path.`,
           { TARGET: target, HOLDER: String(decision.holder) }));
       }
+      legacyUnowned.push(target);
+    }
+  }
+  if (agentContext) {
+    const taken = stakeAll(agentContext, legacyUnowned);
+    if (taken) {
+      return deny(block('run-team-fallback-taken',
+        `Run-team enforcement gate: \`${taken.target}\` is outside every Traffic One role's owned paths and is already being written by \`${taken.holder}\` in this run. Coordinate so a single role owns this path.`,
+        { TARGET: taken.target, HOLDER: String(taken.holder) }));
     }
   }
   return null;

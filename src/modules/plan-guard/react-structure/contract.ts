@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFile } from '../../../shared/bounded-read';
 import {
   canonicalRoutePath,
   moduleOutputVariants,
@@ -45,6 +46,27 @@ import {
 interface StructureTextContractOptions {
   allowlist?: string[];
   assignmentScope?: AssignedScope;
+}
+
+/**
+ * BOUNDED (shared/bounded-read.ts): every read below opens a path the PROJECT
+ * chose — a `packages/<name>` manifest, `components.json`, the shared UI public
+ * API — from a PreToolUse hook, where a FIFO's `open(2)` never returns and no
+ * timeout exists to notice. It THROWS for a non-regular object so each caller's
+ * existing catch owns it, which is the arm those catches already describe: "not
+ * scaffolded yet", "the framework scaffold owns a missing manifest", "missing
+ * public API is already covered above".
+ *
+ * Two of those catches then ask `fs.existsSync`, so a planted FIFO at
+ * `components.json` reports "must be valid JSON" rather than naming the shape.
+ * That is imprecise and deliberately left: it is a legible deny an operator can
+ * act on, in the fail-closed direction, and inventing a fourth message here
+ * would be a bigger change than the hazard warrants.
+ */
+function readProjectFile(absolute: string): string {
+  const text = readRegularFile(absolute);
+  if (text === null) throw new Error(`not-a-regular-file: ${absolute}`);
+  return text;
 }
 
 function profileUsesExplicitRouter(profile: CapabilityProfileV1): boolean {
@@ -278,7 +300,7 @@ function apiClientUsageFindings(
     let packageName = '';
     try {
       const manifest = JSON.parse(
-        fs.readFileSync(path.join(projectRoot, dir, 'package.json'), 'utf8'),
+        readProjectFile(path.join(projectRoot, dir, 'package.json')),
       ) as { name?: unknown };
       packageName = typeof manifest.name === 'string' ? manifest.name : '';
     } catch {
@@ -374,7 +396,7 @@ function uiSystemFindings(
   const packageManifestPath = `${uiSystem.sharedRoot}/package.json`;
   try {
     const manifest = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, packageManifestPath), 'utf8'),
+      readProjectFile(path.join(projectRoot, packageManifestPath)),
     ) as { name?: unknown; exports?: unknown };
     if (manifest.name !== '@app/ui' || !manifest.exports) {
       addMissing(
@@ -391,7 +413,7 @@ function uiSystemFindings(
   const componentsPath = `${uiSystem.sharedRoot}/components.json`;
   try {
     const config = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, componentsPath), 'utf8'),
+      readProjectFile(path.join(projectRoot, componentsPath)),
     ) as { $schema?: unknown; aliases?: unknown };
     const aliases = config.aliases && typeof config.aliases === 'object'
       ? config.aliases as Record<string, unknown>
@@ -412,7 +434,7 @@ function uiSystemFindings(
     .replace(/^\.\//, '');
   try {
     const manifest = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, appManifestPath), 'utf8'),
+      readProjectFile(path.join(projectRoot, appManifestPath)),
     ) as Record<string, unknown>;
     const dependencies = {
       ...(manifest.dependencies && typeof manifest.dependencies === 'object'
@@ -448,9 +470,8 @@ function uiSystemFindings(
 
   let publicApi = '';
   try {
-    publicApi = fs.readFileSync(
+    publicApi = readProjectFile(
       path.join(projectRoot, uiSystem.sharedRoot, 'src', 'index.ts'),
-      'utf8',
     );
   } catch {
     // Missing public API is already covered above.

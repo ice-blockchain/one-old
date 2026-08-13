@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { planReadinessViolations, architectPhaseIncompleteReasons, isArchitectPhaseComplete } from '../plan-readiness';
-import { refreshVerificationAfterImplementation } from '../plan-readiness/contracts';
+import { refreshVerificationAfterImplementation, runFullStructureScan } from '../plan-readiness/contracts';
 import { writeArchitectPhaseComplete } from './architect-phase-fixtures';
 import {
   architectureInputPath,
@@ -26,6 +26,12 @@ import {
   publishVerificationContract,
   readVerificationContract,
 } from '../../../shared/verification-contract';
+import {
+  VERIFICATION_PLAN_INTENT_END,
+  VERIFICATION_PLAN_INTENT_START,
+} from '../../../shared/verification-plan-intent';
+import { readQualityFindings } from '../../../shared/state/quality-findings';
+import { boundedScanTruncated, recordScanBoundHit } from '../plan-readiness/context';
 import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import { effectiveLegacyRunStatus, readRunSettlement } from '../../../shared/run-settlement';
 
@@ -799,6 +805,377 @@ test('PLAN_READY consumes strict verification intent and IMPLEMENTED refreshes u
       'an unplanned source path must require replanning before review');
     assert.ok(!review.includes('verification-contract-refresh-gate'),
       'the reviewer must not render the IMPLEMENTED-worded block');
+  });
+});
+
+// The impact floor and the STRUCT_SCAN_INCOMPLETE demotion are one change, and
+// this is the path that shows why they cannot be separated. Refusing `PLAN_READY`
+// on a truncated diff was the run's last unremediable opening stop — the causes
+// are a framework cache, a vendored tree, a symlink nobody planted deliberately,
+// and "derive a complete diff" is not an instruction an architect can follow.
+// Letting it through ALONE would have been the regression the whole item exists
+// to avoid: a contract computed from paths the scan never reached, publishing
+// `nonvisual` for a run that owed a browser. So the truncation is recorded and
+// the contract carries it — `uiImpact` pinned to the domain maximum, which is
+// strictly MORE evidence than a complete scan would have asked for.
+test('a truncated baseline diff records STRUCT_SCAN_INCOMPLETE and publishes a pinned contract instead of denying PLAN_READY', () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      currentRunId: 'R',
+      team: { mode: 'main-agent' },
+    };
+    for (const rel of ['apps/web/src/pages', 'apps/web/src/components', 'apps/web/src/features']) {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+    }
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { react: '19', 'react-dom': '19', 'react-router-dom': '7', vite: '7' },
+    }));
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/main.tsx'),
+      "import { createRoot } from 'react-dom/client';\nimport { App } from './App';\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+    );
+    fs.writeFileSync(
+      path.join(dir, 'apps/web/src/App.tsx'),
+      "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
+    );
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'), 'export function Home(){ return <main>Home</main>; }\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+
+    writeRequiredMemory(dir, state);
+    writeArchitectureInputOnly(dir, 'R');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+    // The truncation itself: an untracked directory symlink is what the git
+    // diff fails closed on, and it is exactly the shape nobody can be told to
+    // "narrow" away.
+    fs.symlinkSync(path.join(dir, 'apps/web/src/pages'), path.join(dir, 'apps/web/src/linked'), 'dir');
+
+    const ready = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(ready, [], 'a truncated diff must not be the reason a run cannot start');
+
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.scanComplete, false, 'the contract carries the truncation rather than hiding it');
+    assert.equal(planned?.uiImpact, 'visual', 'an unfinished scan is pinned to the domain maximum');
+    assert.equal(planned?.browserRequired, true);
+    assert.match(planned?.uiImpactReason || '', /truncated-scan floor/);
+    // Not a block is not "not reported": the ledger is the surface the
+    // completion digest consolidates into the run's fix-cycle document.
+    const ledger = readQualityFindings(dir, 'R');
+    assert.ok(
+      ledger.some((entry) => (
+        entry.id === 'STRUCT_SCAN_INCOMPLETE'
+        && entry.severity === 'warning'
+        // `main-agent` is the bucket consolidateQualityFindings folds into every
+        // role's document: a partial diff is a fact about the run, not a note to
+        // whoever tripped the scan.
+        && entry.role === 'main-agent'
+      )),
+      `the truncation must be recorded, got ${JSON.stringify(ledger)}`,
+    );
+    // And the run genuinely started — the sidecars the old deny withheld.
+    assert.ok(readRuntimeAssignments(dir, 'R'), 'assignments are published for a run that can proceed');
+
+    // The other half of the same coupling: the pinned impact is asserted from
+    // ignorance, so the ratchet must accept the evidence-backed answer that
+    // replaces it. Without the exemption this refresh reads as a weakening and
+    // dead-ends the run on a requirement nothing ever observed.
+    fs.unlinkSync(path.join(dir, 'apps/web/src/linked'));
+    const implemented = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(implemented, []);
+    const refreshed = readVerificationContract(dir, 'R');
+    assert.equal(refreshed?.scanComplete, true);
+    assert.equal(refreshed?.uiImpact, 'nonvisual', 'a complete diff replaces the floor asserted from ignorance');
+
+    // The exemption is bounded to that one transition. A contract published
+    // from a COMPLETE diff still ratchets, so real evidence can never be
+    // traded down for less of it.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){ return <main className="wide">Updated</main>; }\n');
+    const raised = refreshVerificationAfterImplementation(dir, 'R', state);
+    assert.equal(raised.error, null);
+    assert.equal(readVerificationContract(dir, 'R')?.uiImpact, 'visual');
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'), 'export function Home(){ return <main>Home</main>; }\n');
+    const lowered = refreshVerificationAfterImplementation(dir, 'R', state);
+    assert.match(lowered.error || '', /weaken an already-published verification requirement/);
+  });
+});
+
+const TRUNCATION_STATE = {
+  mode: 'existing-codebase',
+  stack: 'custom-frontend',
+  frontend: 'react-vite',
+  backend: 'none',
+  mobile: { framework: 'none' },
+  onboardingComplete: true,
+  currentRunId: 'R',
+  team: { mode: 'main-agent' },
+};
+
+// A committed React/Vite project whose baseline diff cannot complete, because an
+// untracked directory symlink is what the Git diff fails closed on. Nothing here
+// is privileged: `ln -s` is one command, and so is a build that writes a cache
+// the skip predicate does not name — which is the whole reason the exemption the
+// truncated predecessor unlocks has to be bounded rather than trusted.
+function seedTruncatedRun(dir: string, planIntent: Record<string, unknown> | null): void {
+  for (const rel of ['apps/web/src/pages', 'apps/web/src/components', 'apps/web/src/features']) {
+    fs.mkdirSync(path.join(dir, rel), { recursive: true });
+  }
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    dependencies: { react: '19', 'react-dom': '19', 'react-router-dom': '7', vite: '7' },
+  }));
+  fs.writeFileSync(
+    path.join(dir, 'apps/web/src/main.tsx'),
+    "import { createRoot } from 'react-dom/client';\nimport { App } from './App';\ncreateRoot(document.getElementById('root')!).render(<App />);\n",
+  );
+  fs.writeFileSync(
+    path.join(dir, 'apps/web/src/App.tsx'),
+    "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
+  );
+  fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'), 'export function Home(){ return <main>Home</main>; }\n');
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+
+  writeRequiredMemory(dir, TRUNCATION_STATE);
+  writeArchitectureInputOnly(dir, 'R');
+  fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+  writeVerificationPlanIntent(dir, planIntent);
+  fs.symlinkSync(path.join(dir, 'apps/web/src/pages'), path.join(dir, 'apps/web/src/linked'), 'dir');
+}
+
+function writeVerificationPlanIntent(dir: string, intent: Record<string, unknown> | null): void {
+  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), intent
+    ? `# Plan\n\n${VERIFICATION_PLAN_INTENT_START}\n${JSON.stringify(intent)}\n${VERIFICATION_PLAN_INTENT_END}\n`
+    : '# Plan\n', 'utf8');
+}
+
+function publishPlanReady(dir: string): string[] {
+  return planReadinessViolations({
+    filePath: '.traffic-one/digests/R/architect.md',
+    content: 'verdict: PLAN_READY\n',
+    projectRoot: dir,
+    state: TRUNCATION_STATE,
+    writingFeatureSource: false,
+    block: names,
+  });
+}
+
+// The adversarial half of the exemption. A `scanComplete: false` predecessor is
+// cheap to manufacture, so the exemption may only withdraw the ONE requirement
+// truncation itself invented — the `uiImpact` floor and the browser evidence
+// derived from it. Every other requirement the ratchet guards comes from plan
+// intent, which the architect writes and can therefore rewrite; those must
+// ratchet whether or not the predecessor was truncated, or a truncation the run
+// caused would launder away a budget it never scanned for in the first place.
+test('a truncated predecessor cannot launder away a declared page-speed budget', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, { schemaVersion: 1, performanceRisk: true });
+    assert.deepEqual(publishPlanReady(dir), []);
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.scanComplete, false);
+    assert.equal(planned?.performance.required, true, 'the declared budget is on the published contract');
+
+    // Both edits an attacker would make together: finish the diff, and drop the
+    // budget from the plan the refresh recompiles against.
+    fs.unlinkSync(path.join(dir, 'apps/web/src/linked'));
+    writeVerificationPlanIntent(dir, null);
+    const refreshed = refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE);
+    assert.match(refreshed.error || '', /weaken an already-published verification requirement/);
+    assert.equal(readVerificationContract(dir, 'R')?.performance.required, true,
+      'the budget survives on disk — a refused refresh publishes nothing');
+  });
+});
+
+// B2, the peer's construction, committed. The exemption used to ask whether the
+// predecessor's `uiImpact` EQUALLED `truncatedScanUiImpactFloor(profile)`, which
+// on a web profile is the string `visual` — the same string the commonest honest
+// evidence produces. So a run whose first scan happened to be truncated was
+// handed the exemption it had not earned, and the exemption then forgave the
+// whole disjunction: measured, this pair shed the 768px tablet screenshot, while
+// the identical pair with a complete first scan was refused. `tabletRisk` is
+// read off changed paths the partial scan DID see; the truncation invented none
+// of it, so nothing about the truncation licenses withdrawing it.
+test('a truncated predecessor cannot shed evidence the truncation did not invent', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, null);
+    // Uncommitted, so it is in the baseline diff the truncated scan reads: a
+    // tablet breakpoint is evidence, and evidence ratchets.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){ return <main className="md:grid">Home</main>; }\n');
+    assert.deepEqual(publishPlanReady(dir), []);
+
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.scanComplete, false, 'fixture guard: the predecessor is truncated');
+    assert.equal(planned?.uiImpact, 'visual');
+    assert.equal(planned?.tabletRisk, true, 'fixture guard: the tablet width is earned, not pinned');
+    assert.ok(planned?.requiredScreenshotWidths.includes(768));
+    // The provenance the fix turns on: this `visual` is what the evidence read,
+    // so there is no pin to lift even though the scan was truncated.
+    assert.equal(planned?.uiImpactPinned, undefined);
+
+    // Finish the diff and revert the breakpoint in the same breath — the two
+    // edits an agent makes together to buy a cheaper QA bar.
+    fs.unlinkSync(path.join(dir, 'apps/web/src/linked'));
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){ return <main>Home</main>; }\n');
+    const refreshed = refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE);
+    assert.match(refreshed.error || '', /weaken an already-published verification requirement/);
+    assert.ok(readVerificationContract(dir, 'R')?.requiredScreenshotWidths.includes(768),
+      'the width survives on disk — a refused refresh publishes nothing');
+  });
+});
+
+// And the narrowing, from the other side: where the pin IS the provenance, the
+// exemption withdraws only as far as the unpinned contract reached. The
+// predecessor here is pinned `visual` over a `nonvisual` evidence reading, so
+// the successor may fall to `nonvisual` and no further — a run may not use one
+// truncation as a licence for every weakening its own edits caused afterwards.
+test('the exemption withdraws to the unpinned contract and no further', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, null);
+    assert.deepEqual(publishPlanReady(dir), []);
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.uiImpactPinned, true, 'fixture guard: this one really is the pin');
+    assert.equal(planned?.unpinnedUiImpact, 'nonvisual');
+    assert.equal(planned?.performance.required, false);
+
+    fs.unlinkSync(path.join(dir, 'apps/web/src/linked'));
+    const lifted = refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE);
+    assert.equal(lifted.error, null, 'the pin the truncation invented is withdrawn');
+    const after = readVerificationContract(dir, 'R');
+    assert.equal(after?.uiImpact, 'nonvisual');
+    assert.equal(after?.uiImpactPinned, undefined);
+    assert.equal(after?.browserRequired, false);
+    // Spent. The next refresh ratchets against the unpinned floor like any
+    // other, so the truncation buys exactly one withdrawal.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){ return <main className="wide">Updated</main>; }\n');
+    assert.equal(refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE).error, null);
+    assert.equal(readVerificationContract(dir, 'R')?.uiImpact, 'visual');
+    fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'),
+      'export function Home(){ return <main>Home</main>; }\n');
+    assert.match(
+      refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE).error || '',
+      /weaken an already-published verification requirement/,
+    );
+  });
+});
+
+// B1, part two, end to end. The bound is discovered by a DIFFERENT hook
+// invocation than the one that compiles the contract — the frontend digest runs
+// the structure scan, the implementer refresh builds the contract — so the
+// notion has to survive the gap on disk or it is lost exactly when it matters.
+test('a bound hit recorded by one hook still raises the floor in the next', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, null);
+    fs.unlinkSync(path.join(dir, 'apps/web/src/linked'));
+    assert.deepEqual(publishPlanReady(dir), []);
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.scanComplete, true, 'fixture guard: the diff itself is complete');
+    assert.equal(planned?.uiImpactPinned, undefined, 'and nothing is pinned yet');
+
+    // What runFullStructureScan and the collapse scan write when they hit their
+    // own caps, in the invocation before this one.
+    recordScanBoundHit(dir, 'R', 'source scan exceeds 10000 files');
+    assert.equal(boundedScanTruncated(dir, 'R'), true);
+
+    const refreshed = refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE);
+    assert.equal(refreshed.error, null);
+    const after = readVerificationContract(dir, 'R');
+    assert.equal(after?.uiImpact, 'visual', 'the bound raises the floor across the invocation gap');
+    assert.equal(after?.uiImpactPinned, true);
+    // And it did NOT arrive by folding into `scanComplete` — the field that
+    // dead-ends at validateQaReportV2 no matter what evidence QA gathers.
+    assert.equal(after?.scanComplete, true);
+  });
+});
+
+// The same narrowing where the two values come apart. The exemption used to
+// forgive the ENTIRE disjunction once it decided a predecessor was truncated,
+// so a run could finish its diff and revert its own work in the same refresh
+// and land BELOW what the truncated scan had already read on evidence. The
+// floor the exemption lowers to is the unpinned contract, so the pin is
+// withdrawn and the evidence underneath it is not.
+test('the exemption cannot carry a weakening past the evidence the partial scan read', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, null);
+    // A handler edit the truncated scan DID see: behavioral on evidence, and
+    // the truncation floor pins the published value up to `visual` over it.
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'),
+      "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\n"
+      + "import { Home } from './pages/Home';\n"
+      + "const router = createBrowserRouter([{ path: '/', element: <Home /> }]);\n"
+      + 'export function onSubmit(){ return fetch("/api"); }\n'
+      + 'export function App(){ return <RouterProvider router={router} />; }\n');
+    assert.deepEqual(publishPlanReady(dir), []);
+    const planned = readVerificationContract(dir, 'R');
+    assert.equal(planned?.uiImpactPinned, true);
+    assert.equal(planned?.uiImpact, 'visual');
+    assert.ok(['behavioral', 'visual'].includes(planned?.unpinnedUiImpact || ''));
+    const unpinned = planned?.unpinnedUiImpact;
+
+    // Finish the diff and revert the handler together.
+    fs.unlinkSync(path.join(dir, 'apps/web/src/linked'));
+    fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'),
+      "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\n"
+      + "import { Home } from './pages/Home';\n"
+      + "const router = createBrowserRouter([{ path: '/', element: <Home /> }]);\n"
+      + 'export function App(){ return <RouterProvider router={router} />; }\n');
+    const refreshed = refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE);
+    if (unpinned === 'behavioral') {
+      assert.match(refreshed.error || '', /weaken an already-published verification requirement/,
+        'the pin may be withdrawn; the behavioral reading underneath it may not');
+      assert.equal(readVerificationContract(dir, 'R')?.uiImpact, 'visual');
+    } else {
+      // The floor did not clear the evidence, so there is no pin to narrow and
+      // the ordinary ratchet owns the transition. Asserted rather than skipped
+      // so the fixture cannot drift into proving nothing.
+      assert.equal(planned?.unpinnedUiImpact, 'visual');
+    }
+  });
+});
+
+// The exemption's second bound — the previous number must BE the pin, not merely
+// sit at it — has no end-to-end path to exercise, and this is the test that says
+// why rather than leaving the gap unexplained. A truncated web contract is
+// already pinned to `visual`, so the only value an agent raise could add is
+// `native-ui`, and the compiler refuses that against a web profile before any
+// contract is published. There is consequently no truncated predecessor whose
+// impact is agent-raised or above the floor, which is what makes the bound
+// defence in depth. It stays in the code because the day a profile's floor sits
+// below its maximum, the exemption must already be reading the right thing.
+test('an agent raise the profile cannot honour is refused before a contract exists', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, { schemaVersion: 1, agentRaisedImpact: 'native-ui' });
+    assert.deepEqual(publishPlanReady(dir), ['architecture-contract-gate']);
+    assert.equal(readVerificationContract(dir, 'R'), null,
+      'a refused PLAN_READY publishes no contract to ratchet against');
   });
 });
 
@@ -2437,6 +2814,286 @@ test('implementer format gates follow the compiled frontend owner and preserve p
   });
 });
 
+// The premise the whole toolchain-gate family rests on, proved for every member
+// rather than argued once.
+//
+// These nine refuse a toolchain that is absent, or present but unable to reach
+// the code it claims to check. That is not a style opinion, which is why they
+// stayed blocking through the tier-2 re-tiering: an undeclared `format`/`lint`/
+// `test` script makes the matching required check resolve `not-applicable`, and
+// validateQaReportV2 accepts that as a JUSTIFIED exemption — so demoting them
+// would convert "you have no formatter" into "your formatting check is excused",
+// and the run would settle green with less evidence, not more.
+//
+// The entire licence for that is the claim that none of them ever judges code
+// Traffic One did not write. Each row below states the deficiency that reaches
+// its gate; the loop then asserts the gate FIRES on a scaffolded project — so no
+// row can rot into a fixture that reaches nothing — and that the identical
+// deficiency on an existing codebase produces NO violation at all. The
+// existing-mode assertion is deliberately over the WHOLE violation list rather
+// than filtered to these nine ids: a tenth gate added later without a fence has
+// to show up somewhere, and only a whole-list assertion catches one whatever its
+// name turns out to be. The single subtraction below is named and argued.
+//
+// `frontend-structure-completion-gate` fires in BOTH modes on these fixtures,
+// because a compiled module with no file behind it is undelivered plan, not an
+// opinion about the repository's existing shape — the one category the tier-2
+// re-tiering deliberately kept blocking on existing codebases. Any id that is
+// not this one appearing on the existing-mode run is the failure this test is
+// for, so the subtraction is by exact name and by nothing else.
+const MODE_INDEPENDENT_VIOLATIONS = new Set(['frontend-structure-completion-gate']);
+
+// A service module compiles to its own package, which is what the two
+// INVOCATION gates need: a member with the demanded script that the root's
+// filtered script never reaches.
+const MULTI_PACKAGE_ARCHITECTURE = {
+  schemaVersion: 1,
+  routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+  modules: [
+    { id: 'app-shell', name: 'App', kind: 'app-shell' },
+    { id: 'home', name: 'Home', kind: 'page' },
+    { id: 'course-catalog', name: 'Course Catalog', kind: 'service' },
+  ],
+};
+const TOOLCHAIN_SHAPE_GATES: ReadonlyArray<{
+  id: string;
+  deficiency: string;
+  seed: (dir: string) => void;
+  role?: 'frontend' | 'backend';
+  input?: Record<string, unknown>;
+}> = [
+  {
+    id: 'implementer-format-toolchain-gate',
+    deficiency: 'owns compiled outputs with no formatter config, script or dependency',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    },
+  },
+  {
+    id: 'implementer-format-parity-gate',
+    deficiency: 'owns the formatter config while the manifest never declares prettier',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+    },
+  },
+  {
+    id: 'implementer-format-coverage-gate',
+    deficiency: 'a format script whose globs never reach the compiled outputs',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+        scripts: { 'format:check': 'prettier --check "docs/**/*.md"', typecheck: 'tsc --noEmit' },
+      }), 'utf8');
+    },
+  },
+  {
+    id: 'implementer-typecheck-toolchain-gate',
+    deficiency: 'owns TypeScript outputs with no typescript dependency or typecheck script',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3' },
+        scripts: { 'format:check': 'prettier --check .' },
+      }), 'utf8');
+    },
+  },
+  {
+    id: 'implementer-typecheck-invocation-gate',
+    deficiency: 'a root typecheck script whose filter never reaches the member that has one',
+    role: 'backend',
+    input: MULTI_PACKAGE_ARCHITECTURE,
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+        scripts: { typecheck: 'pnpm --filter @app/web typecheck' },
+      }), 'utf8');
+      fs.mkdirSync(path.join(dir, 'packages/api-client'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'packages/api-client/package.json'), JSON.stringify({
+        name: '@app/api-client',
+        scripts: { typecheck: 'tsc --noEmit' },
+      }), 'utf8');
+    },
+  },
+  {
+    id: 'implementer-lint-toolchain-gate',
+    deficiency: 'owns the compiled eslint config while the manifest never declares eslint',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+        scripts: { 'format:check': 'prettier --check .', typecheck: 'tsc --noEmit' },
+      }), 'utf8');
+    },
+  },
+  {
+    id: 'implementer-lint-invocation-gate',
+    deficiency: 'a root lint script whose filter never reaches a member that has one',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3', eslint: '^9.0.0' },
+        scripts: {
+          'format:check': 'prettier --check .',
+          typecheck: 'tsc --noEmit',
+          lint: 'pnpm --filter @app/nothing lint',
+        },
+      }), 'utf8');
+      fs.mkdirSync(path.join(dir, 'packages/i18n'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'packages/i18n/package.json'), JSON.stringify({
+        name: '@app/i18n',
+        scripts: { lint: 'eslint .' },
+      }), 'utf8');
+    },
+  },
+  {
+    id: 'implementer-test-toolchain-gate',
+    deficiency: 'the tester inherits compiled runner configs the manifest never installed',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        private: true,
+        devDependencies: { prettier: '^3.5.3', typescript: '^5.8.3' },
+        scripts: { 'format:check': 'prettier --check .', typecheck: 'tsc --noEmit' },
+      }), 'utf8');
+    },
+  },
+  {
+    id: 'frontend-eslint-survival-gate',
+    deficiency: 'the scaffolded error-grade eslint rules were removed from the config',
+    seed: (dir) => {
+      fs.writeFileSync(path.join(dir, '.prettierrc'), '{}\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ private: true }), 'utf8');
+      fs.writeFileSync(path.join(dir, 'eslint.config.js'),
+        'export default [{ rules: {} }];\n', 'utf8');
+    },
+  },
+];
+
+// Same compiled artifacts every time, so the mode is the ONLY variable between
+// the two halves of each row.
+const TOOLCHAIN_FENCE_STATE = {
+  stack: 'default',
+  frontend: 'react-vite',
+  backend: 'supabase',
+  mobile: { framework: 'none' },
+  onboardingComplete: true,
+  currentRunId: 'R',
+};
+
+for (const gate of TOOLCHAIN_SHAPE_GATES) {
+  test(`${gate.id} judges a scaffolded project only — ${gate.deficiency}`, () => {
+    const violationsFor = (mode: string): string[] => {
+      let result: string[] = [];
+      withProject((dir) => {
+        const state = { ...TOOLCHAIN_FENCE_STATE, mode };
+        writeArchitectureInputAndAssignments(
+          dir, 'R', { ...TOOLCHAIN_FENCE_STATE, mode: 'new-project' }, gate.input,
+        );
+        gate.seed(dir);
+        result = planReadinessViolations({
+          filePath: `.traffic-one/digests/R/${gate.role ?? 'frontend'}.md`,
+          content: 'verdict: IMPLEMENTED\n',
+          projectRoot: dir,
+          state,
+          writingFeatureSource: false,
+          block: names,
+        });
+      });
+      return result;
+    };
+
+    const scaffolded = violationsFor('new-project');
+    assert.ok(
+      scaffolded.includes(gate.id),
+      `the deficiency must actually reach this gate, or the fence half proves nothing — got ${JSON.stringify(scaffolded)}`,
+    );
+
+    // The undeclared values are in this list on the same licence, not a weaker
+    // one: the fence is `isNewProjectMode`, and a project that never declared a
+    // mode is not one Traffic One scaffolded either. Their being here is what
+    // makes the fence a predicate rather than a string comparison — before it,
+    // ` New-Project ` armed the install gate while standing all nine of these
+    // down, and the two readings of the same `.one.json` disagreed.
+    for (const mode of [
+      'existing-codebase', 'existing-with-supabase', 'EXISTING-CODEBASE',
+      '', '   ', 'workspace', 'brownfield',
+    ]) {
+      assert.deepEqual(
+        violationsFor(mode).filter((violation) => !MODE_INDEPENDENT_VIOLATIONS.has(violation)),
+        [],
+        `${JSON.stringify(mode)}: a repository Traffic One did not scaffold owns its own toolchain shape`,
+      );
+    }
+    // And the casing variants of the declared mode arm every one of them, which
+    // is the half a raw comparison got wrong in the dangerous direction.
+    for (const mode of [' New-Project ', 'NEW-PROJECT']) {
+      assert.ok(violationsFor(mode).includes(gate.id),
+        `${JSON.stringify(mode)} is the same mode to every other reader and must arm this gate too`);
+    }
+  });
+}
+
+// M6, and the measurement the ruling asked for. The demotion flag used to be
+// `isExistingProjectMode`, so the mode where Traffic One knows LEAST about the
+// project got the most opinion: the nine gates above stood down and the install
+// table stood down, while error-grade architectural findings — an entrypoint
+// that declares a component, a route the compiled contract cannot see — still
+// blocked `IMPLEMENTED`. Undeclared is not scaffolded, so the flag follows
+// `!isNewProjectMode` and the opinion goes with the gates. What does NOT move
+// is ownership and plan delivery: those are facts about the run's own contract,
+// and they keep blocking in every mode (asserted by the loop above, which
+// subtracts this gate by name because a compiled module with no file behind it
+// reaches it in all of them).
+test('the undeclared mode gets the demotion, not just the stand-down', () => {
+  const gateFor = (mode: string): string[] => {
+    let result: string[] = [];
+    withProject((dir) => {
+      writeArchitectureInputAndAssignments(
+        dir, 'R', { ...TOOLCHAIN_FENCE_STATE, mode: 'new-project' },
+      );
+      writeFormatterToolchain(dir);
+      // Deliver every planned module, so the only thing left for the structure
+      // report to say is an OPINION: the entrypoint declares its own component.
+      const architecture = readCompiledArchitecture(dir, 'R');
+      for (const module of architecture?.modules || []) {
+        fs.mkdirSync(path.dirname(path.join(dir, module.output)), { recursive: true });
+        fs.writeFileSync(path.join(dir, module.output),
+          `export function ${module.name.replace(/\W/g, '')}(){ return <main>${module.name}</main>; }\n`);
+      }
+      fs.writeFileSync(path.join(dir, 'apps/web/src/main.tsx'), [
+        "import { createRoot } from 'react-dom/client';",
+        'export function Inline() { return <div>inline</div>; }',
+        "createRoot(document.getElementById('root')!).render(<Inline />);",
+        '',
+      ].join('\n'));
+      result = planReadinessViolations({
+        filePath: '.traffic-one/digests/R/frontend.md',
+        content: 'verdict: IMPLEMENTED\n',
+        projectRoot: dir,
+        state: { ...TOOLCHAIN_FENCE_STATE, mode },
+        writingFeatureSource: false,
+        block: names,
+      }).filter((violation) => violation === 'frontend-structure-completion-gate');
+    });
+    return result;
+  };
+
+  assert.deepEqual(gateFor('new-project'), ['frontend-structure-completion-gate'],
+    'fixture guard: the opinion really does reach this gate where Traffic One owns the structure');
+  for (const mode of ['existing-codebase', '', 'workspace', 'brownfield']) {
+    assert.deepEqual(gateFor(mode), [],
+      `${JSON.stringify(mode)}: an opinion about code Traffic One did not write is recorded, not blocking`);
+  }
+});
+
 test('implementer lint gates prove the compiled AST lint layer is runnable and reaching', () => {
   withProject((dir) => {
     const state = { ...DEFAULT_STATE, onboardingComplete: true };
@@ -3690,5 +4347,118 @@ test('frontend eslint-survival gate: deleting a scaffolded error rule blocks IMP
       }).includes('frontend-eslint-survival-gate'),
       'an existing codebase keeps its own lint config',
     );
+  });
+});
+
+// B1, part three: the THIRD state. A skipped entry is neither complete nor
+// truncated — the walk reached the end of every other branch — but what it
+// withheld is the whole SUBTREE behind that entry, error-grade findings
+// included. Measured with a collapsed source file planted behind a directory
+// link: `status: warnings`, the STRUCT_COLLAPSED_LINE absent, and (before this)
+// no evidence owed. So a skip records the bound the file cap records, and the
+// two compensations are the same one.
+test('a skipped entry inside a source root records the bound the file cap records', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, null);
+    assert.deepEqual(publishPlanReady(dir), []);
+    const arch = readCompiledArchitecture(dir, 'R');
+    assert.ok(arch);
+
+    // The control is the fixture's own link: `apps/web/src/linked` resolves to
+    // `apps/web/src/pages`, which THIS walk reads under its real path, so it
+    // costs no coverage and is not recorded. Only unreachable is skipped.
+    const control = runFullStructureScan(dir, 'R', arch, undefined, false, false);
+    assert.equal(control.skippedEntries, 0, 'a link onto walked ground is not a skip');
+    assert.equal(boundedScanTruncated(dir, 'R'), false, 'and owes nothing');
+
+    // One `ln -s` over a subtree the walk cannot reach any other way — the
+    // agent-reachable shape, and the code still builds because bundlers follow
+    // symlinks.
+    fs.mkdirSync(path.join(dir, 'outside/widgets'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'outside/widgets/Widget.tsx'),
+      'export function Widget(){ const a=1; const b=2; return <div><span>{a}</span><span>{b}</span></div>; }\n');
+    fs.symlinkSync(path.join(dir, 'outside/widgets'), path.join(dir, 'apps/web/src/features/widgets'), 'dir');
+
+    const skipped = runFullStructureScan(dir, 'R', arch, undefined, false, false);
+    assert.equal(skipped.skippedEntries, 1);
+    assert.equal(skipped.complete, true, 'not a truncation — every other branch was walked to the end');
+    assert.equal(skipped.truncationKind, undefined, 'and `scanComplete` stays terminal-free');
+    assert.equal(boundedScanTruncated(dir, 'R'), true,
+      'the floor a skip owes is the floor the cap owes: part of this project went unread');
+  });
+});
+
+// B2: where the pin came from decides what may lift it. A pin the BOUNDED SCAN
+// raised is recorded in a sidecar, and `scanComplete` — the baseline diff alone
+// — was true on both sides of it, so keying the lift on `scanComplete` lifted
+// the pin the moment its own record went missing. Measured before the fix, with
+// no edit, no new evidence, the same architecture and the same baseline between
+// two refreshes: `visual`/pinned/browserRequired with ten checks became
+// `nonvisual` with three and no screenshot widths at all.
+test('deleting the bound record does not lift the pin the bound raised', () => {
+  withProject((dir) => {
+    seedTruncatedRun(dir, null);
+    fs.unlinkSync(path.join(dir, 'apps/web/src/linked'));
+    assert.deepEqual(publishPlanReady(dir), []);
+    recordScanBoundHit(dir, 'R', 'source scan exceeds 10000 files');
+    assert.equal(refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE).error, null);
+    const pinned = readVerificationContract(dir, 'R');
+    assert.equal(pinned?.uiImpact, 'visual');
+    assert.equal(pinned?.uiImpactPinned, true);
+    assert.equal(pinned?.browserRequired, true);
+    const widths = pinned?.requiredScreenshotWidths || [];
+    const checks = pinned?.requiredChecks.length || 0;
+
+    // The one thing an agent that wants a cheaper QA bar has to do, and the
+    // only channel `runtime-sidecar-owner-gate` used to leave open.
+    fs.rmSync(path.join(dir, '.traffic-one', 'runs', 'R', 'scan-bound.json'), { force: true });
+    assert.equal(boundedScanTruncated(dir, 'R'), false, 'fixture guard: the record really is gone');
+    refreshVerificationAfterImplementation(dir, 'R', TRUNCATION_STATE);
+
+    const after = readVerificationContract(dir, 'R');
+    assert.equal(after?.uiImpact, 'visual', 'the floor survives the loss of its own record');
+    assert.equal(after?.uiImpactPinned, true);
+    assert.equal(after?.browserRequired, true);
+    assert.deepEqual(after?.requiredScreenshotWidths, widths);
+    assert.equal(after?.requiredChecks.length, checks);
+  });
+});
+
+// The durability question the record now carries, answered where a reader looks.
+// `writeJson` is tmp+rename, so the floor's record is atomic: a reader sees the
+// old bytes or the new ones, never half. What CAN exist is a file some other
+// party damaged or forged, and the only writer of this path writes `bound: true`
+// once — so presence is the fact, and anything present that is not that record
+// reads as bound rather than as clear. A run paying for evidence it may not owe
+// is the recoverable direction; shipping unverified UI is not.
+test('a damaged or forged bound record reads as bound, and an absent one as clear', () => {
+  withProject((dir) => {
+    const target = path.join(dir, '.traffic-one', 'runs', 'R', 'scan-bound.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    assert.equal(boundedScanTruncated(dir, 'R'), false, 'absent: nothing was recorded');
+
+    recordScanBoundHit(dir, 'R', 'source scan exceeds 10000 files');
+    const written = JSON.parse(fs.readFileSync(target, 'utf8'));
+    assert.equal(written.bound, true);
+    assert.equal(written.reason, 'source scan exceeds 10000 files');
+    // First writer wins: the flag cannot get truer, and the first reason is the
+    // one an implementer needs.
+    recordScanBoundHit(dir, 'R', 'collapse scan exceeded its own cap');
+    assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).reason, 'source scan exceeds 10000 files');
+
+    // Every shape no writer produces reads as bound; only an explicit boolean is
+    // read as a statement about the scan.
+    for (const bytes of ['', '{', '{"bound', 'null', '[]', '{}', '{"bound":"true"}', '{"bound":1}']) {
+      fs.writeFileSync(target, bytes, 'utf8');
+      assert.equal(boundedScanTruncated(dir, 'R'), true, JSON.stringify(bytes));
+    }
+    fs.writeFileSync(target, '{"bound":false}', 'utf8');
+    assert.equal(boundedScanTruncated(dir, 'R'), false, 'an explicit boolean is a statement, and is honoured');
+    fs.rmSync(target);
+    assert.equal(boundedScanTruncated(dir, 'R'), false);
+    // Another run's record is another run's business.
+    recordScanBoundHit(dir, 'OTHER', 'source scan exceeds 10000 files');
+    assert.equal(boundedScanTruncated(dir, 'R'), false);
+    assert.equal(boundedScanTruncated(dir, 'OTHER'), true);
   });
 });

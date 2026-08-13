@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFile } from '../../../shared/bounded-read';
 import {
   buildRuntimeAssignments,
   isRuntimeMaintainedContextPath,
@@ -28,14 +29,17 @@ import {
 import { matchesScope, type AssignedScope } from '../../../shared/scope';
 import {
   activeAgentRole,
+  isNewProjectMode,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
 } from '../../../shared/state';
 import {
+  browserRequired,
   buildVerificationContract,
   changedPathsFromBaseline,
   publishVerificationContract,
   readVerificationContract,
+  skipNameDisclosure,
   type LighthouseThresholdsV1,
   type UiImpact,
 } from '../../../shared/verification-contract';
@@ -53,12 +57,16 @@ import {
   RUN_DIGEST_ARTIFACT_RE,
   RUN_RUNTIME_SIDECAR_RE,
   type Rec,
+  boundedScanTruncated,
   exists,
+  recordScanBoundHit,
+  recordScanIncomplete,
 } from './context';
 import {
   T1_MEMORY_DIR,
   missingProjectMemoryBaseline,
 } from './architect';
+import { collapsedProductSourceFile } from './checks';
 
 export function architectureInputErrors(content: string): string[] {
   try {
@@ -171,7 +179,7 @@ export function runFullStructureScan(
   contract: CompiledArchitectureV1,
   role?: string,
   greenfield = false,
-  existing = false,
+  notScaffolded = false,
 ): ReturnType<typeof analyzeProjectStructure> {
   const scopedContract = role ? roleContract(contract, role) : contract;
   const scopes = role ? assignmentScopesForRole(projectRoot, runId, role) : [];
@@ -181,13 +189,31 @@ export function runFullStructureScan(
   const report = analyzeProjectStructure(projectRoot, scopedContract, {
     allowlist: role && allowlist.length > 0 ? allowlist : undefined,
     // Integration findings block only where Traffic One owns the structure;
-    // on an existing codebase they stay advisory, and existing-* modes also
-    // demote the entrypoint-convention, strict-collapse, and route/module-
-    // mismatch hard-errors (StructureScanOptions.existing lists the exact ids).
+    // on a project it did not scaffold they stay advisory
+    // (StructureScanOptions.notScaffolded lists the exact ids that survive).
     greenfield,
-    existing,
+    notScaffolded,
   });
   writeStructureReport(projectRoot, runId, report);
+  // Part of this project's source went unread. That raises the verification
+  // contract's `uiImpact` floor — which is the whole licence for
+  // STRUCT_SCAN_INCOMPLETE and STRUCT_SCAN_SKIPPED being warnings rather than
+  // the deny they used to be, so the record and the demotion travel together.
+  //
+  // TWO causes, one consequence, because the consequence is a fact about
+  // coverage and neither cause is worse than the other from here. The file CAP
+  // withdraws the tail of the walk; a SKIPPED entry withdraws the subtree behind
+  // it, and a directory symlink is one `ln -s` away — measured, a collapsed
+  // source file planted behind one produced `status: warnings` with the defect
+  // absent from the report. `unresolvable` is deliberately not here: it keeps
+  // its error, and a floor over a report about nothing would be evidence owed
+  // for a scan that read no tree at all.
+  const boundCause = report.truncationKind === 'bound'
+    ? `structure scan bound: ${report.findings.find((finding) => finding.id === 'STRUCT_SCAN_INCOMPLETE')?.message || 'source scan exceeded its file bound'}`
+    : report.skippedEntries > 0
+      ? `structure scan skipped ${report.skippedEntries} entr${report.skippedEntries === 1 ? 'y' : 'ies'} inside a compiled source root: ${report.findings.find((finding) => finding.id === 'STRUCT_SCAN_SKIPPED')?.message || 'an entry inside a source root could not be read'}`
+      : '';
+  if (boundCause) recordScanBoundHit(projectRoot, runId, boundCause);
   return report;
 }
 
@@ -244,7 +270,11 @@ export function allImplementationRolesDelivered(
     const rel = `.traffic-one/digests/${runId}/${suffix}.md`;
     if (rel === proposedDigestPath) return true;
     try {
-      return digestClaimsVerdict(fs.readFileSync(path.join(projectRoot, rel), 'utf8'), 'IMPLEMENTED');
+      // BOUNDED, like every other digest read on this hook path: a digest is a
+      // project-controlled path, and a non-regular object there answers `null`
+      // (no verdict claimed) instead of blocking the gate forever.
+      const digest = readRegularFile(path.join(projectRoot, rel));
+      return digest === null ? false : digestClaimsVerdict(digest, 'IMPLEMENTED');
     } catch {
       return false;
     }
@@ -264,11 +294,30 @@ export function refreshVerificationAfterImplementation(
       return { error: 'the current VerificationContractV2 is missing or invalid', changed: false };
     }
     const currentDiff = changedPathsFromBaseline(projectRoot, architecture);
-    if (!currentDiff.complete) {
-      return {
-        error: `STRUCT_SCAN_INCOMPLETE: ${currentDiff.reason || 'baseline diff is incomplete'}`,
-        changed: false,
-      };
+    // The skip-authority name disclosure is excluded, and the prose below is why
+    // rather than a convenience. Every sentence of it is FALSE for that class:
+    // the diff is not truncated (the walk finished and named what it skipped),
+    // the run CAN be certified (`currentVerificationSourceHash` qualifies it and
+    // the QA report carries the qualification), and none of the three repairs it
+    // orders applies to a `dist/assets/app-<hash>.js` the run's own build step
+    // just wrote. Delivering it would send an implementer to resolve a worktree
+    // that is fine, on a run that is already settling.
+    //
+    // Nothing is lost by staying quiet here. The fact is re-derived live at every
+    // consumption point and recorded durably in the artifact that claims the
+    // evidence, which is more than this ledger entry offered: `recordScanIncomplete`
+    // banks a WARNING for the fix-cycle document, and this class needs no fix
+    // cycle. `skipNameDisclosure` keeps the exclusion fail-closed — every other
+    // incompleteness reason still records, and still means what this text says.
+    if (!currentDiff.complete && !skipNameDisclosure(currentDiff.reason)) {
+      // Recorded, not refused. The sweep below is a SECOND net over ownership,
+      // not the first: the run-team write gate enforces `matchesScope` on every
+      // write as it happens, with the same matcher and the same manifest, so a
+      // truncated diff here narrows a redundant check rather than opening the
+      // authority. Truncation can only hide a path from the sweep, never invent
+      // one, so every unauthorized path it DOES see still refuses below.
+      recordScanIncomplete(projectRoot, runId,
+        `STRUCT_SCAN_INCOMPLETE: ${currentDiff.reason || 'baseline diff is incomplete'}. This run CANNOT be certified while the baseline diff is truncated: the QA report is rejected as \`scan-incomplete\` at settlement, whatever evidence it carries. Remove the cause named above — resolve the git worktree, drop the symlink, or narrow the generated/output roots the walk is counting — and re-emit so the diff recompiles complete.`);
     }
     const authorizedPaths = new Set(previous.changedPaths);
     // The write surface and the verification authority are the SAME set:
@@ -310,23 +359,157 @@ export function refreshVerificationAfterImplementation(
         changed: false,
       };
     }
+    // RE-DERIVE the collapse bound here rather than trusting the record to have
+    // survived. `recordScanBoundHit`'s own prose says the fact is "re-derived
+    // rather than remembered: the next runFullStructureScan over the same source
+    // roots records it again", and that was true of the STRUCTURE walk and false
+    // of the collapse walk — `runFullStructureScan` never performs one, because
+    // `repairCollapsedSource` runs only on an implementer digest.
+    //
+    // The window that opened in the gap is real and composable: two implementer
+    // roles, frontend first. The frontend digest trips the collapse cap and
+    // records the bound, but the refresh below requires
+    // `allImplementationRolesDelivered`, which the backend has not satisfied, so
+    // no pinned contract is published yet. Delete the record in that window and
+    // the backend digest refreshes against a predecessor that was never pinned,
+    // publishes `nonvisual`, and no later scan re-derives the collapse cap. The
+    // floor is gone for the run. The same composition also lifted a genuine
+    // dual-cause pin, because `truncationPinLifted` below reads this same flag.
+    //
+    // One bounded whole-project walk closes it, at the one site that can: the
+    // refresh is where the floor is decided, so deriving it here makes the
+    // durability of `scan-bound.json` an optimization rather than the guarantee.
+    // Measured on a warm cache, 15 runs: 12.9 ms p50 at 50 source files, 100.6 ms
+    // at 200, 243.5 ms at the 600-file cap and 243.1 ms past it — bounded by
+    // COLLAPSE_MAX_FILES, so the ceiling is the cap and not the project size.
+    // Paid once per implementer digest that reaches this refresh.
+    // Deliberately unscoped — the refresh is judging the RUN, not one role's
+    // assignment, and a per-role scope is what let the cap read differently on
+    // the two digests in the first place.
+    //
+    // This does not weaken round 5's achievement, which was to make the pin
+    // depend on a hash-verified predecessor carrying `uiImpactPinned: true`
+    // rather than on a forgeable local fact. That dependency is untouched: this
+    // can only RAISE the flag, never clear it, so a deleted or corrupt
+    // predecessor still fails closed exactly as before.
+    const rederived = collapsedProductSourceFile(projectRoot, state);
+    if (rederived.incomplete || rederived.withdrawn.length > 0) {
+      recordScanBoundHit(projectRoot, runId, rederived.incomplete
+        ? `collapse scan bound: ${rederived.scanned} product source files`
+        : `collapse scan did not read ${rederived.withdrawn.length} entries: ${rederived.withdrawn[0]}`);
+    }
+    const scanBoundStillRecorded = boundedScanTruncated(projectRoot, runId)
+      || rederived.incomplete
+      || rederived.withdrawn.length > 0;
     const verification = buildVerificationContract(
       projectRoot,
       runId,
       state,
       architecture,
-      readVerificationPlanIntent(projectRoot),
+      {
+        ...readVerificationPlanIntent(projectRoot),
+        boundedScanTruncated: scanBoundStillRecorded,
+      },
     );
     if (!verification.scanComplete) {
-      return {
-        error: `STRUCT_SCAN_INCOMPLETE: ${verification.scanReason || 'baseline diff is incomplete'}`,
-        changed: false,
-      };
+      recordScanIncomplete(projectRoot, runId,
+        `STRUCT_SCAN_INCOMPLETE: ${verification.scanReason || 'baseline diff is incomplete'}. This run CANNOT be certified while the baseline diff is truncated: the QA report is rejected as \`scan-incomplete\` at settlement, whatever evidence it carries. Remove the cause named above — resolve the git worktree, drop the symlink, or narrow the generated/output roots the walk is counting — and re-emit so the diff recompiles complete.`);
     }
-    if (verificationImpactRank(verification.uiImpact) < verificationImpactRank(previous.uiImpact)
-      || (previous.browserRequired && !verification.browserRequired)
-      || previous.requiredScreenshotWidths.some((width) => !verification.requiredScreenshotWidths.includes(width))
-      || (previous.performance.required && !verification.performance.required)
+    // The one direction the ratchet must NOT refuse, and it exists only because
+    // the truncation floor exists. A contract published from an incomplete diff
+    // carries `truncatedScanUiImpactFloor` — the domain maximum, asserted from
+    // ignorance rather than earned from evidence — so when the refresh finally
+    // reads a COMPLETE diff, the honest answer is usually lower, and an
+    // unconditional ratchet would read the correction as a weakening and
+    // dead-end the run on a requirement nothing ever observed.
+    //
+    // Manufacturing the predecessor is CHEAP and the exemption is written on
+    // that assumption. A scan is incomplete when the diff exceeds
+    // VERIFICATION_SCAN_MAX_FILES, when a symlink or unreadable directory sits
+    // in the walk, or when the Git worktree context will not resolve — an agent
+    // can arrange the first two in one command (`ln -s`, or a build that emits
+    // a cache the skip predicate does not name). What that buys is the
+    // OPPOSITE of leverage: the truncated predecessor is pinned to the domain
+    // maximum, so the attacker's own first contract is the most demanding one
+    // available, and the exempted refresh republishes at
+    // `max(complete-scan evidence, plannedUiImpactFloor)` — bit for bit the
+    // contract an honest complete-diff run would have published at that moment,
+    // over a compiled architecture whose hash is frozen so the planned floor
+    // cannot have moved either. There is no number the truncation lets a run
+    // choose; there is only a floor asserted from ignorance being withdrawn.
+    //
+    // Two bounds keep that argument true rather than merely plausible.
+    //
+    // FIRST, the exemption covers only what the truncation floor can inflate.
+    // The floor moves `uiImpact`, and `browserRequired`/`requiredScreenshotWidths`
+    // are computed from it. It does NOT reach the performance budget:
+    // `performance.required` is `webUi && (explicit || redesign ||
+    // performanceRisk)` — plan intent, never impact — and both threshold sets
+    // come from the same intent. Exempting those would have let a run drop a
+    // declared page-speed budget by way of a truncation that had nothing to do
+    // with it, so they ratchet unconditionally, truncated predecessor or not.
+    //
+    // SECOND, the previous number must actually BE the pin, and the exemption
+    // may withdraw only as far as the pin reached.
+    //
+    // Both halves used to be one comparison — `previous.uiImpact ===
+    // truncatedScanUiImpactFloor(profile)` — and it settled neither. It is a
+    // test of the VALUE, and for a web profile the floor's value and the
+    // commonest earned value are the same string `visual`, so it could not tell
+    // a pin from evidence: measured, a truncated-first-scan run shed the 768px
+    // tablet width — real evidence, read off a stylesheet path the partial scan
+    // did see — where the identical honest pair was refused. And having decided
+    // the predecessor was pinned it forgave the ENTIRE disjunction below,
+    // including whatever the agent's own edits had weakened in between.
+    //
+    // The contract now publishes the provenance itself (`uiImpactPinned`) and
+    // what the same evidence read without the floor (`unpinnedUiImpact`), so
+    // the exemption lowers the bar to that unpinned contract and to nothing
+    // below it. `browserRequired` and the widths are recomputed from it by the
+    // same rules that produced them, rather than being waived wholesale: the
+    // widths keep the predecessor's OWN `tabletRisk`, because tablet evidence
+    // is read off changed paths and the pin never invented any of it.
+    // The pin lifts when its CAUSE clears, and `verification.scanComplete` is
+    // the cause of only ONE of the two pins there are. A contract is pinned when
+    // the baseline diff is incomplete OR when a bounded scan hit its bound
+    // (`scanTruncated` in buildVerificationContract), and the second cause is
+    // recorded in a sidecar the diff knows nothing about — so keyed on the diff
+    // alone, a sidecar-sourced pin lifted the moment the RECORD of the bound
+    // stopped being readable, which is not the bound clearing. Measured end to
+    // end with nothing else changed between two refreshes, no edit and no new
+    // evidence: predecessor `visual`, pinned, browser required, widths 390/1440,
+    // 10 required checks; successor `nonvisual`, no browser, no widths, 3 checks,
+    // ratchet silent — because a lifted pin lowers the bar to
+    // `unpinnedUiImpact`, and the unpinned reading of a diff that touches no UI
+    // is `nonvisual`.
+    //
+    // So the pin's own PROVENANCE decides, read off the predecessor rather than
+    // off today's filesystem: `previous.scanComplete === false` says that
+    // contract was published over an incomplete DIFF, and a complete diff now is
+    // exactly the ignorance being dispelled that the argument below is about. A
+    // pin published with `scanComplete: true` came from the bounded scan, whose
+    // bound is a fact about how much source exists — nothing within the run
+    // shrinks it, the runtime never clears the record, and no complete diff is
+    // evidence about it. That pin does not lift, and deliberately does not
+    // consult the sidecar to decide so: a decision that reads a deletable file
+    // is a decision an agent can change by deleting it (the four shell channels
+    // sidecar-shell.ts now closes were exactly that). The sidecar is still
+    // required to be absent as well, so a bound recorded LATER cannot be
+    // withdrawn by a diff that happens to complete in the same refresh.
+    const truncationPinLifted = previous.uiImpactPinned === true
+      && previous.scanComplete === false
+      && verification.scanComplete
+      && !scanBoundStillRecorded;
+    const floorBaseImpact = truncationPinLifted
+      ? previous.unpinnedUiImpact || previous.uiImpact
+      : previous.uiImpact;
+    const floorBaseWidths = truncationPinLifted
+      ? (floorBaseImpact === 'visual' ? [390, ...(previous.tabletRisk ? [768] : []), 1440] : [])
+      : previous.requiredScreenshotWidths;
+    const impactWeakened = verificationImpactRank(verification.uiImpact) < verificationImpactRank(floorBaseImpact)
+      || (browserRequired(floorBaseImpact) && !verification.browserRequired)
+      || floorBaseWidths.some((width) => !verification.requiredScreenshotWidths.includes(width));
+    const budgetWeakened = (previous.performance.required && !verification.performance.required)
       || thresholdsWeakened(
         previous.performance.explicitThresholds,
         verification.performance.explicitThresholds,
@@ -334,7 +517,8 @@ export function refreshVerificationAfterImplementation(
       || thresholdsWeakened(
         previous.performance.advisoryThresholds,
         verification.performance.advisoryThresholds,
-      )) {
+      );
+    if (budgetWeakened || impactWeakened) {
       return {
         error: 'the refreshed plan/diff would weaken an already-published verification requirement',
         changed: false,
@@ -424,7 +608,7 @@ function missingArchitectDigest(projectRoot: string, state: Rec): string[] {
 export function architectPhaseIncompleteReasons(projectRoot: string, state: Rec): string[] {
   if (!requiresRunContracts(state)) return [];
   return [
-    ...(state.mode === 'new-project' ? missingProjectMemoryBaseline(projectRoot, state) : []),
+    ...(isNewProjectMode(state) ? missingProjectMemoryBaseline(projectRoot, state) : []),
     ...missingArchitectureContract(projectRoot, state),
     ...missingAssignmentsManifest(projectRoot, state),
     ...missingArchitectDigest(projectRoot, state),
@@ -439,7 +623,9 @@ function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!runId) return false;
   try {
-    return digestClaimsVerdict(fs.readFileSync(path.join(projectRoot, T1_MEMORY_DIR, 'digests', runId, 'architect.md'), 'utf8'), 'PLAN_READY');
+    // BOUNDED — see the IMPLEMENTED digest read above.
+    const digest = readRegularFile(path.join(projectRoot, T1_MEMORY_DIR, 'digests', runId, 'architect.md'));
+    return digest === null ? false : digestClaimsVerdict(digest, 'PLAN_READY');
   } catch {
     return false;
   }
@@ -493,7 +679,7 @@ export function architectMayWrite(projectRoot: string, filePath: string, runId: 
 }
 
 function requiresRunContracts(state: Rec): boolean {
-  if (state.mode === 'new-project') return true;
+  if (isNewProjectMode(state)) return true;
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   return Boolean(runId && obj(state.team)?.mode === 'subagents');
 }

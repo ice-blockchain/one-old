@@ -26,10 +26,10 @@ import {
 } from '../../../shared/feature-source';
 import { parseApplyPatch, patchTextFromToolInput } from '../../../shared/apply-patch';
 import { projectRelativeHookPath } from '../../../shared/hook/paths';
-import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../../shared/materialize';
+import { materializeProjectIfNeeded } from '../../../shared/materialize';
 import { pluginRoot } from '../../../shared/paths';
 import { makeSkillBlock } from '../../../shared/skill-block';
-import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isExistingProjectMode, isNativeState, readEffectiveState, readState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
+import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isNativeState, isNewProjectMode, readEffectiveState, readState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
 import { capturePlanGuardDebug } from '../../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../../shared/tool-classify';
 import {
@@ -41,10 +41,14 @@ import { profileHasWebUi } from '../../../shared/capabilities';
 import { planReadinessViolations } from '../plan-readiness';
 import { runIdPathViolation } from '../plan-runid';
 import { openCodeReservedFilesViolation, runTeamEnforcementViolation } from '../plan-runteam';
-import { assetExtensionMismatchViolations, planStaticViolations, makePlanBlock } from '../plan-static';
+import {
+  assetExtensionMismatchViolations, planStaticViolations, makePlanBlock, type Vars,
+} from '../plan-static';
 import { resolveToolScope, workspaceMemberRefusal } from '../../../shared/tool-scope';
 import { isDenyId, type DenyId } from '../../../config/deny-ids';
 
+import { shellResetRecordDestruction } from './reset-record-shell';
+import { shellRuntimeSidecarDestruction } from './sidecar-shell';
 import {
   appendUnique,
   commandAppearsToWriteCompiledFeature,
@@ -76,8 +80,21 @@ const rawBlock = makePlanBlock(makeSkillBlock(pluginRoot));
 // them at once after spending one bucket on an unrelated violation. One-shot
 // hook processes hid it. Created fresh here, per call, so the identity is a
 // function of THIS write and never of call ordering.
+//
+// The three parameters are ANNOTATED, redundantly, and that redundancy is the
+// point. plan-guard's `Block` is the one wrapper in the repo whose argument
+// order is `(name, fallback, vars)` while every other is `(name, vars,
+// fallback)`, and correcting it means swapping arguments 2 and 3 at ~100 call
+// sites. The compiler reports 99 of them. It cannot report THIS one: with the
+// parameters unannotated they are contextually typed from `Block`, so after the
+// swap #2 is a `Vars` still NAMED `fallback` and #3 a `string` still named
+// `vars` — and because the body forwards them positionally, in the same order,
+// the result is type-correct AND runtime-correct. Only the identifiers become
+// lies, silently, forever. Writing the types out makes the same swap a
+// parameter-type mismatch here like everywhere else. Do not "clean up" these
+// annotations; deleting them is what re-opens the hole.
 function makeViolationBlock(fired: { denyId: DenyId | null }): typeof rawBlock {
-  return (name, fallback, vars) => {
+  return (name: string, fallback: string, vars?: Vars) => {
     if (!fired.denyId && name !== 'run-team-suffix' && isDenyId(name)) fired.denyId = name;
     return rawBlock(name, fallback, vars);
   };
@@ -153,7 +170,9 @@ export function planWriteGate(ctx: Ctx): HookResult {
 
   // Preflight convergence: ensure .traffic-one/** is current for this project
   // before we judge it (side-effect only; the outcome is intentionally ignored).
-  migrateArchitectureDocsToPlan(projectRoot);
+  // `materializeProjectIfNeeded` runs the legacy-plan migration itself, behind
+  // the stateless-sub-package refusal that must precede it; calling the migration
+  // again here only did the same walk twice and did it unguarded.
   materializeProjectIfNeeded(projectRoot, { trigger: 'plan preflight convergence' });
 
   const directContent = asString(toolInput.content) || asString(toolInput.new_string)
@@ -217,6 +236,38 @@ export function planWriteGate(ctx: Ctx): HookResult {
       : []);
   if (isShellToolName(toolName)) {
     const shellBody = heredocBodies(rawCommand);
+    // Sidecars a command destroys without naming one — a directory-scoped `rm`,
+    // `find … -delete`, an inline interpreter unlink, `git clean`. Added FIRST so
+    // the refusal names the runtime artifact rather than whichever sibling path
+    // the command happened to mention (see plan-write/sidecar-shell.ts).
+    for (const sidecar of shellRuntimeSidecarDestruction(
+      rawCommand, patchBase, projectRoot, shellBody, 2, currentRunId,
+    )) {
+      if (gateTargets.some((target) => target.filePath === sidecar)) continue;
+      gateTargets.push({
+        filePath: sidecar,
+        resultContent: '',
+        addedContent: '',
+        staticCheck: false,
+      });
+    }
+    // The reset record, which neither scan above can see: the sidecar
+    // enumeration is filtered to `runs/<id>/<entry>` paths, and
+    // `shellTrafficOneWriteTargets` only looks once
+    // `shellCommandHasWritePrimitive` has recognised a mutation — a fail-OPEN
+    // question that admitted `bash -c 'rm -f …'`, `install /dev/null …`, an
+    // interpreter heredoc and `perl -pi -e` on this path, measured, with a live
+    // run pointer in place. Its own scan asks the opposite question and is
+    // therefore not downstream of either (see reset-record-shell.ts).
+    for (const record of shellResetRecordDestruction(rawCommand, patchBase, projectRoot, shellBody)) {
+      if (gateTargets.some((target) => target.filePath === record)) continue;
+      gateTargets.push({
+        filePath: record,
+        resultContent: '',
+        addedContent: '',
+        staticCheck: false,
+      });
+    }
     for (const shellTarget of shellTrafficOneWriteTargets(rawCommand)) {
       const relative = projectRelativeHookPath(patchBase, projectRoot, shellTarget);
       if (!relative || gateTargets.some((target) => target.filePath === relative)) continue;
@@ -359,28 +410,49 @@ export function planWriteGate(ctx: Ctx): HookResult {
       'OpenCode/Kilo external-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.'));
   }
   // Mode-downgrade guard: mode is set at onboarding, and the architecture-gate
-  // family now stands down on existing-* modes — so a CONFIRMED new-project
-  // state flipping itself to an existing-* mode mid-run would disarm every
-  // stack/layout/library gate in one write. Deny the transition on the
+  // family stands down on every mode that is not `new-project` — so a CONFIRMED
+  // new-project state flipping its own mode mid-run disarms the stack, layout
+  // and structure gates in one write. Deny the transition on the
   // content-verified write channels; onboarding and runtime state writes do
   // not pass through this gate, and creating/repairing an UNCONFIRMED state
   // (what the state-gate prose instructs) stays allowed.
+  //
+  // The condition is DEPARTURE from `new-project`, not arrival at `existing*`.
+  // Testing the destination named one of the ways out and left the rest open:
+  // `{"mode": ""}`, an omitted `mode`, `"workspace"` — none of them was refused,
+  // while the run's architecture and verification contracts stayed frozen
+  // against the profile the old mode selected.
+  //
+  // The three are not the same defect, and the deny prose says so. `"workspace"`
+  // — any UNRECOGNIZED value — stands the gates down exactly as
+  // `existing-codebase` does and stays that way. An empty, absent or null mode
+  // SELF-HEALS: `normalizeState` defaults a non-string/blank mode back to
+  // `new-project`, so the next materialization pass repairs the file and the
+  // gates re-arm. What it costs is still worth refusing — the value is
+  // undeclared until that pass runs, and every gate that reads the state
+  // in between reads a mode this project never chose — but the reason is a
+  // window, not a permanent stand-down, and a deny that overstates its own cause
+  // teaches the reader to discount the next one.
   const STATE_FILE_REL = '.traffic-one/.one.json';
   for (const target of gateTargets) {
     if (target.filePath !== STATE_FILE_REL || !target.staticCheck) continue;
     const rawOnDisk = readState(projectRoot);
-    if (rawOnDisk.mode !== 'new-project'
+    // Through the predicate at BOTH ends. On disk, because a hand-edited
+    // ` New-Project ` is a scaffolded project to every gate that reads it and
+    // must therefore be one to the guard that protects them; and on the
+    // proposal, because the two sides have to agree on what the mode is before
+    // they can agree that it changed.
+    if (!isNewProjectMode(rawOnDisk)
       || (rawOnDisk.confirmed !== true && rawOnDisk.onboardingComplete !== true)) continue;
-    let proposedMode = '';
+    let proposed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(target.resultContent) as Record<string, unknown>;
-      proposedMode = typeof parsed.mode === 'string' ? parsed.mode.trim().toLowerCase() : '';
+      proposed = JSON.parse(target.resultContent) as Record<string, unknown>;
     } catch {
       continue; // not parseable JSON — other validation owns corrupt writes
     }
-    if (proposedMode.startsWith('existing')) {
+    if (!isNewProjectMode(proposed)) {
       violations.push(block('state-mode-downgrade',
-        'State mode gate: this project was onboarded as `new-project`; rewriting `.traffic-one/.one.json` to an existing-* mode mid-run would disarm the architecture gates that mode selects. Mode changes go through onboarding, not a state-file edit. If the user explicitly wants this project treated as an existing codebase, re-run Traffic One onboarding.'));
+        'State mode gate: this project was onboarded as `new-project`; rewriting `.traffic-one/.one.json` to any other mode mid-run would disarm the architecture gates that mode selects. An UNRECOGNIZED `mode` counts — `workspace`, `brownfield`, anything the mode table does not name stands the same gates down as `existing-codebase` while the run\'s compiled architecture and verification contracts stay frozen against the old profile. An empty, absent or null `mode` is refused for a different reason: state normalization repairs it back to `new-project` on the next materialization pass, so the write does not survive as written and any gate reading the file before that pass reads a mode this project never declared. Mode changes go through onboarding, not a state-file edit. If the user explicitly wants this project treated as an existing codebase, re-run Traffic One onboarding.'));
       offendingTargets.add(target.filePath);
       break;
     }
@@ -397,7 +469,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // stack-pinned `typescript: 5.9.3` up two majors with no ADR. Deterministic
   // deny, new-project mode only; installs (`pnpm add`, `npm install`) stay
   // untouched — they resolve inside the pinned ranges.
-  if (state.mode === 'new-project'
+  if (isNewProjectMode(state)
     && /(?:^|[\s;&|(])(?:(?:npm|pnpm)\s+(?:view|show|info|v)\b|yarn\s+info\b|(?:npm|pnpm|yarn|bun)\s+outdated\b)/.test(rawCommand)) {
     violations.push(block('registry-probe-gate',
       'Registry probe gate: do not query the npm registry (`npm view`/`show`/`info`/`outdated`, `pnpm view`, `yarn info`) to pick scaffold or dependency versions during new-project setup. Versions come from the active stack contract — install with the pinned ranges (`pnpm add <pkg>` resolves the latest matching minor/patch). Only an explicit user request for a newer major overrides a pin, recorded as an ADR in `.traffic-one/decisions/`.'));
@@ -413,7 +485,66 @@ export function planWriteGate(ctx: Ctx): HookResult {
     block,
   });
   if (reservation) violations.push(reservation);
-  const recordFallbackClaims = violations.length === 0;
+  // Not-scaffolded stand-down: the static checks enforce the prescribed
+  // stack/layout (Tailwind-only styling, component placement, named exports,
+  // …) and a repository Traffic One did not create keeps its own conventions
+  // (observed: an existing vanilla-extract repo was denied its own `.css.ts`
+  // styling). Only the file-integrity asset check survives; everything else —
+  // readiness, run-id, run-team ownership, reservations — applies in every mode.
+  //
+  // `!isNewProjectMode`, not `isExistingProjectMode`: an UNDECLARED mode is a
+  // repository Traffic One did not create either, and it was receiving the
+  // whole prescribed-stack opinion derived from `defaultStateForStack` — a
+  // guess. The satisfiability sweep's `existingMode` mirrors this exact
+  // predicate (plan-readiness/satisfiability.ts) and has to, or the compiled
+  // contract is checked against gates that are not the ones that will run.
+  //
+  // JUDGED HERE, RENDERED BELOW, and the split is the whole of the fix. The
+  // run-team gate is the only violation source in this dispatcher that WRITES:
+  // its fallback branch stakes a first-write claim on the target, which locks
+  // that path to this session for the rest of the run. It may therefore only do
+  // so for a write that is actually going to be allowed — and until this moved,
+  // `recordFallbackClaims` was decided at a point where the fourteen static
+  // rules had not run yet. MEASURED on a materialized monorepo, a live
+  // `senior-frontend` writing `packages/ui/src/lib/format.ts` (outside every
+  // assignment, so the fallback branch is the one that answers) with `: any` in
+  // the content: the write was refused for `no-any` — the SOLE violation — and
+  // `runs/<id>/claims/packages_ui_src_lib_format.ts.json` was staked anyway.
+  const staticTargets = gateTargets.filter((candidate) => candidate.staticCheck);
+  // A SEPARATE accumulator, so judging early does not also report early. The
+  // aggregator names the first registered cause to fire, and moving the static
+  // family ahead of the run-team gate would otherwise re-label every deny where
+  // both fire. Its identity is registered below, at the position it used to
+  // fire in.
+  //
+  // THAT RESTORES THE IDENTITY, NOT THE WHOLE RENDER, and the difference is
+  // where this paragraph was wrong before. "Byte-identical for every input, the
+  // staked claim the only thing that moved" was true of the re-ordering and
+  // FALSE of the change as a whole, because the flag below gated the entire
+  // fallback-claim call — a function that both RECORDS a claim and CHECKS
+  // whether somebody else holds one. Suppressing it on a doomed write therefore
+  // suppressed the ownership-conflict deny too: measured, a path already held by
+  // one child and written by another with a static violation denied with one
+  // bullet naming the static rule where the old ordering gave two and named the
+  // conflict, while the same fixture with clean content reported the conflict in
+  // both builds. The author fixed the static rule, retried, and only then
+  // learned the path belonged to another role — and because deny-repeat.ts signs
+  // a refusal with the whole rendered reason, the two denies escalated in
+  // different buckets.
+  //
+  // The flag now suppresses only the RECORD (plan-runteam.ts threads it through
+  // as `record: false`, and through the scope-attribution mint as
+  // `mint: false`), so every check runs on a doomed write and the render is
+  // byte-identical again — for both mints, the thing that moves is what is
+  // written, not what is said.
+  const staticFired: { denyId: DenyId | null } = { denyId: null };
+  const staticBlock = makeViolationBlock(staticFired);
+  const staticViolationsFor = !isNewProjectMode(state)
+    ? (target: GateTarget) => assetExtensionMismatchViolations(target.filePath, target.addedContent, staticBlock)
+    : (target: GateTarget) => planStaticViolations(target.filePath, target.addedContent, isNative, staticBlock);
+  const staticFindings = staticTargets.map((target) => staticViolationsFor(target));
+  const recordFallbackClaims = violations.length === 0
+    && staticFindings.every((found) => found.length === 0);
   const runTeam = runTeamEnforcementViolation({
     host: ctx.host,
     projectRoot,
@@ -437,16 +568,9 @@ export function planWriteGate(ctx: Ctx): HookResult {
     block,
   });
   if (runTeam) violations.push(runTeam);
-  // Existing-codebase stand-down: the static checks enforce the prescribed
-  // stack/layout (Tailwind-only styling, component placement, named exports,
-  // …) and a repository Traffic One did not create keeps its own conventions
-  // (observed: an existing vanilla-extract repo was denied its own `.css.ts`
-  // styling). Only the file-integrity asset check survives; everything above
-  // (readiness, run-id, run-team ownership, reservations) already ran and
-  // keeps applying in every mode.
-  const staticViolationsFor = isExistingProjectMode(state)
-    ? (target: GateTarget) => assetExtensionMismatchViolations(target.filePath, target.addedContent, block)
-    : (target: GateTarget) => planStaticViolations(target.filePath, target.addedContent, isNative, block);
+  // The static family's identity, registered at the position it was judged in
+  // before the move above — after every earlier cause has had its chance.
+  if (!firstFiredViolation.denyId) firstFiredViolation.denyId = staticFired.denyId;
   // Every static rule names itself and none of them names the FILE — the 14
   // block() call sites in plan-static.ts all have `filePath` in scope and pass
   // it to none of their prose. On a one-file Write that costs nothing (the
@@ -468,11 +592,11 @@ export function planWriteGate(ctx: Ctx): HookResult {
   //
   // Only when more than one file is being judged, so every single-target render
   // stays byte-identical to today's.
-  const staticTargets = gateTargets.filter((candidate) => candidate.staticCheck);
   const nameStaticTarget = staticTargets.length > 1;
-  for (const target of staticTargets) {
+  for (let index = 0; index < staticTargets.length; index += 1) {
+    const target = staticTargets[index]!;
     const before = violations.length;
-    const found = staticViolationsFor(target);
+    const found = staticFindings[index]!;
     appendUnique(violations, nameStaticTarget ? found.map((violation) => `${target.filePath}: ${violation}`) : found);
     noteOffender(target.filePath, before);
   }

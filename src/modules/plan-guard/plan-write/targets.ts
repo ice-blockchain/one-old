@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { readRegularFile } from '../../../shared/bounded-read';
 import { obj, type Rec } from '../../../shared/obj';
 import {
   shellCommandHasWritePrimitive,
@@ -155,7 +156,33 @@ export function reconstructTextEdit(
     if (stat.size > HOT_EDIT_MAX_BYTES) {
       return { ok: false, error: `target exceeds the ${HOT_EDIT_MAX_BYTES}-byte hot-scan limit` };
     }
-    current = fs.readFileSync(absoluteFile, 'utf8');
+    // BOUNDED (shared/bounded-read.ts). The read this replaces had no bound at
+    // all: a FIFO at the edit target blocked in `open(2)` forever, inside a
+    // PreToolUse hook.
+    //
+    // WHAT IT DOES NOT DO, recorded because the first version of this comment
+    // claimed it and the claim is FALSE: "it also moves the KIND decision off
+    // the `statSync` above onto the descriptor that is actually read". It does
+    // not. The `isFile()` test at the top of this block answers FIRST and
+    // returns this same string, so for a shape that is already hostile when the
+    // stat runs, the line below never executes — MEASURED by instrumenting
+    // `openSync` on the real `fs` module: it fires for a regular file and never
+    // fires for a FIFO or a symlink to `/dev/zero` (.tmp/bounded-reads,
+    // trace2-*.txt). The consequence is worth stating rather than leaving for
+    // the next reader to discover: no mutant of `bounded-read.ts` can be killed
+    // at THIS call site, because no mutant of it is reached here.
+    //
+    // What the bounded read is actually load-bearing for here is the narrower
+    // half of the same hazard — the object being SWAPPED between the stat and
+    // the read. That is the window `bounded-read.ts` argues the fd exists to
+    // close, and it is the only one this site still has. The `isFile()` early
+    // return is left in place deliberately: deleting it would route a DIRECTORY
+    // from `target is not a regular file` into the generic
+    // `target does not exist or is unreadable`, which is a worse message for the
+    // commonest benign case, and the stat is needed for the size bound anyway.
+    const read = readRegularFile(absoluteFile);
+    if (read === null) return { ok: false, error: 'target is not a regular file' };
+    current = read;
     if (current.includes('\0')) return { ok: false, error: 'target is binary' };
   } catch {
     return { ok: false, error: 'target does not exist or is unreadable' };

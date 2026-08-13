@@ -8,7 +8,7 @@
 import type { SkillBlockFn } from '../../core/types';
 import { isTestScopePath } from '../../shared/feature-source';
 
-type Vars = Record<string, string | number | null | undefined>;
+export type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
 
 // The runtime WebSocket-constructor token. Built by concatenation so this very
