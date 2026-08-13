@@ -576,6 +576,81 @@ test('Cursor SubagentStart records camelCase and payload parent aliases', () => 
   }
 });
 
+// A SubagentStart whose spawn-ledger write never happens, and the only moment in
+// the product at which that can be said out loud.
+//
+// `.cursor-spawns.lock` is taken with a 2 s budget (CURSOR_SPAWN_LOCK_TIMEOUT_MS),
+// after which `recordCursorSpawnObservation` answers null. The bound itself is
+// right — it is what stops a wedged holder from hanging a spawn. What was wrong
+// is what came next: the hook wrote no row, told nobody, and returned `noop()`,
+// so the run carried on reporting success over a ledger missing this spawn.
+//
+// The row is the ledger's ONLY receipt for a spawn (the postToolUse path READS it
+// and the reset's carry only copies rows that exist), so with it gone every
+// failure path for THIS child is dead: no transcript claim, no classification, no
+// fallback directive, and no terminal-exhaustion deny to stop a respawn onto the
+// same dead model.
+//
+// The lock is held the way run-agent.test.ts's own claims-lock timeout row holds
+// its: a bare, FRESH lock directory, which the reaper refuses to reclaim because
+// it is younger than the stale window. So the acquire burns the whole budget and
+// this row costs ~2 s of wall clock — that is the mechanism under test, not a
+// sleep, and the elapsed assertion is what distinguishes it from the store
+// refusing for some cheaper reason.
+test('a SubagentStart the spawn ledger could not record is reported, not swallowed', () => {
+  withCursorFixture((fixture) => {
+    const runId = RUN_ID;
+
+    const open = subagentStartBind(ctxFor(fixture.cwd, 'SubagentStart', {
+      hook_event_name: 'subagentStart',
+      session_id: PARENT_ID,
+      parent_conversation_id: PARENT_ID,
+      subagent_id: 'tool_ledger_open',
+      subagent_type: 'senior-architect',
+      subagent_model: REQUESTED_MODEL,
+      task: '[t1-role: senior-architect] Execute the assigned Traffic One role.',
+    }));
+    assert.equal(open.kind, 'noop', 'writable baseline: a recorded start stays silent');
+    assert.deepEqual(listCursorSpawnObservations(fixture.cwd, runId).map((row) => row.toolCallId),
+      ['tool_ledger_open'], 'writable baseline: and its row is on disk');
+
+    const lockDir = path.join(fixture.cwd, '.traffic-one', 'runs', runId, '.cursor-spawns.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+
+    const started = Date.now();
+    const result = subagentStartBind(ctxFor(fixture.cwd, 'SubagentStart', {
+      hook_event_name: 'subagentStart',
+      session_id: PARENT_ID,
+      parent_conversation_id: PARENT_ID,
+      subagent_id: 'tool_ledger_lost',
+      subagent_type: 'senior-backend',
+      subagent_model: REQUESTED_MODEL,
+      task: '[t1-role: senior-backend] Execute the assigned Traffic One role.',
+    }));
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed >= 1_800 && elapsed < 6_000,
+      `fixture guard: the acquisition must have spent its whole bounded budget, got ${elapsed}ms`);
+    assert.equal(fs.existsSync(lockDir), true, 'fixture guard: a fresh lock owned by another process is never stolen');
+    assert.deepEqual(listCursorSpawnObservations(fixture.cwd, runId).map((row) => row.toolCallId),
+      ['tool_ledger_open'], 'fixture guard: the second spawn really did not reach the ledger');
+
+    assert.equal(result.kind, 'context',
+      'a spawn the ledger never received must not be reported as a clean start');
+    const message = 'context' in result ? String(result.context) : '';
+    assert.match(message, /senior-backend/, 'the report names the role whose spawn record is missing');
+    assert.match(message, /spawn ledger was unavailable/,
+      'and says which store failed, so this is not mistaken for a policy or identity breach');
+
+    // The report must not have cost the child its binding. Everything below the
+    // record — the reuse-registry row and the role claim — has to happen anyway,
+    // which is why the refusal is carried to one exit instead of returned where
+    // it is detected.
+    assert.equal(readRunAgentRegistry(fixture.cwd, runId)['senior-backend']?.agentId, 'tool_ledger_lost',
+      'the child is still bound and reusable: only the immutable spawn record is missing');
+  });
+});
+
 test('Cursor runtime Settings choice requires positive unavailable vocabulary; network/auth/abort stay generic', () => {
   const cases = [
     {

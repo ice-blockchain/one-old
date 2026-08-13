@@ -312,6 +312,11 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // PostToolUse result correlation, lifecycle followup targeting). One normalization here
   // keeps both stores byte-identical, whichever spelling the host sent.
   const cursorSubagentId = normalizeHostCallId(raw.subagent_id);
+  // Set when the spawn ledger was ASKED for a row and could not give one. Read
+  // at the single exit below, not returned from here: the model-choice deny and
+  // the reuse-registry/claim writes underneath this block all still have to
+  // happen, and an early return would skip them to report a ledger gap.
+  let cursorStartUnrecorded = false;
   if (ctx.host === 'cursor' && cursorSubagentId && boundRunId) {
     const rolePolicy = runPolicy?.host === 'cursor' ? runPolicy.roles[role] : null;
     const tier = rolePolicy?.tier || null;
@@ -337,6 +342,42 @@ export function subagentStartBind(ctx: Ctx): HookResult {
         expectedModel,
         ...(Number.isFinite(parsedStartedAt) ? { startedAtMs: parsedStartedAt } : {}),
       }));
+    }
+    // A REFUSAL THAT NOBODY HEARS. `recordCursorSpawnObservation` answers null
+    // when it never got `.cursor-spawns.lock` inside CURSOR_SPAWN_LOCK_TIMEOUT_MS
+    // (2 s), and until this branch existed that answer went nowhere: the hook
+    // wrote no row, told no one, and returned noop() — the run proceeded on a
+    // ledger that is missing this spawn, and reported success doing it.
+    //
+    // The gap is PERMANENT and this is the only place that can report it. This
+    // call site is the ledger's sole minter; the postToolUse path
+    // (persistCorrelatedCursorPostToolFailure) starts from
+    // correlatedPostToolObservation, which READS the ledger and returns null when
+    // the row is absent, and the reset's carry only copies rows that exist. So
+    // nothing later re-mints it, and everything the row feeds is dead for this
+    // child: no transcript claim, so no terminal classification; no directive, so
+    // no fallback follow-up; no recordExhaustedModel, so modelExhaustionTerminal-
+    // ForRole never trips and a respawn on the same API-limited model is never
+    // denied; and unavailableModelsForRun/rolesAwaitingModelChoice under-count,
+    // so siblings keep spawning on a slug already known to be gone.
+    //
+    // Non-blocking `context`, deliberately, and it is the SAME answer the Codex
+    // model-observation store above gives for the same shape of failure ("a
+    // concurrent hook holds its lock, or the write was refused"). This is not a
+    // policy or identity breach — the child is bound and running correctly, and
+    // denying it would destroy a healthy spawn over a transient store. What the
+    // orchestrator loses is Traffic One's failure recovery for THIS child, so
+    // what it is told is to own that recovery itself.
+    //
+    // Not retried here and not waited on: the caller has already spent the whole
+    // 2 s budget, and a second attempt just moves the same cliff further out
+    // while holding a spawn hook open. Measured at .tmp/spawnstore/ — 0 refusals
+    // in 562 barrier-synchronised writer attempts from 2- to 64-way contention,
+    // worst single acquisition 1851 ms at 32 writers — so reaching this branch
+    // takes a holder that WEDGES, not a queue that is long, and the bound is what
+    // keeps a wedged holder from hanging the spawn instead.
+    if (!recordedCursorStart && tier && expectedModel && requestedModel && parentSession) {
+      cursorStartUnrecorded = true;
     }
     if (recordedCursorStart && requestedModel && parentSession) {
       settleCorrelatedCursorRetryOnStart(cwd, boundRunId, {
@@ -412,6 +453,20 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       evidence: evidence || undefined,
       ...(ctx.host === 'codex' ? { refuseOccupiedRole: true } : {}),
     });
+  }
+  if (cursorStartUnrecorded) {
+    return context(
+      `Traffic One could not record the spawn observation for ${role} in run ${boundRunId}: the run's Cursor `
+      + 'spawn ledger was unavailable — a concurrent hook held its lock for the full acquisition budget, or the '
+      + 'write was refused. This is NOT a policy or identity failure and this child is correctly bound: it is '
+      + 'running, its role claim and reuse-registry entry are recorded, and it must keep working. '
+      + 'What is missing is this run\'s immutable record of the spawn, and nothing re-creates it later. So if THIS '
+      + 'child dies, Traffic One cannot correlate its transcript, will not classify an API limit or an unavailable '
+      + 'model, will not emit a fallback/retry directive for it, and will not block a respawn on the same model. '
+      + 'Parent/orchestrator: handle a failure of this child yourself — read its error, and choose the retry model '
+      + 'from the immutable run policy rather than waiting for a Traffic One prescription that will not arrive. '
+      + 'Sibling roles are unaffected.',
+    );
   }
   return noop();
 }

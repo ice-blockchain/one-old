@@ -2983,6 +2983,13 @@ const CLASSIFIED_WALL_CLOCK_CLAIMS: Readonly<Record<string, string>> = {
   'src/runners/onboarding-wait/__tests__/wait.test.ts  elapsed < 2000  x1': 'boundedness, 350 ms wait',
   'src/shared/onboarding-server/__tests__/wizard-links.test.ts  waited < 2000  x1': 'boundedness, 100 ms wait',
   'src/shared/state/__tests__/run-agent.test.ts  elapsed < 4000  x3': 'boundedness, 1800 ms floor',
+  // Same shape and the same floor as the row above it, one lock over: a held
+  // `.cursor-spawns.lock` must make SubagentStart give up inside
+  // CURSOR_SPAWN_LOCK_TIMEOUT_MS and REPORT the gap, and the pair of bounds is
+  // how the row tells a real acquisition timeout from the store refusing for
+  // some cheaper reason. Nothing here claims a spawn hook is fast.
+  'src/modules/agent-model/__tests__/cursor-failures.test.ts  elapsed < 6000  x1':
+    'boundedness, 1800 ms floor under a 2 s lock budget',
   'src/shared/state/__tests__/run-agent.test.ts  elapsed < 12000  x3': 'boundedness, 3500 ms floor',
   // Both of these sit UNDER a deadline rather than over a measured cost, which
   // is the boundedness shape: the runner must give up inside its poll loop
