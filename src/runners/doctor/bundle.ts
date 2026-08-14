@@ -79,7 +79,7 @@ type Rec = Record<string, unknown>;
 //      against the credential SHAPES in SECRET_VALUE_PATTERNS. A key-name pass
 //      alone is only as good as the naming: measured against seeded state, it
 //      caught apiKey/authToken/sessionCookie/privateKeyPem/awsSecretAccessKey/
-//      github_pat and kept a live `postgres://admin:pass@host` under
+//      github_pat and kept a live Postgres DSN carrying inline credentials under
 //      `databaseUrl`, an `sk-` key inside `notes`, a `Bearer <jwt>` inside
 //      `deployCommand`, and a bare JWT under `nested.deeper.innocent`. The
 //      whole value is replaced, not just the matched span: a partially

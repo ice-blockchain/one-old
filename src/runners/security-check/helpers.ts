@@ -202,6 +202,70 @@ export function projectFiles(cwd: string): string[] {
   return walkFiles(cwd).filter(keep);
 }
 
+/**
+ * Blanks JS/TS comments, PRESERVING every byte offset and newline — so a line
+ * number computed from the result still points at the right line of the original.
+ *
+ * The app-security rules below match code SHAPES: a template literal handed to
+ * `query(`, a `dangerouslySetInnerHTML`, an admin route. Prose is not code, and
+ * matching it produced findings that named this repository's own explanatory
+ * comments as vulnerabilities:
+ *
+ *   - `// … execute bit — reported // \`stack-test: not-applicable\`, was excused …`
+ *     was reported as dynamic SQL construction (qa-evidence/stack.ts).
+ *   - a comment documenting the doctor redactor's own test vectors, which spells a
+ *     fake `postgres://admin:pass@host`, was reported BOTH as an admin route gated
+ *     only in UI code and as a browser-reachable credential (doctor/bundle.ts).
+ *
+ * Secret scanning deliberately does NOT use this: a credential pasted into a
+ * comment is a real leak, and `scanSecrets` keeps reading the whole file.
+ *
+ * String and template literals are tracked, because `//` inside `'https://…'`
+ * opens no comment and blanking from there would erase real code. A `/` preceded
+ * by a backslash is left alone for the same reason: `/\/\//` is a regex, not a
+ * comment. Both fallbacks err toward keeping text, so an ambiguous case is still
+ * scanned rather than silently exempted.
+ */
+export function stripComments(text: string): string {
+  const out = text.split('');
+  const blank = (from: number, to: number): void => {
+    for (let j = from; j < to && j < out.length; j += 1) {
+      if (out[j] !== '\n') out[j] = ' ';
+    }
+  };
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    const escaped = i > 0 && text[i - 1] === '\\';
+    if (ch === '/' && next === '/' && !escaped) {
+      const end = text.indexOf('\n', i);
+      const stop = end === -1 ? text.length : end;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === '/' && next === '*' && !escaped) {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      i += 1;
+      while (i < text.length) {
+        if (text[i] === '\\') { i += 2; continue; }
+        if (text[i] === ch) { i += 1; break; }
+        i += 1;
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return out.join('');
+}
+
 export function lineForIndex(text: string, index: number): number {
   return text.slice(0, index).split(/\r?\n/).length;
 }

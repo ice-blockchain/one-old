@@ -8,7 +8,7 @@ import {
     hasCommand, 
    isRuntimeAppSecurityPath, isSecurityHeaderConfigPath,
   lineForIndex,  parseAuditJson, projectFiles,
-  readPackageJson, readTextFile,  runCommand, 
+  readPackageJson, readTextFile,  runCommand, stripComments,
 } from './helpers';
 
 import { scanSecrets, scanSupabaseSql, type TextFile } from './scanners-secrets';
@@ -42,33 +42,46 @@ export function scanAppSecurity(cwd: string, textFiles: TextFile[], report: Scan
 
   for (const { filePath, text } of appTextFiles) {
     const lowerPath = filePath.toLowerCase();
+    // Every rule below has two halves that must read DIFFERENT text.
+    //
+    // The TRIGGER — the vulnerable shape — is code, and is matched against `code`
+    // (comments blanked, offsets preserved; see stripComments). Prose that merely
+    // discusses a shape is not that shape, and matching it reported this repo's own
+    // comments as SQL injection and as an admin route.
+    //
+    // The EVIDENCE half — "…and no sanitizer/auth/rate-limit is in sight" — keeps
+    // reading the whole file, INCLUDING comments, for two reasons: a reviewed note
+    // is legitimate evidence, and one of these checks is an inline suppression
+    // marker (`traffic-one-public-endpoint`) that only ever appears in a comment.
+    // Blanking comments on that side would silently disable it.
+    const code = stripComments(text);
     const isServer = /(^|\/)(server|api|routes?|controllers?|supabase\/functions)(\/|$)|\.(route|controller)\.(ts|js)$/.test(lowerPath);
-    const isStateChanging = /\b(POST|PUT|PATCH|DELETE)\b|export\s+async\s+function\s+(POST|PUT|PATCH|DELETE)|Deno\.serve|app\.(post|put|patch|delete)\(/.test(text);
+    const isStateChanging = /\b(POST|PUT|PATCH|DELETE)\b|export\s+async\s+function\s+(POST|PUT|PATCH|DELETE)|Deno\.serve|app\.(post|put|patch|delete)\(/.test(code);
     if (isServer && isStateChanging && !/(auth\.uid|getUser|requireAuth|withAuth|jwtVerify|verifyJwt|session|currentUser|auth\.getUser)/i.test(text) && !/traffic-one-public-endpoint/i.test(text)) {
       report.addIssue('high', 'access-control', 'State-changing endpoint has no server-side authentication evidence.', {
         file: filePath,
         remediation: 'Authenticate in trusted server code before mutating data.',
       });
     }
-    if (isServer && isStateChanging && /\.(update|delete|upsert|insert)\b/i.test(text) && !/(owner|user_id|auth\.uid|candidate_id|employer_id|account_id|tenant_id)/i.test(text)) {
+    if (isServer && isStateChanging && /\.(update|delete|upsert|insert)\b/i.test(code) && !/(owner|user_id|auth\.uid|candidate_id|employer_id|account_id|tenant_id)/i.test(text)) {
       report.addIssue('high', 'access-control', 'State-changing data access has no ownership/tenant check evidence.', {
         file: filePath,
         remediation: 'Enforce record ownership server-side or through RLS policies, not only in the UI.',
       });
     }
-    if (isServer && /(auth|otp|signup|sign-up|reset|password|openai|anthropic|llm|completion|generate)/i.test(`${filePath}\n${text}`) && !/(rateLimit|limiter|throttle|arcjet|upstash|slowDown|quota)/i.test(text)) {
+    if (isServer && /(auth|otp|signup|sign-up|reset|password|openai|anthropic|llm|completion|generate)/i.test(`${filePath}\n${code}`) && !/(rateLimit|limiter|throttle|arcjet|upstash|slowDown|quota)/i.test(text)) {
       report.addIssue('high', 'rate-limit', 'Sensitive or expensive endpoint has no rate-limit evidence.', {
         file: filePath,
         remediation: 'Add rate limiting to auth, reset, OTP, signup, AI/LLM, and expensive query paths.',
       });
     }
-    if (isServer && /fetch\(\s*(?:url|targetUrl|requestUrl|req\.|request\.|params\.|searchParams\.get)/i.test(text)) {
+    if (isServer && /fetch\(\s*(?:url|targetUrl|requestUrl|req\.|request\.|params\.|searchParams\.get)/i.test(code)) {
       report.addIssue('high', 'access-control', 'Server fetch appears to use a user-controlled URL.', {
         file: filePath,
         remediation: 'Allowlist hosts/schemes and proxy only vetted destinations to avoid SSRF.',
       });
     }
-    if (/access-control-allow-origin['"]?\s*[:,]\s*['"]\*/i.test(text) && /access-control-allow-credentials['"]?\s*[:,]\s*['"]?true/i.test(text)) {
+    if (/access-control-allow-origin['"]?\s*[:,]\s*['"]\*/i.test(code) && /access-control-allow-credentials['"]?\s*[:,]\s*['"]?true/i.test(code)) {
       report.addIssue('high', 'cors', 'CORS allows wildcard origins with credentials.', {
         file: filePath,
         remediation: 'Use an explicit allowed_origins list for credentialed requests.',
@@ -80,43 +93,59 @@ export function scanAppSecurity(cwd: string, textFiles: TextFile[], report: Scan
         remediation: 'Handle OPTIONS preflight and set restrictive CORS headers.',
       });
     }
-    if (/(?:query|execute|raw|sql)\s*\(\s*`[\s\S]*\$\{/i.test(text) || /EXECUTE\s+[^;]*\|\|/i.test(text)) {
+    // Both halves were unbounded and matched across the WHOLE file, which is what
+    // made them fire on prose:
+    //   `[\s\S]*` let `sql(\`` on line 10 pair with a `${` on line 900, in an
+    //   unrelated template — so any file containing both tokens matched. Bounded to
+    //   the SAME template literal (`[^`]*`), which is where dynamic SQL actually
+    //   interpolates.
+    //   `EXECUTE\s+[^;]*\|\|` is PL/pgSQL dynamic SQL, but `[^;]*` crosses newlines,
+    //   so an English sentence containing "execute" paired with a `||` anywhere
+    //   later in the file. Bounded to one statement's worth of the same line.
+    if (/(?:query|execute|raw|sql)\s*\(\s*`[^`]*\$\{/i.test(code) || /EXECUTE\s+[^;\n]{0,200}\|\|/i.test(code)) {
       report.addIssue('high', 'injection', 'Potential dynamic SQL construction from interpolation/concatenation.', {
         file: filePath,
         remediation: 'Use parameterized queries or typed query builders only.',
       });
     }
-    if (/dangerouslySetInnerHTML/i.test(text) && !/DOMPurify|sanitize/i.test(text)) {
+    if (/dangerouslySetInnerHTML/i.test(code) && !/DOMPurify|sanitize/i.test(text)) {
       report.addIssue('high', 'xss', 'dangerouslySetInnerHTML is used without sanitizer evidence.', {
         file: filePath,
         remediation: 'Sanitize trusted HTML with DOMPurify and enforce a CSP.',
       });
     }
-    if (/react-markdown|marked\(|markdown-it/i.test(text) && !/rehype-sanitize|DOMPurify|sanitize/i.test(text)) {
+    // Rendering untrusted Markdown is the risk, so the trigger is now the file
+    // actually PULLING IN a Markdown renderer rather than a substring that looks
+    // like one. `marked\(` matched any identifier ending in those six letters —
+    // `updatesNotMarked(` in this repo's own session-start.ts — and reported a hook
+    // that never touches a browser as an XSS hole.
+    const rendersMarkdown = /\b(?:from|require)\s*\(?\s*['"](?:react-markdown|markdown-it|marked)['"]/i.test(code)
+      || /\bimport\s+['"](?:react-markdown|markdown-it|marked)['"]/i.test(code);
+    if (rendersMarkdown && !/rehype-sanitize|DOMPurify|sanitize/i.test(text)) {
       report.addIssue('high', 'xss', 'Markdown rendering has no sanitizer evidence.', {
         file: filePath,
         remediation: 'Use rehype-sanitize or DOMPurify for untrusted Markdown.',
       });
     }
-    if (/(multer|formData|\.upload\(|createBucket|storage\.from\()/i.test(text) && !/(fileSizeLimit|maxFileSize|allowedMimeTypes|mime|content-type|size)/i.test(text)) {
+    if (/(multer|formData|\.upload\(|createBucket|storage\.from\()/i.test(code) && !/(fileSizeLimit|maxFileSize|allowedMimeTypes|mime|content-type|size)/i.test(text)) {
       report.addIssue('high', 'uploads', 'File upload/storage code has no MIME or size limit evidence.', {
         file: filePath,
         remediation: 'Validate MIME type, extension, size, bucket, and user-owned path before upload.',
       });
     }
-    if (/\/admin|adminroute|role\s*===\s*['"]admin['"]|roles?\.includes\(['"]admin['"]\)/i.test(`${filePath}\n${text}`) && !isServer) {
+    if (/\/admin|adminroute|role\s*===\s*['"]admin['"]|roles?\.includes\(['"]admin['"]\)/i.test(`${filePath}\n${code}`) && !isServer) {
       report.addIssue('high', 'access-control', 'Admin access appears to be gated only in client/UI code.', {
         file: filePath,
         remediation: 'Enforce admin authorization in server code or RLS policies.',
       });
     }
-    if (/createHash\(['"](?:md5|sha1)['"]\)[\s\S]{0,120}password/i.test(text) || /password[\s\S]{0,120}createHash\(['"](?:md5|sha1)['"]\)/i.test(text)) {
+    if (/createHash\(['"](?:md5|sha1)['"]\)[\s\S]{0,120}password/i.test(code) || /password[\s\S]{0,120}createHash\(['"](?:md5|sha1)['"]\)/i.test(code)) {
       report.addIssue('high', 'crypto', 'Password hashing appears to use MD5/SHA1.', {
         file: filePath,
         remediation: 'Use bcrypt or argon2 with reviewed parameters.',
       });
     }
-    if (isServer && /(admin|payment|stripe|auth|login|signup)/i.test(`${filePath}\n${text}`) && !/(logger|audit|Sentry|captureException|console\.(warn|error))/i.test(text)) {
+    if (isServer && /(admin|payment|stripe|auth|login|signup)/i.test(`${filePath}\n${code}`) && !/(logger|audit|Sentry|captureException|console\.(warn|error))/i.test(text)) {
       report.addIssue('medium', 'logging', 'Sensitive endpoint has no security logging/alerting evidence.', {
         file: filePath,
         remediation: 'Log auth events, admin actions, payment events, and authorization failures without secrets/PII.',

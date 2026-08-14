@@ -24,6 +24,7 @@ import {
   scanSupabaseSql,
   shouldIgnoreFingerprint,
   stampState,
+  stripComments,
   timestampSlug,
   toPosix,
   trafficStateHasOnlyStampFields,
@@ -137,6 +138,63 @@ test('scanAppSecurity flags unauthenticated state-changing endpoints', () => {
   const { report, issues } = scanReport();
   scanAppSecurity('/tmp/no-such', [tf('server/users.route.ts', 'export async function POST(req){ return db.update(x); }')], report);
   assert.ok(issues.some((i) => i.category === 'access-control' && i.message.includes('no server-side authentication evidence')));
+});
+
+// The app-security rules match code SHAPES, and prose is not code. Every row here
+// is a finding this scanner actually reported against Traffic One's own source, on
+// a comment or an identifier, with no vulnerability anywhere near it.
+test('the app-security rules do not fire on comments or on identifiers that merely look like calls', () => {
+  const { report, issues } = scanReport();
+  scanAppSecurity('/tmp/no-such', [
+    // qa-evidence/stack.ts: `EXECUTE\s+[^;]*\|\|` crossed newlines, so "execute"
+    // in a sentence paired with a `||` anywhere later in the file.
+    tf('src/runners/qa-evidence/stack.ts',
+      '// the execute bit — reported `stack-test: not-applicable`, was excused\n'
+      + 'const ok = a || b;\n'),
+    // session-start.ts: `marked\(` matched any identifier ending in those letters.
+    tf('src/modules/session/session-start.ts',
+      'function updatesNotMarked(env) { return "[traffic-one] not recorded"; }\n'
+      + 'if (marked) return result;\n'),
+    // doctor/bundle.ts: a comment documenting the redactor's own fake vectors,
+    // reported as an admin route gated only in UI code (`/admin` inside the URL).
+    tf('src/runners/doctor/bundle.ts',
+      '// redacts `postgres://admin:pass@host` under `databaseUrl`, an `sk-` key\n'
+      + 'export const redact = (s) => s;\n'),
+    // A template literal in a comment is not a query either.
+    tf('src/db/notes.ts', '// avoid sql(`select ${id}`) — use a bound parameter\nexport const q = 1;\n'),
+  ], report);
+  assert.deepEqual(issues.map((i) => `${i.category}:${i.file}`), [],
+    'a comment that DISCUSSES a vulnerable shape is not that shape');
+});
+
+// The other half: stripping comments must not blind the rules to real code.
+test('the app-security rules still catch the shapes they exist for, in code', () => {
+  const { report, issues } = scanReport();
+  scanAppSecurity('/tmp/no-such', [
+    tf('src/db/query.ts', 'export const run = (id) => sql(`select * from t where id = ${id}`);'),
+    tf('src/ui/Note.tsx', 'import Markdown from "react-markdown";\nexport const N = () => <Markdown>{body}</Markdown>;'),
+    tf('src/admin/panel.tsx', 'export const Panel = () => (role === "admin" ? <Secret/> : null);'),
+    tf('src/ui/Raw.tsx', 'export const R = () => <div dangerouslySetInnerHTML={{ __html: body }} />;'),
+  ], report);
+  const found = (category: string, file: string): boolean =>
+    issues.some((i) => i.category === category && i.file === file);
+  assert.ok(found('injection', 'src/db/query.ts'), 'interpolation INSIDE the query template still matches');
+  assert.ok(found('xss', 'src/ui/Note.tsx'), 'an actual react-markdown import with no sanitizer still matches');
+  assert.ok(found('access-control', 'src/admin/panel.tsx'), 'admin gating in client code still matches');
+  assert.ok(found('xss', 'src/ui/Raw.tsx'), 'dangerouslySetInnerHTML still matches');
+});
+
+test('stripComments blanks comments, keeps strings, and preserves line numbers', () => {
+  const text = 'const a = 1; // note\nconst url = "https://x/y";\n/* block\n   more */\nconst b = 2;\n';
+  const out = stripComments(text);
+  assert.equal(out.length, text.length, 'offsets are preserved, so a line number computed from either agrees');
+  assert.equal(lineForIndex(out, out.indexOf('const b')), lineForIndex(text, text.indexOf('const b')));
+  assert.ok(!out.includes('note'), 'the line comment is gone');
+  assert.ok(!out.includes('more'), 'the block comment is gone, including its second line');
+  assert.ok(out.includes('"https://x/y"'), 'a // inside a string opens no comment');
+  assert.ok(out.includes('const b = 2;'), 'code after a block comment survives');
+  // A regex literal spelling an escaped slash is not a comment either.
+  assert.ok(stripComments('const re = /\\/\\//; const keep = 1;').includes('const keep = 1;'));
 });
 
 test('scanMobile flags bundled secrets in mobile projects', () => {
