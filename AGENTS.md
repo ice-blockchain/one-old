@@ -47,6 +47,22 @@ npm run smoke
 npm run test:env -- --strict   # deterministic full-run simulations (free, no host)
 ```
 
+`npm run verify:chain` runs exactly that, serially, and is worth preferring over
+typing it out: four of its guards exist because the hand-run chain reported a
+GREEN result over a red tree, or the reverse. It never pipes a step (a run piped
+into `head` reports the PIPE's exit code, which produced a false green here); it
+refuses to read a pass count off a log with no `# tests` marker (node's reporter
+is `spec` on a TTY and `tap` only when redirected, so a `# pass` grep against a
+spec log matches nothing and looks clean); it corrects a
+`PLAYWRIGHT_BROWSERS_PATH` pointing at a sandbox cache that does not exist,
+which otherwise makes `test:env` report ~48 failures indistinguishable from an
+uninstalled browser; and it judges `test:env` by its ASSERTION TALLY rather than
+its exit code, because `--strict` with no `--host=` includes `cursor`, a
+`contract+manual-e2e` host that exits 1 with every assertion passing. It names
+every failing and every skipped test, and defers a red suite to the end rather
+than stopping, so one run answers whether a failure is a source defect or a
+stale generated layer. Logs land under `.tmp/verify-chain/`.
+
 Run the chain end to end with NOTHING ELSE EDITING `src/`. Both `gen` and
 `build` write their own `build-provenance.json`, and its `sourceHash` hashes
 every file under `src/**` directly whenever git cannot vouch for the working

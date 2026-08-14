@@ -28,7 +28,8 @@
     "test:env": "tsx src/test-environment/run.ts",
     "test:env:dry": "tsx src/test-environment/run.ts --dry-run",
     "test:env:e2e": "tsx src/test-environment/run.ts --e2e --strict",
-    "test:codex-trust": "tsx src/test-environment/codex-trust-upgrade-proof.ts"
+    "test:codex-trust": "tsx src/test-environment/codex-trust-upgrade-proof.ts",
+    "verify:chain": "bash scripts/verify-chain.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
