@@ -55,6 +55,8 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 security scanner: match code shapes, not sentences about them (`edd5ecb2`)
+- P8 tests: fixtures that only held on the machine they were written on (`ee8a2a33`)
 - P8 comments: drop references no reader outside this machine can follow (`2ce61ed4`)
 - P8 spawn denies: probe the refused persist, and stop crashing on three (`9aec1abb`)
 - P8 spawn sidecar denies: read the state, name a route and an actor (`27e9cd8d`)
