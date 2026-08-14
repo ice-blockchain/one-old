@@ -274,6 +274,42 @@ test('openCodeQueuePolicyViolations: out-of-scope unit rejection lists real in-s
   assert.match(scopeError as string, /NOT writable by the implementers either/);
 });
 
+test('openCodeQueuePolicyViolations: out-of-scope sample prefers compiled source over scaffold dotfiles', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: format-helpers | role: frontend | kind: pure-helper | files: apps/web/src/lib/format.ts | task: pure formatting helpers',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const errors = openCodeQueuePolicyViolations(units, {
+    assignments: [{
+      role: 'senior-frontend',
+      scope: {
+        include: [
+          '.editorconfig',
+          '.github/workflows/ci.yml',
+          '.gitignore',
+          '.npmrc',
+          '.nvmrc',
+          '.prettierrc',
+          '.prettierignore',
+          'CHANGELOG.md',
+          'CONTRIBUTING.md',
+          'LICENSE',
+          'README.md',
+          'apps/web/src/components/TicketStatusBadge.tsx',
+          'apps/web/src/features/course-catalog/index.ts',
+        ],
+        exclude: [],
+      },
+    }],
+  });
+  const scopeError = errors.find((error) => /outside frontend's assignment scope/.test(error));
+  assert.ok(scopeError, errors.join(' | '));
+  assert.match(scopeError as string, /apps\/web\/src\/components\/TicketStatusBadge\.tsx/);
+  assert.match(scopeError as string, /apps\/web\/src\/features\/course-catalog\/index\.ts/);
+  assert.doesNotMatch(scopeError as string, /In-scope frontend files include: \.editorconfig/);
+});
+
 test('openCodeQueuePolicyViolations: a non-docs unit mentioning tests still needs test paths in its allowlist', () => {
   const units = parsePlanDelegationUnits([
     '<!-- opencode-delegate:start -->',

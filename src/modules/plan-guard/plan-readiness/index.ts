@@ -11,6 +11,7 @@ import {
   capabilityProfileForRun,
   compileArchitectureForRun,
   ensureScaffoldContent,
+  moduleOutputVariants,
   persistCompiledArchitecture,
   publishRuntimeAssignments,
   readCompiledArchitecture,
@@ -34,6 +35,7 @@ import {
   preserveOpenCodeDelegateBlockForWrite,
   restorePlanOpenCodeDelegateBlock,
 } from '../../../shared/opencode-plan/preserve';
+import { retargetPlanOpenCodeQueueToCompiledOutputs } from '../../../shared/opencode-plan/retarget';
 import { obj } from '../../../shared/obj';
 import {
   activateRunV2RollbackBarrier,
@@ -606,17 +608,32 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
           // Full queue checks: metadata (stable ids, depends edges, parseable
           // files, unit-kind heuristics) AND the file-vs-assignment scope
           // cross-check. The compiled allowlist is born in THIS call, so the
-          // scope check runs against `candidateAssignments` and its deny
-          // prints the REAL in-scope file lists — the architect never has to
-          // guess compiled paths (the 2cl failure mode that once forced this
-          // check to be deferred). Deferring it to Step-0 delegation silently
-          // wasted the whole batch instead: observed 5cl-claude, 0/3 units
-          // delegable because every unit invented conventional Next paths
-          // (components/course-card.tsx, …) that the compiled scope never
-          // contained, and the run lost the entire OpenCode economy with no
-          // signal to the architect.
-          const queuePolicyErrors = openCodeDelegationActive(state, host)
-            && !planOnDiskMissingOpenCodeBlock(projectRoot)
+          // scope check runs against `candidateAssignments`.
+          //
+          // Observed 5cl-claude / end-user PLAN_READY: architects invent
+          // conventional kebab paths (`components/ticket-status-badge.tsx`)
+          // for modules the compiler emits in PascalCase. Hosts paint that
+          // PreToolUse deny as an Error; end users reinstall rather than
+          // retarget. When the mapping onto a compiled module output is
+          // unique, rewrite plan.md here — same auto-fix doctrine as the
+          // missing-block restore above — so the scope check never fires.
+          // Invented helpers with no compiled module (`src/lib/format.ts`,
+          // 4cl) still deny, and the deny sample prefers source paths over
+          // scaffold dotfiles.
+          const queueOnDisk = openCodeDelegationActive(state, host)
+            && !planOnDiskMissingOpenCodeBlock(projectRoot);
+          if (queueOnDisk) {
+            retargetPlanOpenCodeQueueToCompiledOutputs(projectRoot, {
+              assignments: candidateAssignments.assignments,
+              moduleOutputs: compiled.modules.flatMap((module) => (
+                moduleOutputVariants(module).map((output) => ({
+                  path: output,
+                  ownerRole: module.ownerRole,
+                }))
+              )),
+            });
+          }
+          const queuePolicyErrors = queueOnDisk
             ? planOnDiskOpenCodeQueuePolicyErrors(projectRoot, {
               assignments: candidateAssignments.assignments,
             })
@@ -628,7 +645,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
               { CONFLICTS: summary }));
           } else if (queuePolicyErrors.length > 0) {
             violations.push(block('architect-opencode-queue-policy-gate',
-              `Architect completion gate: OpenCode queue metadata is unsafe: ${queuePolicyErrors.join('; ')}. Fix the queue block in \`.traffic-one/plan.md\` (stable unique ids, parseable \`files:\`, explicit \`depends:\` edges for overlaps) and re-emit \`PLAN_READY\`. Scope errors above list the owning role's real compiled in-scope files — retarget each unit's \`files:\` to those exact paths, or declare the module in ArchitectureInputV1 so runtime compiles the output you need.`,
+              `Architect completion gate: OpenCode queue files or metadata do not match this run's compiled contract: ${queuePolicyErrors.join('; ')}. This is a recoverable architect rewrite, not a crashed run. Fix the queue block in \`.traffic-one/plan.md\` (stable unique ids, parseable \`files:\`, explicit \`depends:\` edges for overlaps) and re-emit \`PLAN_READY\`. Scope errors above list the owning role's real compiled in-scope files — retarget each unit's \`files:\` to those exact paths, or declare the module in ArchitectureInputV1 so runtime compiles the output you need.`,
               { ERRORS: queuePolicyErrors.join('; ') }));
           } else if (modelPolicy && !canPublishRunPolicyBootstraps(
             projectRoot,

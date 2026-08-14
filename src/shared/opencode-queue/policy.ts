@@ -241,11 +241,25 @@ export function openCodeQueuePolicyReport(
         // agents guess (observed 4cl: 4/5 units invented helper paths like
         // src/lib/format.ts that no module kind ever compiles, so their files
         // were unwritable for EVERYONE and the delegation silently fell back).
+        // Rank source paths first: assignmentOutputs lexicographically sorts
+        // `.editorconfig` ahead of `apps/web/...`, and slicing the first 8
+        // made the deny look like frontend owns only scaffold — a crash-shaped
+        // sample that sent end users to reinstall.
         const inScope = roleScopes
           .flatMap((scope) => scope.include)
           .filter((entry) => !GLOB_META_RE.test(entry));
-        const sample = inScope.slice(0, 8).join(', ');
-        const sampleTail = inScope.length > 8 ? ', …' : '';
+        const ranked = [...inScope].sort((a, b) => {
+          const rank = (entry: string): number => {
+            if (/^(apps|src|packages|supabase|services|tests|internal|web|app)\//.test(entry)) return 0;
+            const base = entry.slice(entry.lastIndexOf('/') + 1);
+            if (entry.startsWith('.') || base.startsWith('.')) return 2;
+            if (/^(README|LICENSE|CHANGELOG|CONTRIBUTING|AUTHORS|NOTICE)(\.|$)/i.test(base)) return 2;
+            return 1;
+          };
+          return rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0);
+        });
+        const sample = ranked.slice(0, 8).join(', ');
+        const sampleTail = ranked.length > 8 ? ', …' : '';
         add(`OpenCode unit \`${unit.id}\` (role ${unit.role}) lists file(s) outside ${unit.role}'s assignment scope: ${outside.join(', ')}; retarget the unit to files ${unit.role} actually owns, move it to the owning role, or drop it. These files are NOT writable by the implementers either — the compiled scope is the whole write surface for this run, so fold the unit's content into an owned file instead. In-scope ${unit.role} files include: ${sample}${sampleTail}. \`runs/<runId>/assignments.json\` is runtime-owned and compiled from your ArchitectureInputV1 modules — declare the module under the owning role instead of editing that file.`, unit.id);
       }
     }

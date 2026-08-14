@@ -74,7 +74,7 @@ Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md
 <!-- T1BLOCK:END plan-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-policy-gate -->
-Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Fix the queue block in `.traffic-one/plan.md` (stable unique ids, parseable `files:`, explicit `depends:` edges for overlaps) and re-emit `PLAN_READY`. Scope errors above list the owning role's real compiled in-scope files — retarget each unit's `files:` to those exact paths, or declare the module in ArchitectureInputV1 so runtime compiles the output you need.
+Architect completion gate: OpenCode queue files or metadata do not match this run's compiled contract: {{ERRORS}}. This is a recoverable architect rewrite, not a crashed run. Fix the queue block in `.traffic-one/plan.md` (stable unique ids, parseable `files:`, explicit `depends:` edges for overlaps) and re-emit `PLAN_READY`. Scope errors above list the owning role's real compiled in-scope files — retarget each unit's `files:` to those exact paths, or declare the module in ArchitectureInputV1 so runtime compiles the output you need.
 <!-- T1BLOCK:END architect-opencode-queue-policy-gate -->
 
 <!-- T1BLOCK:BEGIN supabase-local-stack-gate -->

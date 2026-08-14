@@ -565,11 +565,10 @@ test('completion denies out-of-scope queue units with the compiled lists and acc
   // Scope history: after 2cl this check was deferred to Step-0 because the
   // deny left the architect guessing compiled paths. Deferring it silently
   // wasted whole batches instead (5cl-claude: 0/3 units delegable, no signal
-  // to the architect). The check is back at completion because the deny now
-  // renders from the candidate assignments born in this same call and lists
-  // the owning role's REAL in-scope files — a denied queue is always fixable
-  // by retargeting `files:` to those exact paths. A denied completion still
-  // persists NO compiled sidecar.
+  // to the architect). Unique kebab→Pascal mappings are now rewritten on disk
+  // at PLAN_READY (same auto-fix doctrine as the missing-block restore). A
+  // path no module compiles (`src/lib/never-compiled.ts`, 4cl) still denies,
+  // and a denied completion still persists NO compiled sidecar.
   withProject((dir) => {
     writeRequiredScaffold(dir);
     writeRequiredMemory(dir, QUEUE_STATE);
@@ -613,6 +612,79 @@ test('completion denies out-of-scope queue units with the compiled lists and acc
     assert.ok(v.includes('architect-opencode-queue-policy-gate'));
     assert.equal(readRuntimeAssignments(dir, 'R'), null);
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'R', 'architecture-v1.json')), false);
+  });
+});
+
+test('PLAN_READY auto-retargets kebab OpenCode queue paths onto compiled PascalCase module outputs', () => {
+  const QUEUE_STATE = {
+    ...DEFAULT_STATE,
+    onboardingComplete: true,
+    openCode: { enabled: true },
+    toolchain: { opencode: { installedVersion: '1.0.0' } },
+  };
+  const digestArgs = (dir: string) => ({
+    filePath: '.traffic-one/digests/R/architect.md',
+    content: 'verdict: PLAN_READY\n',
+    projectRoot: dir,
+    state: QUEUE_STATE,
+    writingFeatureSource: false,
+    host: 'claude' as const,
+    block: names,
+  });
+  const architectureInput = {
+    schemaVersion: 1,
+    routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+    modules: [
+      { id: 'app-shell', name: 'App', kind: 'app-shell' },
+      { id: 'home', name: 'Home', kind: 'page' },
+      { id: 'ticket-status-badge', name: 'Ticket Status Badge', kind: 'component' },
+      { id: 'countdown-timer', name: 'Countdown Timer', kind: 'component' },
+    ],
+  };
+  const planWithQueue = (dir: string, rows: string[]): void => {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      'plan',
+      '<!-- opencode-delegate:start -->',
+      ...rows,
+      '<!-- opencode-delegate:end -->',
+      '',
+    ].join('\n'), 'utf8');
+  };
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, QUEUE_STATE);
+    writeArchitectureInputOnly(dir, 'R', architectureInput);
+    planWithQueue(dir, [
+      '- id: badge-visuals | role: frontend | kind: component | files: apps/web/src/components/ticket-status-badge.tsx | task: ticket status badge visuals',
+      '- id: timer-visuals | role: frontend | kind: component | files: components/countdown-timer.tsx | task: countdown timer visuals',
+      '- id: locales-en | role: frontend | kind: i18n | files: packages/i18n/src/locales/en/common.json | task: draft english copy catalog',
+    ]);
+    const v = planReadinessViolations(digestArgs(dir));
+    assert.deepEqual(v, [], `kebab queue paths must auto-retarget instead of denying PLAN_READY, got: ${v.join(', ')}`);
+    const plan = fs.readFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'utf8');
+    assert.match(plan, /TicketStatusBadge\.tsx/);
+    assert.match(plan, /CountdownTimer\.tsx/);
+    assert.doesNotMatch(plan, /ticket-status-badge\.tsx/);
+    assert.doesNotMatch(plan, /countdown-timer\.tsx/);
+    assert.ok(readRuntimeAssignments(dir, 'R'));
+  });
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, QUEUE_STATE);
+    writeArchitectureInputOnly(dir, 'R', architectureInput);
+    planWithQueue(dir, [
+      '- id: badge-visuals | role: frontend | kind: component | files: apps/web/src/components/ticket-status-badge.tsx | task: ticket status badge visuals',
+      '- id: helpers | role: frontend | kind: helper | files: apps/web/src/lib/never-compiled.ts | task: invented helpers',
+      '- id: locales-en | role: frontend | kind: i18n | files: packages/i18n/src/locales/en/common.json | task: draft english copy catalog',
+    ]);
+    const denied = planReadinessViolations(digestArgs(dir));
+    assert.ok(denied.includes('architect-opencode-queue-policy-gate'),
+      `invented helpers must still deny PLAN_READY, got: ${denied.join(', ')}`);
+    const plan = fs.readFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'utf8');
+    assert.match(plan, /TicketStatusBadge\.tsx/);
+    assert.match(plan, /never-compiled\.ts/);
+    assert.equal(readRuntimeAssignments(dir, 'R'), null);
   });
 });
 
