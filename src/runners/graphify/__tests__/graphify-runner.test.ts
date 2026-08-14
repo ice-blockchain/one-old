@@ -373,9 +373,26 @@ PY
 fi
 exit 1
 `;
-    // The resolver probes for an explicit minor name (python3.12) ahead of the
-    // generic python3; provide both so `which('python3.12')` resolves the stub.
-    fs.writeFileSync(path.join(bin, 'python3.12'), pyStub, { mode: 0o755 });
+    // The resolver walks a ceiling of minors DOWN to the declared minimum, and at
+    // each one asks `which('python3.<minor>')` and THEN a set of absolute
+    // directories (/opt/homebrew/bin, /usr/local/bin, pyenv) for that same minor.
+    // Only the `which` step can see the pinned PATH, so the stub has to answer to
+    // every minor on that ladder: a real interpreter one minor HIGHER than the
+    // stub's wins from an absolute path, whatever PATH says.
+    //
+    // This wrote python3.12 and python3 only, which is why it passed everywhere
+    // that has no absolute python3.13 — this dev machine and the ubuntu runner —
+    // and failed on the macOS runner, which has one. There the resolver escaped to
+    // the real interpreter and the case performed a REAL `pip install graphifyy`
+    // against PyPI, reporting the published latest (0.9.42) in place of this stub's
+    // 0.9.13. A wrong version was the symptom; a unit test reaching the network was
+    // the actual defect.
+    //
+    // The range deliberately runs past the resolver's current ceiling so that
+    // raising it does not silently re-open the same escape.
+    for (let minor = 10; minor <= 20; minor += 1) {
+      fs.writeFileSync(path.join(bin, `python3.${minor}`), pyStub, { mode: 0o755 });
+    }
     fs.writeFileSync(path.join(bin, 'python3'), pyStub, { mode: 0o755 });
     return { bin, log };
   }
@@ -397,6 +414,12 @@ test('graphify installs into the Traffic One-managed venv, never pip --user', ()
     const { bin, log } = stubPython(cwd);
     withPath([bin], () => {
       const r = ensureGraphifyTool(cwd);
+      // FIXTURE READBACK — the stub logs every invocation, so a missing log means
+      // the runtime resolver reached a real interpreter and this case is measuring a
+      // live `pip install` rather than the install POLICY it exists to pin.
+      assert.equal(fs.existsSync(log), true,
+        'the stub python was never invoked: the runtime resolver escaped to a real interpreter, so every '
+        + 'assertion below would be about a real PyPI install instead of this fixture');
       assert.equal(r.ok, true);
       assert.equal(r.action, 'installed-venv');
       assert.equal(r.installedVersion, '0.9.13');

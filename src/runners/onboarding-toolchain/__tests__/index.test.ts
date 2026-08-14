@@ -65,12 +65,40 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
   }
 }
 
+/**
+ * Plants `body` as an interpreter under EVERY name resolvePython() probes, and
+ * returns a log path the stub appends one line to per invocation.
+ *
+ * A stub written to `python3` alone does not win. runtime-resolve.ts walks
+ * VERSIONED names first — `python3.13` down to the required minor, each via
+ * `which` and then at absolute dirs — and only reaches the generic `python3`
+ * after all of them miss. Any machine carrying a versioned interpreter earlier in
+ * that ladder therefore gets a REAL one: on the ubuntu leg `/usr/bin/python3.11`
+ * answered the probe, so these rows drove a live `pip install graphify` from
+ * PyPI. That passes where the network does, which is why it stayed invisible on
+ * CI, and fails as a product bug where it does not (a container with no
+ * `python3-venv`: three rows red, the report never written).
+ *
+ * The whole ladder is covered rather than today's ceiling, so raising the probe
+ * ceiling cannot silently re-open the escape.
+ */
+function plantPythonStub(binDir: string, body: string): string {
+  fs.mkdirSync(binDir, { recursive: true });
+  const log = path.join(binDir, 'python-invocations.log');
+  const script = `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\n${body}`;
+  for (let minor = 10; minor <= 20; minor += 1) {
+    fs.writeFileSync(path.join(binDir, `python3.${minor}`), script, { mode: 0o755 });
+  }
+  for (const name of ['python3', 'python']) {
+    fs.writeFileSync(path.join(binDir, name), script, { mode: 0o755 });
+  }
+  return log;
+}
+
 // Stub python3 that fakes `-m venv` → a venv python whose `-m pip install` drops
 // a graphify bin that writes graphify-out/GRAPH_REPORT.md on `update .`.
-function writeGraphifyStubPython(binDir: string): void {
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(path.join(binDir, 'python3'), `#!/bin/sh
-if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
+function writeGraphifyStubPython(binDir: string): string {
+  return plantPythonStub(binDir, `if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
 if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
   venv="$3"
   mkdir -p "$venv/bin"
@@ -93,15 +121,14 @@ PY
   exit 0
 fi
 exit 1
-`, { mode: 0o755 });
+`);
 }
 
 // Like above, but the installed graphify FAILS its scan the way real graphify
 // does on a project with no code files (empty/new project at onboarding time):
 // prints "No code files found" and exits 1, writing no report.
-function writeGraphifyStubPythonScanFails(binDir: string): void {
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(path.join(binDir, 'python3'), `#!/bin/sh
+function writeGraphifyStubPythonScanFails(binDir: string): string {
+  return plantPythonStub(binDir, `if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
 if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
   venv="$3"
   mkdir -p "$venv/bin"
@@ -126,7 +153,7 @@ PY
   exit 0
 fi
 exit 1
-`, { mode: 0o755 });
+`);
 }
 
 // Like writeGraphifyStubPython, but the outer python3 ALSO answers the version
@@ -134,10 +161,8 @@ exit 1
 // resolvePython() in providerRuntimeAvailable('graphify') accepts it. Lets a
 // sibling-fallback test drive a real graphify install through the shared
 // runtime resolver.
-function writeGraphifyStubPythonWithVersion(binDir: string): void {
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(path.join(binDir, 'python3'), `#!/bin/sh
-if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
+function writeGraphifyStubPythonWithVersion(binDir: string): string {
+  return plantPythonStub(binDir, `if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
 if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
   venv="$3"
   mkdir -p "$venv/bin"
@@ -160,7 +185,7 @@ PY
   exit 0
 fi
 exit 1
-`, { mode: 0o755 });
+`);
 }
 
 test('new project: a first scan that finds no code does NOT gate onboarding (ok=true)', () => {
@@ -206,11 +231,15 @@ test('existing-codebase: the first scan does NOT gate completion (graph is a sof
 test('existing-codebase: a successful first scan completes onboarding + builds the graph', () => {
   withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
     const bin = path.join(cwd, 'bin');
-    writeGraphifyStubPython(bin);
+    const log = writeGraphifyStubPython(bin);
     const savedPath = process.env.PATH;
     process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
     try {
       const r = ensureOnboardingToolchain(cwd);
+      // FIXTURE READBACK — no log means the resolver reached a real interpreter and
+      // the report below would be written by a live PyPI graphify, not this fixture.
+      assert.equal(fs.existsSync(log), true,
+        'the stub python was never invoked: resolvePython escaped to a real interpreter');
       assert.equal(r.ok, true);
       assert.equal(r.results.find((x) => x.tool === 'graphify')?.ok, true);
       assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md')), true);
@@ -304,7 +333,7 @@ test('chosen provider fails but sibling runtime is available → falls back + pe
     // accepts it, and installs via the managed venv). No node ≥22 and no ~/.nvm
     // (empty HOME) → the chosen gitnexus install fails fast, so the runner falls
     // back to graphify (the sibling whose Python runtime IS available).
-    writeGraphifyStubPythonWithVersion(bin);
+    const log = writeGraphifyStubPythonWithVersion(bin);
     const savedPath = process.env.PATH;
     const savedHome = process.env.HOME;
     process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
@@ -312,6 +341,11 @@ test('chosen provider fails but sibling runtime is available → falls back + pe
     fs.mkdirSync(process.env.HOME, { recursive: true });
     try {
       const r = ensureOnboardingToolchain(cwd);
+      // FIXTURE READBACK — the fallback is only proven if the SIBLING's runtime is
+      // this stub. A real interpreter answering instead makes the row's subject a
+      // live install.
+      assert.equal(fs.existsSync(log), true,
+        'the stub python was never invoked: resolvePython escaped to a real interpreter');
       // Never-block + graceful degrade: the working sibling carries the result.
       assert.equal(r.ok, true);
       const gf = r.results.find((x) => x.tool === 'graphify');
@@ -355,12 +389,15 @@ test('unwritable prefs path during a defer must NOT throw (never-block holds on 
 test('progress snapshots: install → scan → done transitions on a successful run', () => {
   withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
     const bin = path.join(cwd, 'bin');
-    writeGraphifyStubPython(bin);
+    const log = writeGraphifyStubPython(bin);
     const savedPath = process.env.PATH;
     process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
     const snapshots: Array<Array<{ id: string; status: string }>> = [];
     try {
       const r = ensureOnboardingToolchain(cwd, (steps) => snapshots.push(steps.map((s) => ({ id: s.id, status: s.status }))));
+      // FIXTURE READBACK — a `done` scan step is only this fixture's if the stub ran.
+      assert.equal(fs.existsSync(log), true,
+        'the stub python was never invoked: resolvePython escaped to a real interpreter');
       assert.equal(r.ok, true);
       // The initial plan snapshot lists every step before any work starts.
       assert.deepEqual(snapshots[0], [

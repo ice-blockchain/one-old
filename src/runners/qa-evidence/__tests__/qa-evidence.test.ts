@@ -1052,8 +1052,33 @@ test('an api-only run reaches a valid settled report', async () => {
         assert.match(String(check.summary), /not run:/, 'a skipped check must state why');
       }
     }
-    assert.equal(code, 0, 'the report must validate against the active contract');
-    assert.equal(report.status, 'passed');
+    // WHICH outcome is correct here depends on whether this machine can build Go
+    // at all, and both outcomes are worth pinning.
+    //
+    // A required check that is not-applicable settles only when the reason is
+    // JUSTIFIED — the project declares no such command (see
+    // JUSTIFIED_NO_STACK_COMMAND_CHECK_IDS). "Go is not installed" is NOT that
+    // reason: the build was never proven, so the run must NOT settle, and exiting
+    // non-zero is the honest answer rather than a false green.
+    //
+    // This asserted `code === 0` unconditionally, which reads as a product failure
+    // on any machine without a Go toolchain. It passed on this dev machine and on
+    // the ubuntu runner, both of which have one, and failed on the macOS runner,
+    // which does not — while the three status assertions above deliberately tolerate
+    // exactly that state. Reproduced by running this file with no Go present: same
+    // message, `1 !== 0`.
+    const goBuilds = byId.get('stack-build')!.status === 'passed';
+    if (goBuilds) {
+      assert.equal(code, 0, 'the report must validate against the active contract');
+      assert.equal(report.status, 'passed');
+    } else {
+      assert.equal(code, 1,
+        'a required check that never ran because its toolchain is absent must NOT settle: the build was not '
+        + 'proven, and the only alternative to a non-zero exit here is a green run that proves nothing');
+      assert.notEqual(report.status, 'passed', 'and the report must not claim otherwise');
+      assert.match(String(byId.get('stack-build')!.summary), /not run:/,
+        'while still saying WHY it could not run');
+    }
     assert.deepEqual(report.routes, []);
   });
 });
