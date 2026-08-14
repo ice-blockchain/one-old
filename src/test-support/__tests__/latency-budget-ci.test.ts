@@ -2539,7 +2539,7 @@ const REPORT_STEPS: readonly ReportStepCase[] = [
     step: 'Report per-event hook timing',
     log: 'hook-timing.log',
     titles: [
-      'every hook event stays inside the 150 ms in-process dispatch budget at p95',
+      'every hook event stays inside the 300 ms in-process dispatch budget at p95',
       'hook timing harness covers every canonical event and every declared hook subcommand',
     ],
     labels: HOOK_EVENTS,
