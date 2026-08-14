@@ -319,14 +319,20 @@ interface RetentionResult {
    * path names a remedy (answer the consent question) that cannot help.
    *
    * A throw is also the one outcome where `removed` UNDERSTATES what happened.
-   * `rmSync` is recursive: it can destroy most of a tree and then fail to unlink
-   * the parent. MEASURED on a whole-root action over a leaked root holding
-   * `.one.json`, `debug` (mode 0o111) and `runs` — node absorbed the child's
-   * EACCES, removed the other two entries, and threw ENOTEMPTY on the root:
-   * `before [.one.json, debug, runs] → after [debug]`, `removed: 0`. The state
-   * file and the run history were gone. So this count means "one planned path is
-   * still there and an unknown amount of what was inside it is not", and the
-   * per-path notice carrying the errno is raised for exactly that reason.
+   * `rmSync` is recursive and destroys entries until it meets one it cannot
+   * remove, then abandons the rest — so a throw leaves a PREFIX of the tree's
+   * iteration order already gone. RE-MEASURED on a whole-root action over a
+   * leaked root holding `.one.json`, `debug` (mode 0o111) and `runs`, identically
+   * on node 22 and node 26: iteration order `[.one.json, debug, runs]`, EACCES
+   * from `scandir` on `debug`, `before [.one.json, debug, runs] → after [debug,
+   * runs]`, `removed: 0`. The state file was gone; the run history survived only
+   * because it sorted behind the entry that threw. This block used to read "node
+   * absorbed the child's EACCES, removed the other two entries, and threw
+   * ENOTEMPTY on the root" — it stops AT the child, and which siblings die is the
+   * filesystem's iteration order rather than anything this sweep decides, so no
+   * caller may be told which. So this count means "one planned path is still
+   * there and an unknown amount of what was inside it is not", and the per-path
+   * notice carrying the errno is raised for exactly that reason.
    */
   failed: number;
   /**
@@ -4931,16 +4937,17 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
         // is not the same as the fence's `false`, and folding them together made
         // this the one deletion outcome nothing reported. `rmSync` throws when the
         // tree holds a child directory it cannot read — a `0o111` subdirectory is
-        // the constructible shape, and the errno that surfaces is ENOTEMPTY on the
-        // ROOT, since node's recursive rm absorbs the child's EACCES and then
-        // cannot empty the parent.
+        // the constructible shape, and the errno that surfaces is EACCES from
+        // `scandir` on THAT subdirectory: the walk stops at the entry it cannot
+        // read rather than absorbing it and failing on the parent.
         //
         // It is COUNTED, and the count used to be the false part of this comment:
         // "the path is still there either way, so the count stays honest". The
         // path is, and the count is not. Driven against the whole-root action the
-        // `0o111` shape above describes, the recursive rm took `.one.json` and the
-        // whole run history before it threw — `before [.one.json, debug, runs] →
-        // after [debug]` — and the sweep reported `removed: 0`, which reads as
+        // `0o111` shape above describes, the recursive rm took `.one.json` before
+        // it threw — `before [.one.json, debug, runs] → after [debug, runs]`, the
+        // casualty list being the iteration order's prefix and so the
+        // filesystem's business — and the sweep reported `removed: 0`, which reads as
         // "nothing was reclaimed" about a project whose state file had just been
         // destroyed. `removed` counts paths this sweep can attest went completely;
         // `failed` is where the rest of that story is, and every consumer of
@@ -4950,8 +4957,11 @@ export function sweepTrafficOneRetention(cwd: string, opts: { dryRun?: boolean; 
         collectRetentionAnomaly(
           notices,
           // The errno TEXT carries the path too — node spells it into every
-          // `ENOTEMPTY: … rmdir '<path>'` — so the rendering is applied to the
-          // whole sentence rather than to `action.path` alone. Redaction is
+          // `EACCES: … scandir '<path>'` / `ENOTEMPTY: … rmdir '<path>'` — so the
+          // rendering is applied to the whole sentence rather than to
+          // `action.path` alone, and note the path it names is the entry that
+          // threw, which on a recursive walk is USUALLY NOT `action.path`.
+          // Redaction is
           // per separator-delimited run, so an ordinary message keeps its errno
           // and its verb and loses only the segment that could not be spoken.
           agentVisiblePath(

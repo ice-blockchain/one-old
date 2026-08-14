@@ -12,6 +12,7 @@
 
 import { resetCorpusEnv } from './env';
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 import { buildContext } from '../../src/core/context';
@@ -130,8 +131,26 @@ function toPosix(p: string): string {
   return p.split(path.sep).join('/');
 }
 
+/**
+ * `realpath` where the path exists, and the lexical answer where it does not.
+ *
+ * Both comparisons below are about DIRECTORY IDENTITY, and `path.resolve` cannot
+ * answer that: it is purely lexical and never resolves a symlink. On macOS
+ * `os.tmpdir()` is `/var/folders/…`, spelling `/private/var/folders/…`, so a gate
+ * carrying the CANONICAL project root and a `cwd` carrying the mkdtemp spelling
+ * are two strings for one directory. Six baselined rows therefore reduced the
+ * project root to `abs-path-outside-project` — a token asserting the opposite of
+ * the truth, on a field the comment above calls load-bearing for a future
+ * per-target deny budget. The ubuntu leg surfaced it by having `/tmp` be a real
+ * directory, where the two spellings coincide and the same rows reduced to
+ * `project-root`.
+ */
+function canonical(p: string): string {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
 function isInside(child: string, parent: string): boolean {
-  const rel = path.relative(parent, child);
+  const rel = path.relative(canonical(parent), canonical(child));
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
@@ -158,7 +177,7 @@ function isInside(child: string, parent: string): boolean {
  */
 function denyTargetShape(target: string | undefined, tool: CaseToolSpec | undefined, cwd: string): string {
   if (!target) return '-';
-  if (target === cwd || path.resolve(target) === path.resolve(cwd)) return 'project-root';
+  if (target === cwd || canonical(target) === canonical(cwd)) return 'project-root';
   if (tool?.command && target === tool.command) return 'tool-command';
   if (tool?.rawName && target === tool.rawName) return 'tool-name';
 

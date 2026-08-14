@@ -50,15 +50,46 @@ import type { HookInput } from '../../core/types';
 const TMP_PREFIX = 't1-spelling-';
 
 /**
- * A temp root that is deliberately NOT realpath'd. On macOS `os.tmpdir()` is
- * `/var/folders/…`, a symlink to `/private/var/folders/…`, so this hands the
- * resolvers a non-canonical absolute path for free — which is exactly the input
- * every other root-resolution fixture in this repo canonicalizes away before it
- * builds anything.
+ * A temp root that is deliberately NOT canonical — on every platform.
+ *
+ * This used to be a bare `mkdtempSync(os.tmpdir())` and take its indirection from
+ * macOS, where `os.tmpdir()` is `/var/folders/…`, a symlink to
+ * `/private/var/folders/…`: a non-canonical absolute path for free, which is
+ * exactly the input every other root-resolution fixture in this repo
+ * canonicalizes away before it builds anything.
+ *
+ * Free on macOS and ABSENT on Linux, where `/tmp` is a real directory. So on the
+ * ubuntu leg `raw === realpath(raw)` and all nine rows below failed their own
+ * FIXTURE READBACK — the guard did its job, but it meant this whole contract went
+ * unasserted on the platform CI runs most, and it read as nine product failures.
+ *
+ * The indirection is therefore CONSTRUCTED here rather than inherited: a real
+ * directory plus a symlink pointing at it, with the returned path reached through
+ * the link. On macOS that stacks on top of the `/var` indirection, which changes
+ * nothing these tests read — both spellings still name one inode, and
+ * `realpathSync` still resolves the whole chain.
  */
+const rawTempBases: string[] = [];
+
 function rawTempRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), TMP_PREFIX));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), TMP_PREFIX));
+  rawTempBases.push(base);
+  const real = path.join(base, 'real');
+  fs.mkdirSync(real);
+  const link = path.join(base, 'link');
+  fs.symlinkSync(real, link);
+  return link;
 }
+
+/**
+ * Each test removes its own root in a `finally`, and that root is now the
+ * SYMLINK — `rmSync` on a symlink unlinks the link and leaves the target, so the
+ * payload would survive every test. The bases are swept here instead.
+ */
+test.after(() => {
+  for (const base of rawTempBases) fs.rmSync(base, { recursive: true, force: true });
+  rawTempBases.length = 0;
+});
 
 function writeState(dir: string, json: Record<string, unknown>): void {
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -92,7 +123,7 @@ test('projectRoot canonicalizes every exit — a symlinked spelling comes back a
     );
     assert.equal(
       projectRoot({ cwd: path.join(raw, 'proj') } as HookInput), proj,
-      'the /var → /private/var spelling canonicalizes too',
+      'the spelling reached through the symlinked ancestor canonicalizes too',
     );
   } finally {
     fs.rmSync(raw, { recursive: true, force: true });
@@ -194,7 +225,7 @@ for (const row of SPELLING_PRESERVING_EXITS) {
       // FIXTURE READBACK — the whole test is void if the root is already canonical.
       assert.notEqual(
         raw, fs.realpathSync(raw),
-        `FIXTURE [${row.id}] the temp root must be NON-canonical (os.tmpdir() is a symlink on macOS)`,
+        `FIXTURE [${row.id}] the temp root must be NON-canonical (rawTempRoot builds the symlink)`,
       );
       const layout = row.build(raw);
       assert.equal(
@@ -286,7 +317,8 @@ test('projectRootHash folds symlink spellings into one bucket', () => {
 
     assert.equal(fs.statSync(proj).ino, fs.statSync(link).ino, 'FIXTURE one inode, two spellings');
     assert.equal(projectRootHash(link), projectRootHash(proj), 'one project, one prefs/consent bucket');
-    assert.equal(projectRootHash(path.join(raw, 'proj')), projectRootHash(proj), '/var vs /private/var folds too');
+    assert.equal(projectRootHash(path.join(raw, 'proj')), projectRootHash(proj),
+      'the symlinked-ancestor spelling folds too');
     // Every consumer of the name derives it from the one function, so they cannot
     // disagree about which bucket a symlinked checkout owns.
     assert.equal(path.basename(overrideProjectDir(link)), projectRootHash(proj),

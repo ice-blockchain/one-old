@@ -18,12 +18,20 @@ import { defaultProjectPrefsPath } from '../local-prefs';
 import { sha256 } from '../../text';
 
 test('removeStrayProjectArtifactsFromGlobalDir purges project artifacts, keeps machine state', () => {
-  // NOT realpath'd on purpose: os.tmpdir() is `/var/folders/…`, a symlink to
-  // `/private/var/folders/…`, so this fixture's $HOME is spelled the way a
-  // symlinked home is spelled. That is the shape the sweep used to miss.
+  // NON-CANONICAL on purpose: $HOME here is spelled the way a symlinked home is
+  // spelled, which is the shape the sweep used to miss.
+  //
+  // The symlink is CONSTRUCTED rather than inherited from the platform. This used
+  // to lean on os.tmpdir() being `/var/folders/…`, a symlink to
+  // `/private/var/folders/…` — true on macOS, and on Linux `/tmp` is a real
+  // directory, so the fixture readback below failed on the ubuntu leg and the
+  // sweep's actual behaviour went unasserted there.
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-stray-'));
   try {
+    const realHome = path.join(base, 'real-home');
+    fs.mkdirSync(realHome);
     const home = path.join(base, 'home');
+    fs.symlinkSync(realHome, home);
     const dir = path.join(home, '.traffic-one');
     // Stray project artifacts (materialized by the pre-guard $HOME-session bug).
     fs.mkdirSync(path.join(dir, 'rules', 'common'), { recursive: true });

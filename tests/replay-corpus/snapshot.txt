@@ -14,7 +14,7 @@
 # pair — every changed line must be read and is either an intentional,
 # annotated relaxation/tightening (name it in the same commit) or a
 # regression. Never regenerate this file just to make a red run go green.
-agent-model.absolute-traffic-one-path	deny	agent-model.spawn	absolute-traffic-one-path	abs-path-outside-project
+agent-model.absolute-traffic-one-path	deny	agent-model.spawn	absolute-traffic-one-path	project-root
 agent-model.architect-phase-incomplete	deny	agent-model.spawn	architect-phase-incomplete	token:senior-frontend
 agent-model.cursor-agent-type-required	deny	agent-model.spawn	cursor-agent-type-required	token:senior-architect
 agent-model.kilo-general-agent-required	deny	agent-model.spawn	kilo-general-agent-required	token:senior-architect
@@ -69,8 +69,8 @@ lifecycle.user-prompt-submit-scaffolded-opencode	context			-
 model-choice.model-gate-command-user-approval-request	deny	agent-model.model-gate	user-approval-request	-
 model-choice.non-cursor-host-noop	allow			-
 model-choice.plan-write-pending-on-read-only-shell	deny	plan-guard.write	plan-write-model-choice-pending	-
-model-choice.stop-first-cursor	deny	model-choice-gate.pre-tool	model-choice-stop-first	abs-path-outside-project
-model-choice.stop-repeat-cursor	deny	model-choice-gate.pre-tool	model-choice-stop-repeat	abs-path-outside-project
+model-choice.stop-first-cursor	deny	model-choice-gate.pre-tool	model-choice-stop-first	project-root
+model-choice.stop-repeat-cursor	deny	model-choice-gate.pre-tool	model-choice-stop-repeat	project-root
 onboarding.browser-open-denied	deny	onboarding-gate	browser-open-denied	-
 onboarding.claude-orientation-allowed-after-consent	allow			-
 onboarding.claude-wait-background-denied	deny	onboarding-gate	claude-wait-background-denied	-
@@ -121,9 +121,9 @@ plan-guard.reset-record-read-allowed	context			-
 plan-guard.run-id-mismatch-write	deny	plan-guard.write	run-id-mismatch	project-path:.traffic-one/digests/2026-06-17T12-09-40Z/architect.md
 plan-guard.runtime-assignments-owner-gate	deny	plan-guard.write	runtime-assignments-owner-gate	project-path:.traffic-one/runs/2026-06-17T12-09-40Z/assignments.json
 plan-guard.scaffold-gate-noop-other-hosts	context			-
-plan-guard.scaffold-main-agent-plan-gate-windsurf	deny	plan-guard.scaffold	scaffold-main-agent-plan-gate	abs-path-outside-project
-plan-guard.scaffold-plan-gate-windsurf-subagents	deny	plan-guard.scaffold	scaffold-plan-gate	abs-path-outside-project
-plan-guard.scaffold-stack-gate-windsurf-nextjs	deny	plan-guard.scaffold	scaffold-stack-gate	abs-path-outside-project
+plan-guard.scaffold-main-agent-plan-gate-windsurf	deny	plan-guard.scaffold	scaffold-main-agent-plan-gate	project-root
+plan-guard.scaffold-plan-gate-windsurf-subagents	deny	plan-guard.scaffold	scaffold-plan-gate	project-root
+plan-guard.scaffold-stack-gate-windsurf-nextjs	deny	plan-guard.scaffold	scaffold-stack-gate	project-root
 plan-guard.scaffolded-greenfield-edit-allowed	context			-
 plan-guard.state-mode-downgrade	deny	plan-guard.write	state-mode-downgrade	project-path:.traffic-one/.one.json
 plan-guard.struct-scan-incomplete	deny	plan-guard.write	plan-write-struct-scan-incomplete	project-path:apps/web/src/App.tsx

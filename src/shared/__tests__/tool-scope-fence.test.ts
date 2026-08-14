@@ -565,8 +565,17 @@ test('two spellings of ONE member directory are one member, not a span of two', 
     } else {
       // On a case-sensitive volume `<ws>/Api` really is a second, unregistered
       // directory, and the refusal is the correct answer — the same one rule.
+      //
+      // This arm asserted /not part of any member/ until a Linux runner first
+      // executed it: that phrase is emitted NOWHERE in the product, so the arm
+      // could never have passed. It went unnoticed because the volume this file
+      // is usually run on folds case and takes the branch above instead. The
+      // sentence the fence actually produces for a path inside the workspace root
+      // but under no member is the workspace-member-unresolved-outside refusal.
       const { reason } = refuse(resolveToolScope(spanOneDir));
-      assert.match(reason, /not part of any member/);
+      assert.match(reason, /belongs to no member project that workspace has registered/);
+      assert.match(reason, /The members it registered are: api, web/,
+        'and it still names the members, which is the half that makes the refusal actionable');
     }
     // And two genuinely different members are still two, whatever the volume does.
     const { reason } = refuse(resolveToolScope(ctx(ws, 'Write', 'file-write', {

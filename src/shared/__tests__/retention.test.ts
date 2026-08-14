@@ -1970,7 +1970,7 @@ function plantedThrowingRoot(dir: string): { nested: string; blocked: string; st
 
 test('a removal that fails on an ERRNO says so, and is not counted as a refusal', (t) => {
   withProject((dir) => {
-    const { nested, blocked, stateFile } = plantedThrowingRoot(dir);
+    const { nested, blocked } = plantedThrowingRoot(dir);
 
     // FIXTURE: every entry is a recognised runtime artefact, so the heal is the
     // single whole-root action — the only shape that hands `rmSync` a tree to walk.
@@ -1996,18 +1996,29 @@ test('a removal that fails on an ERRNO says so, and is not counted as a refusal'
     assert.equal(outcome.value.removed, 0, 'the planned path is still there, so nothing is counted as removed');
     assert.equal(outcome.value.failed, 1, 'and the throw is counted as itself, not left to `planned - removed`');
     // The measurement the old comment denied: `removed: 0` is not "nothing
-    // happened". A recursive rm that throws has already destroyed what it
-    // reached, and what it reached here is the project's state file.
-    assert.equal(fs.existsSync(stateFile), false,
-      'MEASURED: the recursive removal destroyed `.one.json` before it threw');
-    assert.equal(fs.existsSync(path.join(nested, 'runs')), false, 'and the run history with it');
-    assert.deepEqual(fs.readdirSync(nested), ['debug'], 'only the unreadable child survived');
+    // happened". A recursive rm destroys entries until it meets one it cannot
+    // remove and then abandons the rest, so what is gone is a PREFIX of the
+    // directory's iteration order — and how long that prefix is belongs to the
+    // filesystem, not to this sweep. Measured here (both node 22 and 26, APFS):
+    // order `[.one.json, debug, runs]`, EACCES on `debug`'s scandir, survivors
+    // `[debug, runs]` — the state file destroyed, the run history reached only
+    // because it sorted after the entry that threw. Pinning that casualty list
+    // asserts the filesystem's ordering, which is why this now asserts the two
+    // halves that hold whatever the order is: the entry that refused survives,
+    // and something ahead of it did not.
+    const survivors = fs.readdirSync(nested);
+    assert.ok(survivors.includes('debug'),
+      `the unreadable child is the one thing the removal cannot take, got [${survivors.join(', ')}]`);
+    assert.ok(survivors.length < 3,
+      'MEASURED: a failed recursive removal is not a no-op — of the three entries planted, at least one is '
+      + `already gone, leaving [${survivors.join(', ')}]`);
     assert.equal(outcome.value.notices.length, 1, 'and the errno is disclosed rather than absorbed');
     assert.match(outcome.value.notices[0]!, /could not remove/);
-    // ENOTEMPTY on the ROOT, not EACCES on the child: node's recursive rm
-    // absorbs the child's refusal and fails on the parent it then cannot empty.
-    // Which is exactly why the notice carries a remedy naming an unreadable
-    // subdirectory — the errno alone does not point at the file that caused it.
+    // EACCES on the CHILD, from `scandir` — node does not absorb the child's
+    // refusal and go on to fail on the parent, it stops at the child. Either way
+    // the errno names a directory rather than the tree it abandoned, which is why
+    // the notice carries a remedy naming an unreadable subdirectory: the errno
+    // alone does not say how much of the tree is already gone.
     assert.match(outcome.value.notices[0]!, /ENOTEMPTY|EACCES|EPERM/i, 'naming what the filesystem said');
     assert.match(outcome.value.notices[0]!, /chmod -R u\+rwX/, 'with the remedy that fits an errno');
     assert.match(outcome.value.notices[0]!, /part of what was inside this path may already be gone/,
@@ -5500,19 +5511,69 @@ const RETIRED_KIND_SENTENCE = /The rules manage that path again as soon as a dir
 
 /** The longest absolute path this filesystem accepts, measured rather than assumed. */
 function measuredPathLimit(under: string): number {
+  // The longest FILE NAME that opens in `dir`. Capped at 255 because that is
+  // NAME_MAX on both platforms this runs on — the per-COMPONENT limit, which is a
+  // different constant from the whole-path one being measured here.
+  const longestNameIn = (dir: string): number => {
+    const opens = (n: number): boolean => {
+      const probe = path.join(dir, 'q'.repeat(n));
+      try { fs.writeFileSync(probe, 'x'); fs.rmSync(probe); return true; } catch { return false; }
+    };
+    if (!opens(1)) return 0;
+    let low = 1;
+    let high = 255;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (opens(mid)) low = mid; else high = mid - 1;
+    }
+    return low;
+  };
+
+  // GROW the chain and re-ask, rather than binary-searching one long component
+  // inside a fixed window.
+  //
+  // The window version measured the wrong constant off macOS. It padded to 700
+  // bytes and searched `pad.length + 2 … pad.length + 400`, where every candidate
+  // differed only in the length of ONE final component — so the first refusal it
+  // met on Linux came from NAME_MAX and never from the path limit. Measured both
+  // ways on one tree: macOS 1016 either way, which IS its boundary; Linux 1007 by
+  // the window against a true boundary of 4095. The arm below then sized its
+  // fixture to ~1000 bytes, which Linux opens without complaint, so the fault it
+  // exists to plant was never planted and its reachability guard failed on the
+  // ubuntu leg — correctly, and about the instrument rather than the product.
+  //
+  // While the total sits under the path limit, the answer comes back pinned at
+  // NAME_MAX; the first time it comes back SHORTER, the path limit is what is
+  // binding and the total is the number wanted.
   let pad = under;
-  while (pad.length < 700) { pad = path.join(pad, 'p'.repeat(120)); fs.mkdirSync(pad, { recursive: true }); }
-  const openable = (len: number): boolean => {
-    const probe = path.join(pad, 'q'.repeat(Math.max(1, len - pad.length - 1)));
+  fs.mkdirSync(pad, { recursive: true });
+  let limit = 0;
+  let bound: 'path-limit' | 'exhausted' = 'exhausted';
+  for (;;) {
+    const longest = longestNameIn(pad);
+    if (longest === 0) break;
+    const total = pad.length + 1 + longest;
+    if (total <= limit) break;
+    limit = total;
+    if (longest < 255) { bound = 'path-limit'; break; }
+    pad = path.join(pad, 'p'.repeat(120));
+    fs.mkdirSync(pad, { recursive: true });
+  }
+
+  // BOUNDARY READBACK. Returning a number that is not a limit is exactly how this
+  // helper failed before, and it failed silently — the arm downstream just stopped
+  // planting anything. So the boundary is asserted here: one byte longer must not
+  // open, in the same directory the winner opened in.
+  assert.equal(bound, 'path-limit',
+    `the path limit was never reached under ${under}: the longest name stopped growing before any refusal, `
+    + `so ${limit} is where this measurement gave up rather than where the filesystem did`);
+  const opensAt = (len: number): boolean => {
+    const probe = path.join(pad, 'q'.repeat(len - pad.length - 1));
     try { fs.writeFileSync(probe, 'x'); fs.rmSync(probe); return true; } catch { return false; }
   };
-  let low = pad.length + 2;
-  let high = pad.length + 400;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (openable(mid)) low = mid; else high = mid - 1;
-  }
-  return low;
+  assert.equal(opensAt(limit), true, `FIXTURE the measured limit ${limit} must itself open`);
+  assert.equal(opensAt(limit + 1), false, `FIXTURE ${limit + 1} must NOT open, or ${limit} is not the limit`);
+  return limit;
 }
 
 interface OutlookArm {
@@ -6297,18 +6358,22 @@ const RUNS_MODE_TABLE: readonly RunsModeRow[] = [
   {
     mode: 0o500,
     bits: 'read and execute, no write',
-    what: 'both reads work and the REMOVALS fail: the plan is whole and the reclaim is partial',
+    what: 'both reads work and the REMOVALS fail: the plan is whole and nothing under runs/ can be reclaimed',
     readdir: 'ok',
     statChild: 'ok',
     // Nothing is blinded, so the plan is the healthy one; `unlink` of a child needs
-    // the write bit, so the three run directories cannot go. What DOES go is their
-    // contents — the recursive removal empties `runs/<id>` (mode 0o755) and then
-    // fails to remove the directory itself, which is the "part of what was inside
-    // may already be gone" shape the removal notice describes.
+    // the write bit, so the three run directories cannot go. Neither can their
+    // CONTENTS, which this row asserted for one release as a 192 KB partial
+    // reclaim: node's recursive rm tries `rmdir` on the directory FIRST and the
+    // kernel checks the parent's write bit before it checks emptiness, so the walk
+    // takes EACCES on `runs/<id>` and never descends to the payload inside. Driven
+    // directly on both node 22 and 26, with and without `force`, all four ways:
+    // `baseline.bin` survives every time. So the run payload is untouched at 320 KB
+    // and only the sidecars — whose parents ARE writable — are reclaimed.
     planned: 12,
     removed: 9,
     failed: 3,
-    runKb: 128,
+    runKb: 320,
     sidecarKb: 192,
     families: ['could', 'could', 'could'],
     says: [/could not remove/],
