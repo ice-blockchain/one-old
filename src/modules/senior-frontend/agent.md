@@ -232,7 +232,10 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
   hooks/types into sibling files in that folder is in scope and verifies —
   never cram a feature into its index to satisfy a line budget.
 - Do not edit compiled contracts, roots, profiles, limits, or baseline data.
-  Emit `IMPLEMENTED` only after the complete structural scan passes; numeric
+  Emit `IMPLEMENTED` after the wiring is fixed; the completion gate re-scans
+  the current tree on that write. There is no separate scan command.
+  `structure-report.json` is a leftover from the last scan — doctor does not
+  refresh it, and `--unblock` is never the remedy. Numeric
   LOC/component-count findings remain advisory during rollout.
 - **Write formatted, multi-line source and self-verify before `IMPLEMENTED`.**
   One statement per line, multi-line JSX — a source line packing an entire

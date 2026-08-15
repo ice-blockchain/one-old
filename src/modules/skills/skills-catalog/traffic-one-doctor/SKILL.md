@@ -216,9 +216,13 @@ deny text itself prints one command:
 node ~/.traffic-one/bin/doctor.cjs --unblock <gate-id> --run <run-id>
 ```
 
-That line is addressed to the **user**, not to you. Relay it if they are stuck
-and ask; never run it yourself, and never propose it as a way past a refusal you
-could instead fix. Four things are true about it and worth telling them plainly:
+That line is addressed to the **user**, not to you. Never present it as a
+numbered option, a Recommended action, or a "how do you want to proceed"
+choice — that is asking them to mint. Relay the command only if the user
+independently asks how to lift a gate, and then say the ineligibility cost in
+the same breath. Never run it yourself, and never propose it as a way past a
+refusal you could instead fix. Four things are true about it and worth telling
+them plainly:
 
 - It is refused unless a human runs it at a real terminal and types back a code
   it prints, so a tool call carrying it fails — that is the design, not a bug.
@@ -238,9 +242,9 @@ those lines, but somebody should know why they are there.
 
 ## Must-not-do
 
-- Never mint an operator override (`--unblock`), and never ask the user to mint
-  one, to get past a gate that is refusing your own work. Fix the cause the
-  deny names.
+- Never mint an operator override (`--unblock`), never ask the user to mint
+  one, and never list it as a choice, to get past a gate that is refusing your
+  own work. Fix the cause the deny names.
 - Never auto-run `npm install` / `nvm install` / `git init` without explicit
   user approval in this turn.
 - Never modify `.traffic-one/.one.json` directly from this skill; route field

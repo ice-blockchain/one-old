@@ -13,7 +13,10 @@
 // The shapes deliberately mirror the run-sim source generators
 // (src/test-environment/core/run-sim/sources.ts), which are proven against the
 // real gate pipeline end to end — this module is the shipped subset of those
-// shapes, not a second invention. Profiles with no validated generator shape
+// shapes, not a second invention. The react-router app shell also imports
+// every compiled feature/component (run-sim does the same for features) so a
+// disjoint OpenCode unit cannot leave STRUCT_ORPHAN_MODULE unsatisfiable.
+// Profiles with no validated generator shape
 // there (Svelte, Astro, Angular, every native profile) return null ON PURPOSE:
 // the PLAN_READY satisfiability sweep runs these exact bodies through the
 // blocking write gates, so an unproven skeleton that trips a gate would turn
@@ -72,6 +75,68 @@ function relativeModuleImport(fromOutput: string, toOutput: string): string {
   return rel.startsWith('.') ? rel : `./${rel}`;
 }
 
+function importSpecifier(fromOutput: string, toOutput: string): string {
+  // A relative path from `apps/web/src` into `packages/ui` is
+  // `../../../packages/ui/...`, which the write gate `deep-relative-package`
+  // refuses (observed: PLAN_READY contract-self-conflict on the App skeleton
+  // the moment a compiled component landed under packages/ui). Cross-package
+  // targets use the `@app/<pkg>/...` workspace name the analyzer already
+  // resolves (alias tail is a suffix of the compiled output stem).
+  const toPkg = /^(packages|apps)\/([^/]+)\//.exec(toOutput);
+  const fromPkg = /^(packages|apps)\/([^/]+)\//.exec(fromOutput);
+  if (
+    toPkg
+    && fromPkg
+    && (toPkg[1] !== fromPkg[1] || toPkg[2] !== fromPkg[2])
+    && toPkg[1] === 'packages'
+  ) {
+    const rest = toOutput.slice(`packages/${toPkg[2]}/`.length).replace(/\.tsx?$/, '');
+    return `@app/${toPkg[2]}/${rest}`;
+  }
+  return relativeModuleImport(fromOutput, toOutput).replace(/\.tsx?$/, '');
+}
+
+export interface CompiledUiNamespaceImportV1 {
+  line: string;
+  local: string;
+  specifier: string;
+  output: string;
+}
+
+/**
+ * Namespace imports of every compiled feature/component from `fromOutput`.
+ * STRUCT_ORPHAN_MODULE requires a live import of the module path (the analyzer
+ * matches the specifier, not the export shape), and a namespace import stays
+ * valid whether the implementer kept the skeleton's named export or rewrote it
+ * as default. `void` the binding so unused-import lint does not fight the seed.
+ */
+export function compiledUiNamespaceImports(
+  compiled: CompiledArchitectureV1,
+  fromOutput: string,
+): CompiledUiNamespaceImportV1[] {
+  const used = new Set<string>();
+  const imports: CompiledUiNamespaceImportV1[] = [];
+  for (const module of compiled.modules) {
+    if (module.kind !== 'feature' && module.kind !== 'component') continue;
+    if (module.output === fromOutput) continue;
+    const specifier = importSpecifier(fromOutput, module.output);
+    let local = `${pascal(module.name)}Module`;
+    let suffix = 2;
+    while (used.has(local)) {
+      local = `${pascal(module.name)}Module${suffix}`;
+      suffix += 1;
+    }
+    used.add(local);
+    imports.push({
+      line: `import * as ${local} from '${specifier}';`,
+      local,
+      specifier,
+      output: module.output,
+    });
+  }
+  return imports;
+}
+
 // Visible source-language fallback copy derived from the module name. Markup
 // metacharacters are stripped so a name can never escape JSX/template text
 // position, and the result is guaranteed longer than one character — a shorter
@@ -111,8 +176,12 @@ function sharedThemeImport(compiled: CompiledArchitectureV1): string[] {
 // --- react ------------------------------------------------------------------
 
 // The explicit-router shell wires every compiled route to its compiled page
-// module — the binding STRUCT_ROUTE_MODULE_MISMATCH looks for, expressed with
-// the relative imports the analyzer resolves.
+// module — the binding STRUCT_ROUTE_MODULE_MISMATCH looks for — and imports
+// every compiled feature/component so STRUCT_ORPHAN_MODULE cannot fire on a
+// freshly seeded tree. OpenCode work units are disjoint files; they will not
+// add those cross-imports themselves (observed: bidding-feature /
+// event-search-feature existed, App.tsx did not import them, IMPLEMENTED
+// denied until the digest write was refused four times).
 function reactRouterShellSkeleton(
   compiled: CompiledArchitectureV1,
   module: CompiledArchitectureModuleV1,
@@ -125,15 +194,27 @@ function reactRouterShellSkeleton(
   for (const route of routes) {
     if (seen.has(route.moduleOutput)) continue;
     seen.add(route.moduleOutput);
-    const target = relativeModuleImport(module.output, route.moduleOutput)
-      .replace(/\.tsx?$/, '');
-    imports.push(`import ${componentNameOf(route.moduleOutput)} from '${target}';`);
+    imports.push(
+      `import ${componentNameOf(route.moduleOutput)} from '${importSpecifier(module.output, route.moduleOutput)}';`,
+    );
   }
+  const uiImports = compiledUiNamespaceImports(compiled, module.output);
+  const retain = uiImports.length > 0
+    ? [
+      '',
+      '// Compiled feature/component modules must be imported from a live module',
+      '// (STRUCT_ORPHAN_MODULE). Replace these namespace imports with the page',
+      '// that actually renders each one.',
+      ...uiImports.map((entry) => entry.line),
+      `void [${uiImports.map((entry) => entry.local).join(', ')}];`,
+    ]
+    : [];
   return {
     content: [
       ...sharedThemeImport(compiled),
       "import { Route, Routes } from 'react-router-dom';",
       ...imports,
+      ...retain,
       '',
       'export default function App() {',
       '  return (',

@@ -824,16 +824,16 @@ export function agentModelGate(ctx: Ctx): HookResult {
   }
 
   // Claude can rewrite a tool call's input from PreToolUse (updatedInput — a
-  // FULL tool_input replacement), so when the allowed prompt still carries the
-  // literal `<run-id>` placeholder, hand the child fully substituted paths
-  // instead of leaving it the placeholder to resolve. Other hosts can only
-  // allow/deny; there the child resolves `<run-id>` itself (Run ID header +
-  // .one.json), with the plan-gate write guard as the backstop. Every ALLOW
-  // exit below this point must flow through allowSpawn().
+  // FULL tool_input replacement). Two fills ride this channel: the literal
+  // `<run-id>` placeholder, and a missing Task `model` (Claude's schema makes
+  // the field optional, so the parent omits it and the child would inherit
+  // Opus). Other hosts can only allow/deny. Every ALLOW exit below this point
+  // must flow through allowSpawn().
   const placeholderPromptFields = ctx.host === 'claude' && spawnRunId
     ? spawnPromptFields.filter((field) => typeof toolInput[field] === 'string'
       && hasRunIdPlaceholder(toolInput[field]))
     : [];
+  const originalSpawnModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
   const allowSpawn = (result: HookResult): HookResult => {
     if (result.kind === 'deny') return result;
     const updatedToolInput: Record<string, unknown> = { ...toolInput };
@@ -841,6 +841,11 @@ export function agentModelGate(ctx: Ctx): HookResult {
       updatedToolInput[field] = substituteRunIdPlaceholder(toolInput[field] as string, spawnRunId);
     }
     let changed = placeholderPromptFields.length > 0;
+    const rewrittenModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+    if (ctx.host === 'claude' && rewrittenModel && rewrittenModel !== originalSpawnModel) {
+      updatedToolInput.model = rewrittenModel;
+      changed = true;
+    }
     if (subagentTeam && runPolicy) {
       // ONE derivation of the publish inputs, shared with the reuse gate's
       // quick-fix scope regrant (spawn-bootstrap.ts) — every field feeds the

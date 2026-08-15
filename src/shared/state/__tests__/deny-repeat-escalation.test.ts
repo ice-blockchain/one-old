@@ -288,14 +288,16 @@ test('escalation cannot wedge a run: the verdict and the gate\'s own text are by
     if (result.kind !== 'deny') continue;
     assert.ok(result.reason.startsWith(body), `attempt ${index + 1} displaced the gate's own remedy text`);
   }
-  // Escalated attempts differ from unescalated ones ONLY by the appended
-  // paragraph, which is what makes "the escalation is not a new failure mode" a
-  // fact about the string rather than a claim about intent.
+  // Escalated attempts differ from unescalated ones only by pipeline suffixes
+  // (STOP RETRYING, the override hatch on attempts 1–2, the correlation ref).
+  // The hatch is omitted once STOP RETRYING fires — it is not a new failure
+  // mode, and stripping every suffix must recover the gate's own text.
   const strip = (reason: string): string => reason
     .replace(/\n\nSTOP RETRYING[\s\S]*?not one of the options\./, '')
+    .replace(/\n\nStuck on this specific refusal\?[\s\S]*?verified\/shipped\./, '')
     .replace(/\n\n\(traffic-one ref: [^)]*\)/, '');
   assert.equal(new Set(results.map((r) => (r.kind === 'deny' ? strip(r.reason) : ''))).size, 1,
-    'stripping the escalation and the ref leaves every attempt identical');
+    'stripping the escalation, the override hint, and the ref leaves every attempt identical');
 });
 
 test('a repeatedly crashing gate escalates — never-overridable does not mean never-escalated', async () => {
@@ -459,7 +461,7 @@ test('the never-escalated and never-overridable sets are different sets, in both
   // Never-overridable but escalatable: refusals nothing may lift, where the
   // agent still has an action to take (or, for the crash deny, a report to
   // write). Merging the lists would have silenced escalation on every one.
-  for (const id of ['pipeline-handler-crashed', 'workspace-boundary-guard', 'authoring-guard', 'verifier-independence-gate', 'deploy-gate-shipper-approval-required']) {
+  for (const id of ['pipeline-handler-crashed', 'workspace-boundary-guard', 'authoring-guard', 'verifier-independence-gate', 'frontend-structure-completion-gate', 'deploy-gate-shipper-approval-required']) {
     assert.ok(overrideExcluded.has(id), `${id} should be never-overridable`);
     assert.ok(!escalationExcluded.has(id), `${id} must still escalate: a human may not lift it, and repeating it is still a loop`);
   }

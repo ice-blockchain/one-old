@@ -19,6 +19,7 @@ import {
   formatFileWithPrettier,
   resolveProjectPrettier,
 } from '../../../shared/prettier-fix';
+import { hostFlags } from '../../../shared/host/capability-flags';
 import { isNewProjectMode } from '../../../shared/state';
 import { consolidateQualityFindings } from '../../../shared/state/quality-findings';
 import {
@@ -80,6 +81,7 @@ import {
   runFullStructureScan,
   unsatisfiableFindingPaths,
 } from './contracts';
+import { repairCompiledIntegrationWiring } from '../react-structure';
 
 
 /**
@@ -159,10 +161,11 @@ export function digestCompletionGates(ctx: {
   content: string;
   shellBody?: string;
   currentRunId: string;
+  host?: string;
   violations: string[];
   block: Block;
 }): void {
-  const { projectRoot, state, filePath, content, currentRunId, violations, block } = ctx;
+  const { projectRoot, state, filePath, content, currentRunId, host, violations, block } = ctx;
   // Frontend completion gate: an `IMPLEMENTED` digest must not ship collapsed
   // product source. build/typecheck/lint all pass on a one-line-per-function
   // App.tsx, so nothing else stops it before the tester's format:check — and a
@@ -239,6 +242,21 @@ export function digestCompletionGates(ctx: {
         // gates around this one stood down) and notScaffolded false (so these
         // findings stayed error-grade). That is the most opinion applied where
         // the least is known.
+        //
+        // OpenCode units are disjoint files, so they will not add the
+        // cross-imports STRUCT_ORPHAN_MODULE / STRUCT_ROUTE_MODULE_MISMATCH
+        // require. When the seeded router table is gone and every delivered
+        // route is unproven, restore the compiled shell; when routes already
+        // prove, inject the missing feature/component imports. Same auto-fix
+        // doctrine as kebab retarget — a digest retry cannot wire App.tsx.
+        //
+        // Claude Code (and Cursor/Codex) workers CAN edit the shell. Rewriting
+        // App.tsx here is an out-of-band disk change: Claude then injects
+        // "modified by the user or a linter; do not mention this", which the
+        // worker reports as sabotage. Deny and let that worker re-issue.
+        if (isNewProjectMode(state) && hostFlags(host).disjointWorkUnitFiles) {
+          repairCompiledIntegrationWiring(projectRoot, architecture);
+        }
         const report = runFullStructureScan(
           projectRoot,
           runId,
@@ -251,7 +269,7 @@ export function digestCompletionGates(ctx: {
         if (errors.length > 0) {
           const summary = structureFindingSummary(errors);
           violations.push(block('frontend-structure-completion-gate',
-            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding and re-run the complete scan before writing \`IMPLEMENTED\`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint \`max-lines\` rule — the project's own \`lint\` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (\`STRUCT_I18N_RUNTIME\`), and catalog validation (\`STRUCT_I18N_CATALOG\` — keys non-empty in every declared locale). Hardcoded-copy findings (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_REACT_TRANS\`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own \`lint\` run owns them. React child copy uses \`<Trans>\` with namespace, key, and fallback. On a project Traffic One did NOT scaffold — an existing codebase, or one whose \`.one.json\` declares no mode at all — every finding named above is an opinion about code the plugin did not write and is recorded as a warning instead; only ownership (\`STRUCT_ASSIGNMENT_ALLOWLIST_GAP\`) and plan delivery (\`STRUCT_MISSING_PLANNED_MODULE\`) can reach this gate there.`,
+            `Frontend completion gate: runtime structure report failed (${summary}). Fix every blocking finding, then write \`IMPLEMENTED\` again — the gate re-scans the current tree on that write. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint \`max-lines\` rule — the project's own \`lint\` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (\`STRUCT_I18N_RUNTIME\`), and catalog validation (\`STRUCT_I18N_CATALOG\` — keys non-empty in every declared locale). Hardcoded-copy findings (\`STRUCT_HARDCODED_COPY\`, \`STRUCT_I18N_REACT_TRANS\`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own \`lint\` run owns them. React child copy uses \`<Trans>\` with namespace, key, and fallback. On a project Traffic One did NOT scaffold — an existing codebase, or one whose \`.one.json\` declares no mode at all — every finding named above is an opinion about code the plugin did not write and is recorded as a warning instead; only ownership (\`STRUCT_ASSIGNMENT_ALLOWLIST_GAP\`) and plan delivery (\`STRUCT_MISSING_PLANNED_MODULE\`) can reach this gate there.`,
             { FINDINGS: summary }));
         }
       }

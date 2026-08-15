@@ -738,7 +738,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   }
 
   digestCompletionGates({
-    projectRoot, state, filePath, content, shellBody: args.shellBody, currentRunId, violations, block,
+    projectRoot, state, filePath, content, shellBody: args.shellBody, currentRunId, host, violations, block,
   });
 
   // Auto-fix over deny (13cl replan: two identical 'block missing' denies 30s

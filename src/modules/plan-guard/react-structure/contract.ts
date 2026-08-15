@@ -144,6 +144,14 @@ function withoutModuleExtension(value: string): string {
   return normalizeRel(value).replace(/\.(?:blade\.php|tsx?|jsx?|mjs|cjs|vue|svelte|astro|html)$/, '');
 }
 
+// Node/Vite resolve `./features/foo` to `./features/foo/index`. The compiled
+// feature output is the index file; comparing stems without that suffix made
+// every directory-imported feature an orphan (observed: lazy-loaded
+// event-search-feature / bidding-feature, then `--unblock` offered as the fix).
+function stemEqualsOrIndex(candidate: string, outputStem: string): boolean {
+  return outputStem === candidate || outputStem === `${candidate}/index`;
+}
+
 // Shared with the architecture contract so a route declared as `*` (or `/*`)
 // matches the `path="*"` every router uses in code. Comparing the two spellings
 // literally made the catch-all unsatisfiable from both directions.
@@ -174,7 +182,7 @@ function sourceMatchesModule(
       path.posix.dirname(normalizeRel(importerFile)),
       sourceStem,
     )));
-    return resolved === outputStem;
+    return stemEqualsOrIndex(resolved, outputStem);
   }
   const aliasTail = sourceStem.startsWith('@/') || sourceStem.startsWith('~/')
     ? sourceStem.slice(2)
@@ -184,7 +192,9 @@ function sourceMatchesModule(
         ? sourceStem.replace(/^@[^/]+\//, '')
         : sourceStem;
   return aliasTail.includes('/')
-    && (outputStem === aliasTail || outputStem.endsWith(`/${aliasTail}`));
+    && (stemEqualsOrIndex(aliasTail, outputStem)
+      || outputStem.endsWith(`/${aliasTail}`)
+      || outputStem.endsWith(`/${aliasTail}/index`));
 }
 
 function bindingMatchesModule(
@@ -259,6 +269,27 @@ function unresolvedRouteNote(analyses: readonly SourceAnalysis[]): string {
   const sample = carriers[0]!;
   const first = sample.unresolvedRoutes[0]!;
   return ` NOTE: ${total} non-literal route path value(s) (e.g. \`${first.display}\` at ${sample.file}:${first.line}) cannot be verified — route \`path\` must be a plain string literal in the JSX attribute/object property.`;
+}
+
+// When the extractor saw ZERO matching usages and no non-literal path, the
+// page module named in the finding is not the file to edit — the app shell
+// lost (or never had) a `<Route path>` / `createBrowserRouter` `path:` for
+// this contract route. Observed: every page mismatched, the agent retried
+// `frontend.md` four times, and App.tsx was never mentioned.
+function missingRouteTableNote(
+  analyses: readonly SourceAnalysis[],
+  contract: CompiledArchitectureV1,
+  routePath: string,
+  moduleOutput: string,
+): string {
+  const shell = contract.modules.find((module) => module.kind === 'app-shell')?.output
+    || 'the app shell';
+  const page = path.posix.basename(moduleOutput).replace(/\.[^.]+$/, '');
+  const snippet = `\`<Route path="${routePath}" element={<${page} />} />\``;
+  if (!analyses.some((analysis) => analysis.routes.length > 0)) {
+    return ` NOTE: no \`<Route path>\` / \`createBrowserRouter\` \`path:\` was found in the scanned source. Register this route on the app shell (\`${shell}\`): ${snippet}.`;
+  }
+  return ` NOTE: a router table was found but it has no literal path \`${routePath}\` bound to this module. Add ${snippet} on the app shell (\`${shell}\`).`;
 }
 
 // A module is "referenced" when any OTHER analyzed source file imports,
@@ -706,7 +737,11 @@ export function contractFindings(
           id: 'STRUCT_ROUTE_MODULE_MISMATCH',
           severity: 'error',
           file: route.moduleOutput,
-          message: `Route ${route.path} does not demonstrably use its compiled module ${route.moduleOutput}.${cause}`,
+          message: `Route ${route.path} does not demonstrably use its compiled module ${route.moduleOutput}.${
+            matchingUsages.length === 0 && cause === ''
+              ? missingRouteTableNote(analyses, contract, route.path, route.moduleOutput)
+              : cause
+          }`,
         });
       }
     }

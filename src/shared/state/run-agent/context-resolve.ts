@@ -22,12 +22,14 @@ import {
 
 import {
   assignmentsFile,
+  firstString,
   runAgentFile,
   runDir,
   runLedgerFingerprint,
   stackFingerprintPatch,
   uniqueStrings,
 } from './run-paths';
+import { roleFromDigestWritePath } from '../../packing';
 import {
   ensureRunLedger,
 } from './ledger';
@@ -49,12 +51,14 @@ import {
   claimAllowsState,
   claimRejectReason,
   listPendingClaims,
+  claimModel,
   matchingPendingClaim,
   readClaimFile,
   removePendingClaim,
   removeSiblingPendingClaims,
   runIdsForLookup,
   uniquelyCorrelatedPendingClaim,
+  type PendingClaim,
   type RunAgentUnresolvedReason,
 } from './claims-pending';
 import {
@@ -72,6 +76,8 @@ import {
 } from './mutation-result';
 import {
   agentRegistryFile,
+  isResumeCapableAgentId,
+  readRunAgentRegistry,
 } from './registry';
 import {
   claimThreadRole,
@@ -88,6 +94,74 @@ export interface RunAgentContext {
   spawnIndex: number;
   sessionId: string | null;
   claimId: string | null;
+}
+
+/**
+ * Cursor Task children write with a conversation UUID, `transcript_path: null`,
+ * and no parent/subagent marker. The transcript-cache bind in
+ * `resolveRunAgentContext` is preferred; when that file has not flushed, the
+ * child still cannot write its digest and the parent asks the user to switch
+ * to Low. Bind by (1) the digest path the child is writing, which uniquely
+ * names the role when reviewer and tester are both pending, then (2) the same
+ * uniqueness rule as `uniquelyCorrelatedPendingClaim`. Never bind the
+ * orchestrator to its own child's handoff.
+ *
+ * Shell (doctor, `pwd`) must not consume a pending handoff: Cursor's parent
+ * session id is a UUID too, and a fixture session like `cursor-main` is not
+ * the child's parent, so a sole-pending match would steal the slot and make
+ * later parent tools look like an unbound Codex child.
+ */
+const CURSOR_CONVERSATION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CURSOR_UNLINKED_WRITE_TOOL_RE = /^(write|edit|apply_patch)$/i;
+
+function cursorUnlinkedChildIsWrite(rawInput: unknown): boolean {
+  if (hookWritePath(rawInput)) return true;
+  const data = obj(rawInput) || {};
+  const payload = obj(data.payload) || {};
+  const tool = firstString(data.tool_name, data.toolName, payload.tool_name, payload.toolName) ?? '';
+  return CURSOR_UNLINKED_WRITE_TOOL_RE.test(tool);
+}
+
+function cursorUnlinkedChildPendingClaim(
+  cwd: string,
+  state: unknown,
+  sessionId: string,
+  model: string | null,
+  runIds: readonly string[],
+  writeRole: string | null,
+  rawInput: unknown,
+): PendingClaim | null {
+  if (!CURSOR_CONVERSATION_UUID_RE.test(sessionId.trim()) || !isResumeCapableAgentId(sessionId)) return null;
+  if (!cursorUnlinkedChildIsWrite(rawInput)) return null;
+  for (const runId of runIds) {
+    const pending = listPendingClaims(cwd, runId)
+      .filter(({ claim }) => claimAllowsState(cwd, state, claim))
+      .filter(({ claim }) => typeof claim.parentSessionId === 'string' && claim.parentSessionId);
+    if (pending.some(({ claim }) => claim.parentSessionId === sessionId)) continue;
+    const registry = readRunAgentRegistry(cwd, runId);
+    if (Object.values(registry).some((entry) => entry.parentSessionId === sessionId)) continue;
+    if (writeRole) {
+      const matched = matchingPendingClaim(cwd, state, runId, writeRole, null, model);
+      if (matched && typeof matched.claim.parentSessionId === 'string' && matched.claim.parentSessionId) {
+        return matched;
+      }
+      continue;
+    }
+    const unique = uniquelyCorrelatedPendingClaim(pending, null, model);
+    if (unique) return unique;
+    if (pending.length === 1) return pending[0]!;
+  }
+  return null;
+}
+
+function hookWritePath(rawInput: unknown): string {
+  const data = obj(rawInput) || {};
+  const payload = obj(data.payload) || {};
+  const toolInput = obj(data.tool_input) || obj(data.toolInput) || obj(payload.tool_input) || obj(payload.toolInput) || {};
+  return firstString(
+    toolInput.file_path, toolInput.filePath, toolInput.path,
+    data.file_path, data.filePath, payload.file_path, payload.filePath,
+  ) || '';
 }
 
 export function contextFromClaim(claim: Rec, source: string): RunAgentContext {
@@ -538,6 +612,37 @@ export function resolveRunAgentContext(
         );
       });
       if (claimedUnderLock && claimed) return contextFromClaim(claimed, 'run-agent');
+    }
+  }
+
+  // Cursor Task child writes omit parent/subagent/transcript. When the local
+  // child jsonl has not flushed yet, the correlation branch above never runs
+  // (`effectiveIsSubagent` is false). Bind by the digest path (reviewer.md
+  // names senior-reviewer even while tester is also pending) or the sole
+  // uniquely correlated handoff, so the child's digest is not denied as
+  // `unresolved`.
+  if (
+    shouldClaimPending
+    && !requiresCodexObservation
+    && options.host === 'cursor'
+    && identity.sessionId
+    && !effectiveIsSubagent
+  ) {
+    const matched = cursorUnlinkedChildPendingClaim(
+      cwd, state, identity.sessionId, identity.model, runIds,
+      roleFromDigestWritePath(hookWritePath(rawInput)),
+      rawInput,
+    );
+    const role = matched && typeof matched.claim.role === 'string' ? matched.claim.role : '';
+    if (matched && role) {
+      const parentSessionId = typeof matched.claim.parentSessionId === 'string'
+        ? matched.claim.parentSessionId
+        : null;
+      const ctx = claimThreadRole(cwd, state, identity.sessionId, role, {
+        parentSessionId,
+        model: identity.model || claimModel(matched.claim),
+      });
+      if (ctx) return ctx;
     }
   }
 

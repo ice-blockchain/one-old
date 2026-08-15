@@ -34,6 +34,7 @@ import { readQualityFindings } from '../../../shared/state/quality-findings';
 import { boundedScanTruncated, recordScanBoundHit } from '../plan-readiness/context';
 import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import { effectiveLegacyRunStatus, readRunSettlement } from '../../../shared/run-settlement';
+import { extractBlock } from '../../../shared/skill-markers';
 
 const names = (name: string): string => name;
 
@@ -2883,6 +2884,73 @@ test('implementer format gates follow the compiled frontend owner and preserve p
       content: 'verdict: NOT_IMPLEMENTED\n',
     });
     assert.ok(!nonTerminalViolations.some((violation) => violation.startsWith('implementer-format-')));
+  });
+});
+
+test('frontend-structure-completion-gate tells the agent to rewrite IMPLEMENTED, not to run a separate scan', () => {
+  const skill = fs.readFileSync(path.join(__dirname, '..', 'skill', 'SKILL.md'), 'utf8');
+  const body = extractBlock(skill, 'frontend-structure-completion-gate');
+  assert.ok(body, 'T1BLOCK frontend-structure-completion-gate must exist');
+  assert.match(body, /write `IMPLEMENTED` again/);
+  assert.doesNotMatch(body, /re-run the complete scan/);
+  assert.doesNotMatch(body, /doctor/i);
+  assert.doesNotMatch(body, /unblock/i);
+});
+
+// Claude Code watches the disk. When IMPLEMENTED silently rewrote App.tsx,
+// the host injected "modified by the user or a linter; intentional; do not
+// mention this". The worker reported sabotage. OpenCode units still cannot
+// edit the shell, so that host keeps the restore.
+test('IMPLEMENTED does not rewrite a worker-authored App shell on Claude', () => {
+  const chrome = [
+    'export default function App() {',
+    '  return (',
+    '    <>',
+    '      <header>Ticket Bid Header</header>',
+    '      <main>placeholder</main>',
+    '      <footer>Ticket Bid Footer</footer>',
+    '    </>',
+    '  );',
+    '}',
+    '',
+  ].join('\n');
+
+  const runImplemented = (dir: string, host: string): string => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R' };
+    writeRequiredScaffold(dir);
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    const compiled = readCompiledArchitecture(dir, 'R');
+    assert.ok(compiled, 'compiled architecture');
+    const shell = compiled.modules.find((module) => module.kind === 'app-shell');
+    const home = compiled.modules.find((module) => module.id === 'home');
+    assert.ok(shell && home, 'app-shell and home compiled');
+    fs.mkdirSync(path.join(dir, path.dirname(home.output)), { recursive: true });
+    fs.writeFileSync(path.join(dir, home.output), 'export default function Home() { return <div>Home</div>; }\n');
+    fs.mkdirSync(path.join(dir, path.dirname(shell.output)), { recursive: true });
+    fs.writeFileSync(path.join(dir, shell.output), chrome);
+    planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: 'verdict: IMPLEMENTED\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      host,
+      block: names,
+    });
+    return fs.readFileSync(path.join(dir, shell.output), 'utf8');
+  };
+
+  withProject((dir) => {
+    const after = runImplemented(dir, 'claude');
+    assert.match(after, /Ticket Bid Header/);
+    assert.match(after, /Ticket Bid Footer/);
+    assert.doesNotMatch(after, /<Routes>/);
+  });
+
+  withProject((dir) => {
+    const after = runImplemented(dir, 'opencode');
+    assert.doesNotMatch(after, /Ticket Bid Header/);
+    assert.match(after, /<Routes>/);
   });
 });
 

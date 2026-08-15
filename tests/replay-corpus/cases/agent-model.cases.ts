@@ -82,8 +82,8 @@ export const AGENT_MODEL_CASES: CaseSpec[] = [
   },
   {
     id: 'agent-model.performance-model-param-missing',
-    notes: 'senior-architect (not plan-batch-gated) spawned with NO model parameter on an enforcing host -> performance-model-param',
-    host: 'claude',
+    notes: 'senior-architect (not plan-batch-gated) spawned with NO model parameter on Codex/Cursor, which cannot rewrite tool input -> performance-model-param. Claude omitted-model spawns are filled via PreToolUse updatedInput (claudeInjectedTaskModel) and are covered by agent-model unit tests, not this deny.',
+    host: 'codex',
     event: 'PreToolUse',
     project: materializedGreenfield,
     expectGate: 'agent-model.spawn',

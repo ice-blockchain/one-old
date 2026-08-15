@@ -10,7 +10,7 @@ import {
   waitForOnboarding,
 } from '../index';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
-import { resolveModel } from '../../../shared/model-tiers';
+import { claudeTaskSpawnAlias, resolveModel } from '../../../shared/model-tiers';
 
 // Derived, never hardcoded: which family anchors a tier is editable policy.
 const CURSOR_HIGHEST_FAMILY = resolveModel('highest', 'cursor', 'pro') as string;
@@ -853,27 +853,27 @@ test('preSpawnModelDirective: Claude new-project subagents → per-role spawn ma
     const runId = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string;
     const policy = JSON.parse(fs.readFileSync(
       path.join(dir, '.traffic-one', 'runs', runId, 'model-policy.json'), 'utf8',
-    )) as { roles: Record<string, { preferredModel: string }> };
+    )) as { roles: Record<string, { preferredModel: string; acceptableModels: string[] }> };
 
     // 2cl regression: the first spawn went out without a `model` param because
     // nothing the root read carried the concrete per-role map. The directive
     // must front-load plugin-namespaced subagent_type + the model value the
     // Agent tool actually ACCEPTS. 6cl regression: printing the full policy id
     // (`model: "claude-opus-4-8"`) made the first spawn fail the host's own
-    // InputValidationError (the tool's `model` enum is sonnet|opus|haiku|fable)
-    // — so the row must carry the ALIAS, with the policy id alongside.
+    // InputValidationError — so the row must carry the frozen catalog alias,
+    // with the policy id alongside.
     const d = preSpawnModelDirective(dir, 'claude');
     assert.ok(d.includes(`run \`${runId}\``), 'names the frozen run');
     assert.ok(d.includes('subagent_type: "traffic-one:senior-architect"'), 'plugin-namespaced agent type');
-    const architectModel = policy.roles['senior-architect']!.preferredModel;
-    const expectedAlias = ['fable', 'opus', 'haiku', 'sonnet'].find((alias) => architectModel.toLowerCase().includes(alias));
-    assert.ok(expectedAlias, `policy model ${architectModel} maps to a known Agent-tool alias`);
+    const architect = policy.roles['senior-architect']!;
+    const expectedAlias = claudeTaskSpawnAlias(architect.acceptableModels);
+    assert.ok(expectedAlias, `frozen acceptableModels must carry a Task spawn alias, got ${architect.acceptableModels.join(',')}`);
     assert.ok(
-      d.includes(`model: "${expectedAlias}" (policy model: ${architectModel})`),
-      'architect row passes the Agent-tool alias and names the frozen policy id',
+      d.includes(`model: "${expectedAlias}" (policy model: ${architect.preferredModel})`),
+      'architect row passes the frozen catalog alias and names the frozen policy id',
     );
     assert.ok(!/model: "claude-/.test(d), 'no row tells the orchestrator to pass a full model id');
-    assert.match(d, /sonnet\|opus\|haiku\|fable/, 'states the Agent tool enum explicitly');
+    assert.match(d, /acceptableModels/, 'points at the frozen catalog row, not a plugin-owned enum');
     assert.ok(d.includes('senior-frontend') && d.includes('senior-tester'), 'map covers the team roles');
     assert.match(d, /failed to run agent/, 'explains how the host renders a model-less spawn deny');
     // The frozen policy — not live prefs — is the authority: the map keeps

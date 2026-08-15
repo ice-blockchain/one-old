@@ -126,10 +126,8 @@ test('the substitution covers the wholly-empty reason only', () => {
   }
 
   // A reason assembled from a MISSING block plus surviving TS clauses is not
-  // empty, so the notice never sees it. plan-guard's `deny()` helper
-  // (plan-runteam.ts) appends `run-team-suffix` to every refusal, which is
-  // exactly this shape. Recorded as a limitation, not a defect: the fix for
-  // those sites is the fallback argument the assembler already takes.
+  // empty, so the notice never sees it. Recorded as a limitation, not a defect:
+  // the fix for those sites is the fallback argument the assembler already takes.
   const composed = deny(`${''} ${'If subagents are genuinely unavailable…'}`, { denyId: 'run-team-wrong-role' });
   if (composed.kind === 'deny') {
     assert.equal(

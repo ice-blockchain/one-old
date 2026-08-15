@@ -147,7 +147,9 @@ export function unblockCommand(gateId: string, runId: string | null): string {
  * runners/doctor/unblock.ts's header on what a pty makes possible), which is
  * why the ineligibility consequence is stated in the same breath as the
  * command: that is the half that holds either way, and this is the only moment
- * anyone reads it.
+ * anyone reads it. The pipeline does NOT append this string to hook denies:
+ * Claude Code paints that reason as a user-visible Error, and advertising the
+ * hatch there is what its Gate blocker UI promotes to Recommended.
  */
 export function operatorOverrideHint(
   input: OverridableDenyInput & { readonly gateId: string; readonly runId: string | null },

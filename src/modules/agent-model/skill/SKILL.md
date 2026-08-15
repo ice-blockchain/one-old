@@ -226,7 +226,7 @@ Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{A
 <!-- T1BLOCK:END agent-reuse-scope-regrant-refused -->
 
 <!-- T1BLOCK:BEGIN agent-reuse-await-cursor-id -->
-Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` Cursor subagent, but Cursor has not exposed a valid Task `resume` UUID for it yet. The recorded `tool_*` id is only the subagentStart tool-call id and cannot resume the agent. Do NOT spawn a replacement and do NOT use `[t1-replace-agent]` unless the existing agent has actually failed or exhausted context. Wait for the current `{{ROLE}}` subagent to finish or produce a child transcript, then retry the same continuation; Traffic One will upgrade the registry to the real Cursor conversation id automatically.
+Agent-reuse gate: `{{ROLE}}` is already running in this Cursor session. Resume that same Task — do not spawn another. If Task has no resume id yet, wait for the current one to finish, then continue it. Do not ask the user to switch to Low.
 <!-- T1BLOCK:END agent-reuse-await-cursor-id -->
 
 <!-- T1BLOCK:BEGIN agent-reuse-await-codex-meta -->

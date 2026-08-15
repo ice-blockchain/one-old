@@ -10,19 +10,11 @@ import { buildCursorSpawnModelMap } from '../../shared/materialize/cursor-spawn-
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-command';
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
+import { claudeTaskSpawnAlias } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import {  isNewProjectMode, readEffectiveState } from '../../shared/state';
 import {  readRunModelPolicy } from '../../shared/run-model-policy';
-
-function claudeAgentToolAlias(modelId: string): string {
-  const id = modelId.toLowerCase();
-  if (id.includes('fable')) return 'fable';
-  if (id.includes('opus')) return 'opus';
-  if (id.includes('haiku')) return 'haiku';
-  if (id.includes('sonnet')) return 'sonnet';
-  return modelId;
-}
 
 function claudeSpawnModelDirective(cwd: string): string {
   try {
@@ -36,13 +28,13 @@ function claudeSpawnModelDirective(cwd: string): string {
     for (const role of AGENT_ROLES) {
       const rolePolicy = policy.roles[role];
       if (!rolePolicy?.preferredModel) continue;
-      const alias = claudeAgentToolAlias(rolePolicy.preferredModel);
+      const alias = claudeTaskSpawnAlias(rolePolicy.acceptableModels) || rolePolicy.preferredModel;
       rows.push(`   - ${role} → subagent_type: "traffic-one:${role}", model: "${alias}" (policy model: ${rolePolicy.preferredModel})`);
     }
     if (!rows.length) return '';
     return [
       `[traffic-one] Claude — per-role spawn map for run \`${runId}\` (immutable policy \`${policy.policyId}\`):`,
-      '- Pass BOTH parameters on EVERY Agent spawn — the `subagent_type` AND the exact `model` alias below. The Agent tool accepts ONLY the alias values sonnet|opus|haiku|fable (a full model id fails the tool\'s own input validation as "failed to run agent" before any gate runs). A spawn without `model` inherits the parent session model, so the Performance gate denies it — passing the alias below on the FIRST spawn avoids the deny+retry entirely.',
+      '- Pass BOTH parameters on EVERY Agent spawn — the `subagent_type` AND the exact `model` alias below (the short token from that role\'s frozen `acceptableModels`, the same list One MCP published). A full model id fails the Agent tool\'s own input validation as "failed to run agent" before any gate runs. A spawn without `model` inherits the parent session model; passing the alias below on the FIRST spawn avoids a rewrite.',
       ...rows,
       `- The gate verifies the spawned model against that role's \`acceptableModels\` in \`.traffic-one/runs/${runId}/model-policy.json\`; never pass an alias from another tier, and re-use this exact map for replacement and retry spawns.`,
     ].join('\n');

@@ -225,3 +225,17 @@ export function recommendTierForPlan(host: unknown, plan: unknown): TierId {
   const table = PLAN_TIER_RECOMMENDATIONS[h];
   return table[p] ?? table[DEFAULT_HOST_PLAN[h]] ?? 'balanced';
 }
+
+// Claude Code's Task `model` field rejects a dated catalog slug
+// (`claude-sonnet-5`) before any hook runs. One MCP keeps the short spawn
+// alias as a letter-only token on the row (documented as the tail of each
+// Claude HOST_MODELS / sidecar row). Take that token FROM the frozen
+// acceptable list so a catalog bump does not require a plugin code change —
+// never invent `sonnet` from a substring of a concrete id.
+export function claudeTaskSpawnAlias(acceptable: readonly string[]): string | null {
+  for (let i = acceptable.length - 1; i >= 0; i--) {
+    const token = acceptable[i]!.trim();
+    if (/^[a-z]+$/.test(token)) return token;
+  }
+  return null;
+}

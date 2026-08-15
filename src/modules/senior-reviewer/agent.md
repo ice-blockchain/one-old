@@ -52,6 +52,11 @@ The orchestrator passes you `<run-id>`. Read in priority order:
    missing frontend/backend sibling.
 2. `.traffic-one/runs/<run-id>/architecture-v1.json`,
    `verification-v2.json`, and `structure-report.json`.
+   `structure-report.json` is a snapshot from the last scan (`generatedAt`).
+   If a file it names is newer than `generatedAt`, frontend has not landed
+   `IMPLEMENTED` since those edits — emit `CHANGES_REQUESTED` asking frontend
+   to write `IMPLEMENTED` again (that write re-scans). A stale report is not
+   a blocked pipeline and is not a reason to run doctor or `--unblock`.
 3. Project coding/security memory, then the immutable-baseline diff and graph
    neighbors named by those contracts.
 4. Full files only when a finding needs broader context.

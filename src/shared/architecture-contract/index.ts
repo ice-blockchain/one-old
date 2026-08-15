@@ -390,8 +390,10 @@ export {
   resolveArchitectureI18n,
 } from './i18n';
 export {
+  compiledUiNamespaceImports,
   moduleSkeleton,
   moduleSkeletonContent,
+  type CompiledUiNamespaceImportV1,
   type ModuleSkeletonReferenceV1,
   type ModuleSkeletonV1,
 } from './skeletons';
@@ -426,6 +428,7 @@ export {
   isRuntimeMaintainedContextPath,
   isScanSkippedPath,
   nameSkippedProjectSource,
+  ignoreRulesHideLiveSource,
   readArchitectureRunBaseline,
   readArchitectureRunSnapshot,
   scanSkipPredicate,

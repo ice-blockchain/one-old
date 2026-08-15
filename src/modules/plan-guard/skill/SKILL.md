@@ -226,7 +226,7 @@ Page-speed claim gate: this digest reports Lighthouse performance {{CLAIMED}} �
 <!-- T1BLOCK:END lighthouse-claim-reconciliation-gate -->
 
 <!-- T1BLOCK:BEGIN frontend-structure-completion-gate -->
-Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding and re-run the complete scan before writing `IMPLEMENTED`. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint `max-lines` rule — the project's own `lint` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (`STRUCT_I18N_RUNTIME`), and catalog validation (`STRUCT_I18N_CATALOG` — keys non-empty in every declared locale). Hardcoded-copy findings (`STRUCT_HARDCODED_COPY`, `STRUCT_I18N_REACT_TRANS`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own `lint` run owns them. React child copy uses `<Trans>` with namespace, key, and fallback.
+Frontend completion gate: the runtime structure report failed ({{FINDINGS}}). Fix every blocking finding, then write `IMPLEMENTED` again — the gate re-scans the current tree on that write. Per-component LOC, function-count, and component-count findings remain warnings during this rollout; module size is owned by the compiled eslint `max-lines` rule — the project's own `lint` run refuses an oversized module, so split it. Integration findings block too: orphan modules, unused API packages, inert styling, a missing i18n runtime (`STRUCT_I18N_RUNTIME`), and catalog validation (`STRUCT_I18N_CATALOG` — keys non-empty in every declared locale). Hardcoded-copy findings (`STRUCT_HARDCODED_COPY`, `STRUCT_I18N_REACT_TRANS`) block only on profiles without a compiled AST lint layer; where the scaffolded eslint config carries the i18n rule, the project's own `lint` run owns them. React child copy uses `<Trans>` with namespace, key, and fallback.
 <!-- T1BLOCK:END frontend-structure-completion-gate -->
 
 <!-- T1BLOCK:BEGIN implementer-lint-toolchain-gate -->
@@ -312,10 +312,6 @@ Run-team enforcement gate: the quick-fix worker has no valid parent-published Wo
 <!-- T1BLOCK:BEGIN run-team-runtime-contract-invalid -->
 Run-team enforcement gate: this run has CompiledArchitectureV1 but its current-run runtime assignments or VerificationContractV2 are missing, stale, or tampered. The write fails closed; repair/recompile this run and never borrow an assignments manifest from a sibling run.
 <!-- T1BLOCK:END run-team-runtime-contract-invalid -->
-
-<!-- T1BLOCK:BEGIN run-team-suffix -->
-If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.
-<!-- T1BLOCK:END run-team-suffix -->
 
 <!-- T1BLOCK:BEGIN run-id-mismatch -->
 Run-id gate: this run's id (`currentRunId` in .traffic-one/.one.json) is `{{EXPECTED}}`, but this write targets run-id `{{WRONG}}`. The run-id is a plain epoch-millisecond number Traffic One mints for you — do NOT generate one with `date` (an ISO/UTC string like `2026-06-17T12-09-40Z` splits run state: assignments and digests land under a stray `.traffic-one/runs/{{WRONG}}/` that the run-team and OpenCode gates — keyed on `{{EXPECTED}}` — cannot see, blocking implementer spawns). Read `currentRunId` from .traffic-one/.one.json and write under `.traffic-one/runs/{{EXPECTED}}/` and `.traffic-one/digests/{{EXPECTED}}/` instead.

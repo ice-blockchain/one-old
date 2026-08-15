@@ -10,6 +10,7 @@ import {
   canonicalTrafficOneContextLink,
   contextAliasHash,
   ignoreRuleDigest,
+  ignoreRulesHideLiveSource,
   isScanSkippedPath,
   nameSkippedProjectSource,
   scanSkipPredicate,
@@ -296,12 +297,14 @@ export function fileHash(projectRoot: string, relPath: string): string {
  * The changed-path inference is kept as a second, weaker signal for baselines
  * captured before the field existed, where there is nothing to compare against.
  *
- * Neither is a proof of loss and neither tries to be one; both are the same
- * fail-closed trade the bounded scans make. An incomplete snapshot raises
- * `uiImpact` to the truncated-scan floor and blocks nothing, so a run that
- * legitimately edits `.gitignore` owes browser evidence it would otherwise have
- * skipped, and a run that edits it to hide source pays the floor it was trying
- * to avoid.
+ * Neither is a proof of loss and neither tries to be one. A digest move that
+ * currently hides authored source — or that gitignores a `dist/assets/*.js`
+ * tree after those files exist, silencing the name disclosure — stays
+ * incomplete and fatal at QA. A digest move that hides nothing live (the
+ * compiled `.gitignore` a new-project frontend writes after PLAN_READY,
+ * adding `node_modules/`/`dist/` before those trees exist) stays complete:
+ * the skip-authority closure still holds, and the tester is not stranded at
+ * `scan-incomplete` over a scaffold write.
  *
  * Still NOT covered: `git update-index --skip-worktree` and `--assume-unchanged`
  * hide a tracked file from `git diff` without touching any ignore rule. They are
@@ -313,15 +316,21 @@ function ignoreRuleAuthorityMoved(
   baseline: ArchitectureBaselineV1,
   paths: readonly string[],
 ): string | null {
-  if (baseline.ignoreRules) {
-    return ignoreRuleDigest(projectRoot) === baseline.ignoreRules
-      ? null
-      : 'ignore rules changed since baseline capture, so paths this diff skipped may be source';
+  const current = ignoreRuleDigest(projectRoot);
+  const digestMoved = baseline.ignoreRules
+    ? current !== baseline.ignoreRules
+    : Boolean(paths.find((entry) => entry.split('/').pop() === '.gitignore'));
+  if (!digestMoved) return null;
+  // Git could not recompute the digest: fail closed, same as a moved digest
+  // whose live ignored set cannot be listed.
+  if (baseline.ignoreRules && !current) {
+    return 'ignore rules changed since baseline capture, so paths this diff skipped may be source';
   }
+  if (ignoreRulesHideLiveSource(projectRoot).length === 0) return null;
   const moved = paths.find((entry) => entry.split('/').pop() === '.gitignore');
-  return moved
-    ? `ignore rules changed since baseline capture (${moved}), so paths this diff skipped may be source`
-    : null;
+  return baseline.ignoreRules
+    ? 'ignore rules changed since baseline capture, so paths this diff skipped may be source'
+    : `ignore rules changed since baseline capture (${moved}), so paths this diff skipped may be source`;
 }
 
 /**

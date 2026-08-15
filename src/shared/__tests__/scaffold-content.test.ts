@@ -195,10 +195,13 @@ test('greenfield materialization emits compliant module skeletons with catalog s
     assert.match(pageBody, /export default function Home\(\)/);
     assert.match(pageBody, /<Trans ns="home-route" i18nKey="title">Home<\/Trans>/);
 
-    // The app shell wires every compiled route to its compiled page module.
+    // The app shell wires every compiled route to its compiled page module
+    // and imports every compiled feature/component (STRUCT_ORPHAN_MODULE).
     const shellBody = fs.readFileSync(path.join(cwd, moduleOutput(compiled, 'app-shell')), 'utf8');
     assert.match(shellBody, /import Home from '\.\/pages\/Home';/);
     assert.match(shellBody, /<Route path="\/" element=\{<Home \/>\} \/>/);
+    assert.match(shellBody, /import \* as NavBarModule from '/);
+    assert.match(shellBody, /void \[NavBarModule\];/);
 
     // Components export the compiled Pascal name; services get a typed empty
     // export under it, so planned consumers keep resolving.

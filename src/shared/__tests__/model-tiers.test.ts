@@ -5,6 +5,7 @@ import {
   canonicalHost,
   canonicalPlan,
   canonicalTier,
+  claudeTaskSpawnAlias,
   hostModelSnapshot,
   modelMatchesAny,
   modelMatchesExpected,
@@ -397,6 +398,14 @@ test('modelMatchesAny: the preferred family or any same-tier fallback variant sa
   assert.equal(modelMatchesAny('claude-sonnet-5-thinking-high', balanced), true); // same-tier fallback variant
   // A different-tier Cursor model (opus = highest) does NOT satisfy balanced.
   assert.equal(modelMatchesAny('claude-opus-4-8-thinking-max-fast', balanced), false);
+});
+
+test('claudeTaskSpawnAlias takes the One MCP row tail, never invents a family from a dated slug', () => {
+  assert.equal(claudeTaskSpawnAlias(['claude-sonnet-9', 'widget']), 'widget');
+  assert.equal(claudeTaskSpawnAlias(['claude-sonnet-9', 'claude-sonnet-8']), null);
+  assert.equal(claudeTaskSpawnAlias(['sonnet', 'claude-sonnet-5', 'claude-sonnet-4-6']), 'sonnet');
+  assert.equal(claudeTaskSpawnAlias(['claude-opus-5', 'claude-fable-5', 'opus']), 'opus');
+  assert.equal(claudeTaskSpawnAlias(['claude-remote-high', 'fable', 'opus']), 'opus');
 });
 
 test('modelMatchesHostModels accepts Claude native strongest-model aliases only for Claude Fable/Opus rows', () => {

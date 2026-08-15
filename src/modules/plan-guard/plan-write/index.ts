@@ -67,9 +67,9 @@ const rawBlock = makePlanBlock(makeSkillBlock(pluginRoot));
 // invent one parallel id for the whole aggregator (which would collapse every
 // distinct cause into one budget bucket — exactly what a declared id exists to
 // avoid), mine the id from whichever registered block actually fired FIRST.
-// `run-team-suffix` is a decorative fragment glued onto a DIFFERENT violation's
-// text (see plan-runteam.ts), never itself a violation, so it is deliberately
-// skipped rather than recorded.
+// `run-team-suffix` used to be a decorative fragment glued onto every run-team
+// refusal. It is no longer rendered (Claude Code painted it as a user-visible
+// Error). The skip stays so a leftover call site cannot steal denyId.
 //
 // The accumulator is PER INVOCATION and must stay that way: it was module
 // scope once, latched by a `!firstFired` guard that nothing reset, so in any

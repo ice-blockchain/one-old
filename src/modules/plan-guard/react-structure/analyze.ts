@@ -91,6 +91,16 @@ function importBindings(text: string, file = ''): ImportBinding[] {
     bindings.push({ local: match[1]!, imported: 'default', source: match[3]! });
   }
 
+  // Bare `import('…')` (route-object `lazy: () => import('./feature')`,
+  // inline `lazy(() => import('./x'))` without a const binding). The orphan
+  // check only reads import bindings; without these, a lazy-loaded feature
+  // barrel looked unreferenced and IMPLEMENTED was offered `--unblock`.
+  const dynamicImport = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
+  while ((match = dynamicImport.exec(source))) {
+    if (syntax.slice(match.index, match.index + 6) !== 'import') continue;
+    bindings.push({ local: '', imported: 'default', source: match[2]! });
+  }
+
   // Re-exports count as references: a barrel's `export { X } from './x'` /
   // `export * from './x'` keeps the target module reachable. Without these
   // bindings the orphan-module check would flag every barrel-routed module.

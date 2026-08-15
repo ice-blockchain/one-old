@@ -22,6 +22,7 @@ const EXPECTED: Readonly<Record<keyof HostCapabilityFlags, readonly TrafficOneHo
   nativeWritesCarryNoAgentIdentity: ['windsurf'],
   ignoresMaterializedGuidance: ['windsurf'],
   nativeBootstrapEnforcementPoint: ['claude'],
+  disjointWorkUnitFiles: ['opencode', 'kilo'],
 };
 
 const ALL_HOSTS = Object.keys(HOST_CAPABILITY_FLAGS) as TrafficOneHost[];

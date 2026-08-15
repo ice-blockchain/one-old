@@ -45,12 +45,21 @@ import {
 import {
   cursorExactModelDeny,
   degradedToFloorDeny,
+  claudeInjectedTaskModel,
   maybeModelAdvisory,
   modelTierDeny,
   preferredModelUnavailableDeny,
 } from './model-denies';
 import type { HookResult } from '../../core/types';
 import type { GateContext } from './gate-context';
+
+function withClaudeModel(g: GateContext, passedModel: string, expected: string): string {
+  if (passedModel || !expected) return passedModel;
+  const injected = claudeInjectedTaskModel(g.ctx, expected, g.runPolicy, g.role);
+  if (!injected) return passedModel;
+  g.toolInput.model = injected;
+  return injected;
+}
 
 /**
  * Mint the spawn's role claim, and refuse the spawn if it could not be RECORDED.
@@ -95,7 +104,7 @@ export function modelEnforcementGates(g: GateContext): HookResult {
   if (role === 'quick-fix') {
     const expected = runPolicy?.roles['quick-fix']?.preferredModel
       || currentModelForTier('cheapest', ctx.host, detectHostPlan(ctx.host));
-    const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+    const passedModel = withClaudeModel(g, typeof toolInput.model === 'string' ? toolInput.model.trim() : '', expected ?? '');
     if (modelParamEnforced(ctx.host) && expected && !modelSatisfiesTier(ctx, passedModel, expected, runPolicy, role)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance', { policy: runPolicy });
     }
@@ -197,7 +206,7 @@ export function modelEnforcementGates(g: GateContext): HookResult {
 
   const expected = runPolicy?.roles[role]?.preferredModel
     || modelForRoleHost(level, role, ctx.host, overrides, planCtx, process.env, modelSelections);
-  const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+  const passedModel = withClaudeModel(g, typeof toolInput.model === 'string' ? toolInput.model.trim() : '', expected ?? '');
   const agentType = spawnAgentType(toolInput, { includeRoleAlias: false });
   if (ctx.host === 'opencode') {
     const expectedAgent = openCodeGlobalAgentName(cwd, role);
@@ -225,9 +234,9 @@ export function modelEnforcementGates(g: GateContext): HookResult {
     return allowSpawn(noop());
   }
   if (!modelSatisfiesTier(ctx, passedModel, expected, runPolicy, role)) {
-    // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
-    // budget/disabled choice — that is reserved for degradedToFloorDeny, the real Composer-floor
-    // case). This is what unblocks a build that omitted the per-role model.
+    // Wrong `model` arg, or a host that cannot rewrite tool input. Claude
+    // missing-model spawns are filled in `withClaudeModel` (updatedInput);
+    // Cursor/Codex still land here because they have no rewrite channel.
     return modelTierDeny(ctx, cwd, role, passedModel, expected, level, { policy: runPolicy });
   }
   const exact = cursorExactModelDeny(ctx, cwd, role, passedModel, expected, level, runPolicy);

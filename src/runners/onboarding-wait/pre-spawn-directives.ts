@@ -195,8 +195,9 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
 // run agent" (observed 1cl + 2cl; both self-recovered but burned a retry each).
 // Returns '' for non-new-project, non-subagents levels, or on any read error.
 
-// Claude's Agent tool `model` parameter is an ENUM OF FAMILY ALIASES
-// (sonnet|opus|haiku|fable), not a model-id field: a spawn that copies the
+// Claude's Agent tool `model` parameter is the short spawn alias from the
+// frozen One MCP row (letter-only token at the tail of acceptableModels), not
+// a model-id field: a spawn that copies the
 // policy's full id verbatim fails the host's own InputValidationError before
 // any Traffic One gate runs (observed 6cl: `model: "claude-opus-4-8"` →
 // "Failed to run agent", recovered only by re-reading model-policy.json and

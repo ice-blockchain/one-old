@@ -422,6 +422,41 @@ export function nameSkippedProjectSource(projectRoot: string, limit = 3): string
   return found;
 }
 
+/**
+ * Source that THIS project's ignore rules currently hide, and that the static
+ * skip names would still have treated as visible project source.
+ *
+ * Used when the ignore-rule digest moved after baseline capture. A digest
+ * change alone is not proof of loss: a new-project scaffold that adds
+ * `node_modules/` and `dist/` to `.gitignore` after PLAN_READY moves the
+ * digest without hiding any live source, and treating that as fatal stranded
+ * QA (`scan-incomplete`) on an otherwise green tester. The closure that MUST
+ * stay fatal is hiding authored source, or silencing a `dist/assets/*.js`
+ * name-disclosure by gitignoring the build tree after those files exist.
+ */
+export function ignoreRulesHideLiveSource(projectRoot: string, limit = 3): string[] {
+  const ignored = gitPaths(projectRoot, ['--others', '--ignored', '--exclude-standard']);
+  if (!ignored) return [];
+  const found: string[] = [];
+  for (const entry of ignored) {
+    if (found.length >= limit) break;
+    if (hiddenByAmbiguousDirectoryName(entry)) {
+      found.push(entry);
+      continue;
+    }
+    if (isScanSkippedPath(entry)) continue;
+    if (authoredSourceFile(entry)) found.push(entry);
+  }
+  return found;
+}
+
+function authoredSourceFile(relativePath: string): boolean {
+  const name = relativePath.replace(/\\/g, '/').split('/').pop() || '';
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return AUTHORED_SOURCE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
 function hiddenByAmbiguousDirectoryName(relativePath: string): boolean {
   const segments = relativePath.replace(/\\/g, '/').split('/').filter(Boolean);
   if (segments.length < 2) return false;

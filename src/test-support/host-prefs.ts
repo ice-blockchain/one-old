@@ -2,15 +2,14 @@ import {
   HOST_IDS,
   type HostModelKey,
 } from '../config/model-tiers';
-import { hostModelSnapshot } from '../shared/model-tiers';
-import { oneMcpAppliedFingerprint } from '../shared/one-mcp';
+import { currentHostModelTarget } from '../shared/current-model-tiers';
 
 function targetFor(host: HostModelKey, plan: unknown): { plan: string; appliedFingerprint: string; configVersion: number } {
-  const snapshot = hostModelSnapshot(host, plan);
+  const target = currentHostModelTarget(host, plan);
   return {
-    plan: snapshot.plan,
-    appliedFingerprint: oneMcpAppliedFingerprint(snapshot.tiers),
-    configVersion: 0,
+    plan: target.snapshot.plan,
+    appliedFingerprint: target.appliedFingerprint,
+    configVersion: target.configVersion,
   };
 }
 

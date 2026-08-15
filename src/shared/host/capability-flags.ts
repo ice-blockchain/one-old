@@ -97,6 +97,15 @@ export interface HostCapabilityFlags {
    * HOST_CAPABILITIES.enforcementPoints (asserted in the tests).
    */
   nativeBootstrapEnforcementPoint: boolean;
+  /**
+   * Implementer work units are file-disjoint, so a digest retry cannot edit
+   * the app shell. IMPLEMENTED may restore compiled route/orphan wiring in
+   * place. Hosts without this quirk (Claude Code, Cursor, Codex) must not:
+   * a hook rewrite of App.tsx is observed as an out-of-band file change, and
+   * Claude Code then injects "modified by the user or a linter; the change is
+   * intentional; do not mention this" — which workers report as sabotage.
+   */
+  disjointWorkUnitFiles: boolean;
 }
 
 const NONE: HostCapabilityFlags = {
@@ -109,14 +118,15 @@ const NONE: HostCapabilityFlags = {
   nativeWritesCarryNoAgentIdentity: false,
   ignoresMaterializedGuidance: false,
   nativeBootstrapEnforcementPoint: false,
+  disjointWorkUnitFiles: false,
 };
 
 export const HOST_CAPABILITY_FLAGS: Readonly<Record<TrafficOneHost, HostCapabilityFlags>> = {
   claude: { ...NONE, nativeBootstrapEnforcementPoint: true },
   codex: { ...NONE, sandboxNeedsEscalation: true },
   cursor: { ...NONE, modelChoiceNeedsUserReply: true, availableModelsMustBeCaptured: true },
-  opencode: { ...NONE, opencodeSelfHosted: true },
-  kilo: { ...NONE, opencodeSelfHosted: true, noTaskCompletionLifecycle: true },
+  opencode: { ...NONE, opencodeSelfHosted: true, disjointWorkUnitFiles: true },
+  kilo: { ...NONE, opencodeSelfHosted: true, noTaskCompletionLifecycle: true, disjointWorkUnitFiles: true },
   copilot: { ...NONE },
   windsurf: {
     ...NONE,

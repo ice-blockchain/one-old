@@ -1182,6 +1182,22 @@ test('full scan: non-literal route paths surface the cause in mismatch messages 
   });
 });
 
+test('a missing router table names the app shell and the exact Route to add', () => {
+  withProject((cwd) => {
+    const contract = prepare(cwd);
+    writeCompiledModules(cwd, contract);
+    const report = analyzeProjectStructure(cwd, contract);
+    const mismatches = report.findings.filter((finding) => finding.id === 'STRUCT_ROUTE_MODULE_MISMATCH');
+    assert.ok(mismatches.length >= 1, 'contract routes stay unproven');
+    const shell = contract.modules.find((module) => module.kind === 'app-shell')!.output;
+    for (const finding of mismatches) {
+      assert.match(finding.message, /no `<Route path>` \/ `createBrowserRouter` `path:`/);
+      assert.match(finding.message, new RegExp(shell.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(finding.message, /<Route path="/);
+    }
+  });
+});
+
 test('hot contract gate appends the non-literal cause to a coexisting literal mismatch', () => {
   withProject((cwd) => {
     const contract = prepare(cwd);
@@ -1415,6 +1431,66 @@ test('React.lazy route bindings are imports, not inline pages', () => {
       errorsFor(lazyImports),
       errorsFor(staticImports),
       'code splitting must not change the structural verdict',
+    );
+  });
+});
+
+test('a directory import of a feature barrel is a reference, not an orphan', () => {
+  // Observed: `lazy(() => import('./features/event-search-feature'))` did not
+  // match the compiled `.../event-search-feature/index.tsx`, STRUCT_ORPHAN_MODULE
+  // fired, and the agent offered `--unblock` as a lazy-loading false positive.
+  withProject((cwd) => {
+    const contract = prepare(cwd, {
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+        { id: 'event-search-feature', name: 'Event Search Feature', kind: 'feature' },
+      ],
+    });
+    writeCompiledModules(cwd, contract);
+    const feature = contract.modules.find((module) => module.id === 'event-search-feature')!;
+    assert.match(feature.output, /\/event-search-feature\/index\.tsx$/);
+    const shell = contract.modules.find((module) => module.kind === 'app-shell')!;
+    const home = contract.modules.find((module) => module.id === 'home')!;
+
+    const orphaned = ids(analyzeProjectStructure(cwd, contract, { greenfield: true }));
+    assert.ok(orphaned.includes('STRUCT_ORPHAN_MODULE'), 'baseline: unwired feature is an orphan');
+
+    fs.writeFileSync(path.join(cwd, shell.output), [
+      "import { lazy } from 'react';",
+      `const Home = lazy(() => import('./pages/${path.posix.basename(home.output, '.tsx')}'));`,
+      "const EventSearch = lazy(() => import('./features/event-search-feature'));",
+      'export default function App() {',
+      '  return <Routes><Route path="/" element={<Home />} /><Route path="/search" element={<EventSearch />} /></Routes>;',
+      '}',
+      '',
+    ].join('\n'));
+    const wired = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.ok(
+      !wired.findings.some((finding) => (
+        finding.id === 'STRUCT_ORPHAN_MODULE' && finding.file === feature.output
+      )),
+      `directory import must count as a reference, got: ${
+        wired.findings.filter((finding) => finding.id === 'STRUCT_ORPHAN_MODULE').map((finding) => finding.file).join(',')
+      }`,
+    );
+
+    fs.writeFileSync(path.join(cwd, shell.output), [
+      'const router = createBrowserRouter([',
+      `  { path: '/', lazy: () => import('./pages/${path.posix.basename(home.output, '.tsx')}') },`,
+      "  { path: '/search', lazy: () => import('./features/event-search-feature') },",
+      ']);',
+      'export default function App() { return <RouterProvider router={router} />; }',
+      '',
+    ].join('\n'));
+    const objectLazy = analyzeProjectStructure(cwd, contract, { greenfield: true });
+    assert.ok(
+      !objectLazy.findings.some((finding) => (
+        finding.id === 'STRUCT_ORPHAN_MODULE' && finding.file === feature.output
+      )),
+      'route-object lazy import() without a const binding must also count',
     );
   });
 });

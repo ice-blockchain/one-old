@@ -4575,6 +4575,161 @@ test('resolveRunAgentContext binds Cursor child writes from the local subagent t
   });
 });
 
+test('Cursor child digest writes bind the sole pending claim without a flushed transcript', () => {
+  withPrefs((dir) => {
+    const prevHost = process.env.TRAFFIC_ONE_HOST;
+    process.env.TRAFFIC_ONE_HOST = 'cursor';
+    try {
+      const parentId = '8a93bb38-0503-4c9a-ab15-fec68978ad1b';
+      const childId = '77fb44fa-6066-4589-9bbe-e0ab0c14846e';
+      const state = { ...materializedState(), currentRunId: 'run-cursor-digest' };
+      ensureRunAgentClaim(dir, state, 'senior-architect', { session_id: parentId }, { toolName: 'Task' });
+      recordRunAgent(dir, 'run-cursor-digest', 'senior-architect', {
+        agentId: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+        toolCallId: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+        parentSessionId: parentId,
+      });
+
+      const parentWrite = resolveRunAgentContext(dir, state, {
+        conversation_id: parentId,
+        session_id: parentId,
+        transcript_path: null,
+        hook_event_name: 'preToolUse',
+        tool_name: 'Write',
+      }, { claimPending: true, host: 'cursor' });
+      assert.equal(parentWrite, null, 'the orchestrator must not consume its own child\'s pending claim');
+
+      const ctx = resolveRunAgentContext(dir, state, {
+        conversation_id: childId,
+        session_id: childId,
+        transcript_path: null,
+        hook_event_name: 'preToolUse',
+        tool_name: 'Write',
+      }, { claimPending: true, host: 'cursor' });
+      assert.ok(ctx, 'an unlinked Cursor child UUID must still bind when it is the sole pending role');
+      assert.equal(ctx!.role, 'senior-architect');
+      assert.equal(ctx!.sessionId, childId);
+
+      const pending = path.join(dir, '.traffic-one', 'runs', 'run-cursor-digest', 'pending');
+      assert.deepEqual(fs.readdirSync(pending).filter((name) => name.endsWith('.json')), []);
+      const entry = readRunAgentRegistry(dir, 'run-cursor-digest')['senior-architect'];
+      assert.equal(entry!.agentId, childId);
+      assert.equal(entry!.resumeId, childId);
+      assert.equal(continuationAgentId(entry!, 'cursor'), childId);
+    } finally {
+      if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+      else process.env.TRAFFIC_ONE_HOST = prevHost;
+    }
+  });
+});
+
+test('Cursor parent shell does not consume a pending child claim', () => {
+  withPrefs((dir) => {
+    const prevHost = process.env.TRAFFIC_ONE_HOST;
+    process.env.TRAFFIC_ONE_HOST = 'cursor';
+    try {
+      const parentId = 'replay-fixture-frontend-session';
+      const childId = '77fb44fa-6066-4589-9bbe-e0ab0c14846e';
+      const state = { ...materializedState(), currentRunId: 'run-cursor-doctor' };
+      ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: parentId }, { toolName: 'Task' });
+
+      assert.equal(resolveRunAgentContext(dir, state, {
+        session_id: 'cursor-main',
+        tool_name: 'before-shell-execution',
+        tool_input: { command: 'node /x/scripts/doctor.cjs --run replay-fixture-run' },
+      }, { claimPending: true, host: 'cursor' }), null, 'a fixture main session must not steal the pending handoff');
+
+      assert.equal(resolveRunAgentContext(dir, state, {
+        session_id: childId,
+        transcript_path: null,
+        tool_name: 'Bash',
+        tool_input: { command: 'pwd' },
+      }, { claimPending: true, host: 'cursor' }), null, 'an unlinked child UUID still must not bind on shell');
+
+      const pending = path.join(dir, '.traffic-one', 'runs', 'run-cursor-doctor', 'pending');
+      assert.ok(
+        fs.readdirSync(pending).some((name) => name.endsWith('.json')),
+        'the frontend handoff must still be pending after parent/child shell',
+      );
+    } finally {
+      if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+      else process.env.TRAFFIC_ONE_HOST = prevHost;
+    }
+  });
+});
+
+test('two Cursor unlinked children do not steal an ambiguous pending pair', () => {
+  withPrefs((dir) => {
+    const parentId = '8a93bb38-0503-4c9a-ab15-fec68978ad1b';
+    const childId = '77fb44fa-6066-4589-9bbe-e0ab0c14846e';
+    const state = { ...materializedState(), currentRunId: 'run-cursor-ambiguous' };
+    ensureRunAgentClaim(dir, state, 'senior-architect', { session_id: parentId }, { toolName: 'Task' });
+    ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: parentId }, { toolName: 'Task' });
+    assert.equal(resolveRunAgentContext(dir, state, {
+      session_id: childId,
+      transcript_path: null,
+    }, { claimPending: true, host: 'cursor' }), null);
+  });
+});
+
+test('Cursor reviewer digest writes bind the reviewer pending claim while tester is also pending', () => {
+  withPrefs((dir) => {
+    const prevHost = process.env.TRAFFIC_ONE_HOST;
+    process.env.TRAFFIC_ONE_HOST = 'cursor';
+    try {
+      const parentId = '8a93bb38-0503-4c9a-ab15-fec68978ad1b';
+      const childId = 'c3e1d2f4-6066-4589-9bbe-e0ab0c14846e';
+      const state = { ...materializedState(), currentRunId: 'run-cursor-reviewer' };
+      ensureRunAgentClaim(dir, state, 'senior-reviewer', { session_id: parentId }, { toolName: 'Task' });
+      ensureRunAgentClaim(dir, state, 'senior-tester', { session_id: parentId }, { toolName: 'Task' });
+      recordRunAgent(dir, 'run-cursor-reviewer', 'senior-reviewer', {
+        agentId: 'tool_reviewer_start',
+        toolCallId: 'tool_reviewer_start',
+        parentSessionId: parentId,
+      });
+      recordRunAgent(dir, 'run-cursor-reviewer', 'senior-tester', {
+        agentId: 'tool_tester_start',
+        toolCallId: 'tool_tester_start',
+        parentSessionId: parentId,
+      });
+
+      const parentWrite = resolveRunAgentContext(dir, state, {
+        conversation_id: parentId,
+        session_id: parentId,
+        transcript_path: null,
+        hook_event_name: 'preToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: path.join(dir, '.traffic-one', 'digests', 'run-cursor-reviewer', 'reviewer.md') },
+      }, { claimPending: true, host: 'cursor' });
+      assert.equal(parentWrite, null, 'the orchestrator must not consume the reviewer claim by writing the digest itself');
+
+      const ctx = resolveRunAgentContext(dir, state, {
+        conversation_id: childId,
+        session_id: childId,
+        transcript_path: null,
+        hook_event_name: 'preToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: path.join(dir, '.traffic-one', 'digests', 'run-cursor-reviewer', 'reviewer.md') },
+      }, { claimPending: true, host: 'cursor' });
+      assert.ok(ctx, 'a Cursor reviewer child must bind from the digest path when tester is also pending');
+      assert.equal(ctx!.role, 'senior-reviewer');
+      assert.equal(ctx!.sessionId, childId);
+
+      const pending = path.join(dir, '.traffic-one', 'runs', 'run-cursor-reviewer', 'pending');
+      const leftover = fs.readdirSync(pending).filter((name) => name.endsWith('.json'));
+      assert.equal(leftover.length, 1, `tester pending must remain, got ${leftover.join(',')}`);
+      const leftoverClaim = JSON.parse(fs.readFileSync(path.join(pending, leftover[0]!), 'utf8'));
+      assert.equal(leftoverClaim.role, 'senior-tester');
+      const entry = readRunAgentRegistry(dir, 'run-cursor-reviewer')['senior-reviewer'];
+      assert.equal(entry!.agentId, childId);
+      assert.equal(entry!.resumeId, childId);
+    } finally {
+      if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+      else process.env.TRAFFIC_ONE_HOST = prevHost;
+    }
+  });
+});
+
 test('Cursor child bind prefers the matching exact-model pending claim and clears stale siblings', () => {
   withPrefs((dir) => {
     const prevCursorProjects = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;

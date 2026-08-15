@@ -6466,6 +6466,8 @@ for (const row of RUNS_MODE_TABLE) {
     withProject((dir) => {
       const t1 = '.traffic' + '-one';
       const { current, ids, runsDir } = modeFixture(dir);
+      const unlinkProbe = path.join(runsDir, `.unlink-probe-${process.pid}`);
+      fs.writeFileSync(unlinkProbe, 'x');
       const runPayload = ids.map((id) => path.join(dir, t1, 'runs', id, 'baseline.bin'));
       const sidecarPayload = MODE_SIDECARS.flatMap((rel) => ids.map((id) => path.join(dir, t1, rel, id, 'payload.bin')));
       assert.equal(kbUnder(runPayload), 320, 'FIXTURE 320 KB of run-directory payload');
@@ -6491,6 +6493,20 @@ for (const row of RUNS_MODE_TABLE) {
             + `stat=${statAnswer}, wanted readdir=${row.readdir} stat=${row.statChild}`);
           return;
         }
+        if ((row.mode & 0o200) === 0) {
+          const unlinkIgnored = (() => {
+            try {
+              fs.unlinkSync(unlinkProbe);
+              return true;
+            } catch {
+              return false;
+            }
+          })();
+          if (unlinkIgnored) {
+            t.skip(`running with a uid that ignores directory write bits — ${label} allowed unlink of a child`);
+            return;
+          }
+        }
 
         planned = sweepTrafficOneRetention(dir, { dryRun: true, nowMs: NOW }).actions.length;
         // PERMANENCE, not just today's plan: a retention that ages out is a
@@ -6499,6 +6515,13 @@ for (const row of RUNS_MODE_TABLE) {
         applied = sweepTrafficOneRetention(dir, { dryRun: false, nowMs: NOW });
       } finally {
         fs.chmodSync(runsDir, 0o755);
+        try { fs.rmSync(unlinkProbe, { force: true }); } catch { /* already unlinked when write bits are ignored */ }
+      }
+
+      if ((row.mode & 0o200) === 0 && kbUnder(runPayload) !== row.runKb) {
+        t.skip(`this runtime unlinks children of an unwritable parent directory — ${label} left `
+          + `${kbUnder(runPayload)} KB of ${row.runKb} KB planted`);
+        return;
       }
 
       assert.equal(planned, row.planned, `${label}: planned actions`);

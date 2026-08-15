@@ -784,6 +784,9 @@ test('maintenance: the three causes render THREE distinct texts, each ending in 
     assert.doesNotMatch(render, PARENT_ONLY_ORDER);
     // … and the noun is no longer `quick-fix` when the addressee is not one.
     assert.doesNotMatch(render, /bounded quick-fix WorkUnitContract/);
+    assert.doesNotMatch(render, /no longer want subagents/,
+      'team-mode lecture must not ride every run-team Error the user sees');
+    assert.doesNotMatch(render, /team\.source/);
   }
   // The size assertion above is what licenses these non-null assertions: three
   // DISTINCT renders cannot come from fewer than three entries.
@@ -792,6 +795,25 @@ test('maintenance: the three causes render THREE distinct texts, each ending in 
   assert.match(renders[2]!, /No per-agent run claim resolved/);
   assert.match(renders[2]!, /\[t1-bounded-scope:/,
     'the parent arm names the marker the runtime actually publishes a bounded contract from');
+});
+
+test('a parent write in maintenance with compiled assignments does not dump internals at the user', () => {
+  withDir((dir) => {
+    const state = baseState({
+      mode: 'existing-codebase',
+      currentRunId: 'MNT8',
+      lifecycle: { phase: 'maintenance', completedAt: '2026-08-01T18:36:01Z' },
+    });
+    writeRuntimeContracts(dir, state, 'MNT8');
+    const denied = String(gate(dir, state, 'src/pages/Home.tsx', {}));
+    assert.match(denied, /maintenance writes fail closed/);
+    assert.match(denied, /spawn the worker/);
+    assert.match(denied, /src\/pages\/Home\.tsx/);
+    assert.doesNotMatch(denied, /WorkUnitContract/);
+    assert.doesNotMatch(denied, /quick-fix claim/);
+    assert.doesNotMatch(denied, /no longer want subagents/);
+    assert.doesNotMatch(denied, /--unblock/);
+  });
 });
 
 // --- run-team-not-subagent: the remedy must match the CAUSE. ---

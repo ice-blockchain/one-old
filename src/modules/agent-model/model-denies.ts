@@ -6,7 +6,7 @@ import {  type Rec } from '../../shared/obj';
 import { context, deny } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { detectHostPlan } from '../../shared/host/plan';
-import { modelMatchesAny } from '../../shared/model-tiers';
+import { claudeTaskSpawnAlias, modelMatchesAny } from '../../shared/model-tiers';
 import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import {
@@ -52,21 +52,40 @@ function cursorRealSlug(
   return pickCursorSlug(acceptable, captured) || family;
 }
 
-// Claude Code's Task tool schema accepts ONLY the bare aliases
-// (sonnet|opus|haiku|fable) as the `model` parameter — a concrete catalog slug
-// like "claude-sonnet-5" fails the host's input validation before any hook
-// runs. The catalog rows keep the bare alias at their tail precisely so alias
-// spawns are ACCEPTED by the gate; but the deny used to LEAD with the concrete
-// slug, and a literal-minded parent obeyed it straight into an
-// InputValidationError before reading the alternates clause (observed live:
-// ep-new-feature run 1785662486571). Lead with the model the schema can take.
-function claudeTaskParamModel(host: string, expected: string, acceptable: readonly string[]): string {
+// Claude Code's Task tool rejects a concrete catalog slug (InputValidationError
+// before any hook runs). Lead with the short spawn alias taken from the frozen
+// One MCP / run-policy row — never a plugin-owned name list, and never a family
+// invented by scanning `expected` for "sonnet" (observed live: a deny that led
+// with `claude-sonnet-5` walked the parent into that error on run 1785662486571).
+export function claudeTaskParamModel(host: string, expected: string, acceptable: readonly string[]): string {
   if (host !== 'claude') return expected;
-  const bare = acceptable.find((model) => /^(sonnet|opus|haiku|fable)$/.test(model.trim()));
-  if (bare) return bare.trim();
-  const lowered = expected.toLowerCase();
-  const alias = ['fable', 'opus', 'sonnet', 'haiku'].find((a) => lowered.includes(a));
-  return alias || expected;
+  return claudeTaskSpawnAlias(acceptable) || expected;
+}
+
+function acceptableModelsForRole(
+  ctx: Ctx,
+  expected: string,
+  policy: RunModelPolicyV1 | null,
+  role: string,
+): readonly string[] {
+  return policy
+    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
+    : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
+}
+
+// Claude's Task `model` field is optional, so the parent omits it every
+// spawn and the host inherits Opus. Cursor/Codex cannot rewrite tool input,
+// so they still deny; Claude PreToolUse `updatedInput` can fill the alias
+// the schema accepts (observed: every senior-frontend spawn on a Balanced
+// Claude run died as "agent failure" until a human pasted `model: "sonnet"`).
+export function claudeInjectedTaskModel(
+  ctx: Ctx,
+  expected: string,
+  policy: RunModelPolicyV1 | null,
+  role: string,
+): string | null {
+  if (ctx.host !== 'claude' || !expected) return null;
+  return claudeTaskParamModel(ctx.host, expected, acceptableModelsForRole(ctx, expected, policy, role));
 }
 
 export function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string, opts: { suppressAlternates?: boolean; policy?: RunModelPolicyV1 | null } = {}): HookResult {
@@ -81,9 +100,7 @@ export function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: 
   const captured = ctx.host === 'cursor'
     ? (policy ? [...(policy.cursorAvailableModels || [])] : freshCursorModels(cwd, detectHostPlan(ctx.host)))
     : [];
-  const acceptable = policy
-    ? policy.roles[role]?.acceptableModels || policyModelsForExpected(policy, expected)
-    : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
+  const acceptable = acceptableModelsForRole(ctx, expected, policy, role);
   const shownExpected = claudeTaskParamModel(
     ctx.host,
     cursorRealSlug(ctx, cwd, expected, policy, role),

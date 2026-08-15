@@ -401,10 +401,9 @@ export const DENY_IDS = [
   'verification-contract-refresh-gate-tests-green',
 
   // ── modules/plan-guard/plan-runteam.ts (via block()) ─────────────────────
-  // NOT listed: `run-team-suffix` — a decorative fragment glued onto a
-  // DIFFERENT violation's text (see plan-runteam.ts), never itself a firing
-  // cause, and plan-write/index.ts's block() wrapper explicitly skips it
-  // rather than ever recording it as a denyId.
+  // NOT listed: `run-team-suffix` — it was a decorative fragment glued onto
+  // every run-team Error. It is no longer rendered. plan-write still skips the
+  // name so a leftover call site cannot steal denyId.
   'opencode-reserved-files',
   'run-team-shell',
   'run-team-quick-fix-contract',
@@ -559,7 +558,7 @@ export function isDenyId(value: unknown): value is DenyId {
 // needs it lifted is "fix the cause, or settle the run".
 //
 // A gate NOT listed here is overridable. That is the deliberate default: the
-// 170 remaining ids (206 declared, less the 36 below) are ordinary
+// 169 remaining ids (206 declared, less the 37 below) are ordinary
 // process/sequencing refusals whose worst case is a lower-quality run, and that
 // run is already marked ineligible for `verified`/`shipped` the moment a token is
 // minted for it (run-settlement/io.ts).
@@ -679,6 +678,14 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   // agent that approves it. Overriding this manufactures a green verdict that
   // reads exactly like an earned one.
   'verifier-independence-gate',
+
+  // Frontend structure at IMPLEMENTED: lifting this admits dead/unwired
+  // modules as a complete frontend. Same bar as verifier independence — the
+  // override manufactures a green verdict that reads like an earned one.
+  // Observed: the scanner missed lazy-loaded feature barrels, the agent
+  // framed that as a false positive, and Claude Code offered
+  // `doctor --unblock plan-guard.write` as the Recommended option.
+  'frontend-structure-completion-gate',
 
   // plan-runteam OWNERSHIP: who may write which file. Not the run-team contract
   // /shape denies (`run-team-shell`, `run-team-quick-fix-contract`,

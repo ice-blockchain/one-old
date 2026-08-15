@@ -66,6 +66,20 @@ export function roleDigestName(role: unknown): string {
   return match && match[1] ? match[1] : role;
 }
 
+const DIGEST_WRITE_ROLE_RE =
+  /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(?:senior-)?(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
+
+/**
+ * Inverse of `roleDigestName` for a digest write path. Cursor Task children
+ * omit parent/subagent/transcript on Write, so the file they are writing is
+ * the one unique role signal when reviewer and tester are both pending.
+ */
+export function roleFromDigestWritePath(filePath: unknown): string | null {
+  if (typeof filePath !== 'string' || !filePath.trim()) return null;
+  const match = DIGEST_WRITE_ROLE_RE.exec(filePath.replace(/\\/g, '/'));
+  return match?.[1] ? `senior-${match[1]}` : null;
+}
+
 export function packFixCycleHeader(_cwd: string, role: string, runId: string, spawnIndex: number): PackResult {
   // Canonical fix-cycle filename carries the FULL role (senior-frontend-fix-1.md).
   // Orchestrators reading the older `<role>` placeholder prose wrote the

@@ -36,7 +36,8 @@ import { ensureRunBootstrap, readActiveRunBootstrap } from '../../../shared/run-
 import { codexChildModelGate } from '../codex-child-model';
 import { captureCursorModels, freshCursorModels } from '../../../shared/materialize/cursor-models';
 import { currentHostModelTarget } from '../../../shared/current-model-tiers';
-import { modelTierSnapshot, resolveModel } from '../../../shared/model-tiers';
+import { claudeTaskSpawnAlias, modelTierSnapshot, resolveModel } from '../../../shared/model-tiers';
+import { claudeTaskParamModel } from '../model-denies';
 import { writeOneMcpConfigCacheEntry } from '../../../shared/one-mcp/cache';
 import { oneMcpPayloadFingerprint } from '../../../shared/one-mcp';
 import type { OneMcpModelConfigPayload } from '../../../shared/one-mcp/types';
@@ -573,6 +574,83 @@ test('team approved but wrong model → deny model-param; correct model → allo
     // high senior-frontend → highest tier → claude "opus"
     const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(ok.kind, 'noop');
+  });
+});
+
+test('claudeTaskParamModel takes the frozen catalog alias and does not invent sonnet from a dated slug', () => {
+  assert.equal(claudeTaskParamModel('claude', 'claude-sonnet-9', ['claude-sonnet-9', 'widget']), 'widget');
+  assert.equal(claudeTaskParamModel('claude', 'claude-sonnet-9', ['claude-sonnet-9']), 'claude-sonnet-9');
+  assert.equal(claudeTaskParamModel('cursor', 'claude-sonnet-9', ['claude-sonnet-9', 'widget']), 'claude-sonnet-9');
+});
+
+test('Claude: a spawn that omits `model` is rewritten to the frozen alias, not denied', () => {
+  // Claude Task treats `model` as optional, so the parent omits it every time
+  // and the host inherits Opus. Denying and asking the LLM to retry is what
+  // the user saw as a repeated "agent failure". PreToolUse updatedInput can
+  // fill the alias the frozen One MCP row accepts; Cursor still has no rewrite channel.
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    freezeRunPolicy(cwd, 'claude');
+    const policy = readRunModelPolicy(cwd, 'run-test');
+    const alias = claudeTaskSpawnAlias(policy?.roles['senior-frontend']?.acceptableModels || []);
+    assert.ok(alias, 'frozen balanced row must carry a Task spawn alias');
+    const omitted = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }));
+    assert.notEqual(omitted.kind, 'deny', omitted.kind === 'deny' ? omitted.reason : '');
+    assert.equal(omitted.kind === 'context' ? omitted.updatedToolInput?.model : undefined, alias);
+  });
+  withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
+    freezeRunPolicy(cwd, 'claude');
+    const policy = readRunModelPolicy(cwd, 'run-test');
+    const alias = claudeTaskSpawnAlias(policy?.roles['senior-frontend']?.acceptableModels || []);
+    assert.ok(alias, 'frozen highest row must carry a Task spawn alias');
+    const omitted = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }));
+    assert.notEqual(omitted.kind, 'deny', omitted.kind === 'deny' ? omitted.reason : '');
+    assert.equal(omitted.kind === 'context' ? omitted.updatedToolInput?.model : undefined, alias);
+  });
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    const cursor = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor'));
+    assert.equal(cursor.kind, 'deny', 'Cursor cannot rewrite tool input, so omission still denies');
+  });
+});
+
+test('Claude omitted-model rewrite uses the frozen One MCP alias, not a plugin-owned slug', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    const payload: OneMcpModelConfigPayload = {
+      tiers: {
+        high: ['claude-remote-high', 'gadget'],
+        balanced: ['claude-remote-balanced', 'widget'],
+        low: ['claude-remote-low', 'sprocket'],
+        auto: ['claude-remote-balanced', 'widget'],
+      },
+    };
+    writeOneMcpConfigCacheEntry('claude', {
+      endpoint: DEFAULT_PUBLIC_ENDPOINT,
+      configName: ONE_MCP_CONFIG_NAME_BY_HOST.claude,
+      decoderVersion: ONE_MCP_DECODER_VERSION,
+      version: 9,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-17T12:00:00.000Z',
+      payload,
+      payloadFingerprint: oneMcpPayloadFingerprint(payload),
+    }, process.env);
+    const nextTarget = currentHostModelTarget('claude', 'pro');
+    assert.equal(nextTarget.source, 'one-mcp');
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8')) as {
+      hosts: Record<string, { performance: Record<string, unknown>; team: Record<string, unknown> }>;
+    };
+    prefs.hosts.claude!.performance = {
+      ...prefs.hosts.claude!.performance,
+      target: { plan: 'pro', appliedFingerprint: nextTarget.appliedFingerprint, configVersion: 9 },
+    };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    setCurrentRunId(cwd, 'run-mcp-alias');
+    freezeRunPolicy(cwd, 'claude', 'run-mcp-alias');
+    const policy = readRunModelPolicy(cwd, 'run-mcp-alias');
+    assert.equal(claudeTaskSpawnAlias(policy?.roles['senior-frontend']?.acceptableModels || []), 'widget');
+    const omitted = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }));
+    assert.notEqual(omitted.kind, 'deny', omitted.kind === 'deny' ? omitted.reason : '');
+    assert.equal(omitted.kind === 'context' ? omitted.updatedToolInput?.model : undefined, 'widget');
+    assert.notEqual(omitted.kind === 'context' ? omitted.updatedToolInput?.model : undefined, 'sonnet');
   });
 });
 
@@ -1519,18 +1597,26 @@ test('a backgrounded role spawn is denied — foreground only', () => {
 });
 
 test('claude model deny leads with the Task-schema alias, never a concrete slug the schema rejects', () => {
-  // Claude's Task tool only accepts sonnet|opus|haiku|fable for `model`; a deny
-  // that leads with "claude-sonnet-5" walks the parent into an
+  // A deny that leads with "claude-sonnet-5" walks the parent into an
   // InputValidationError (observed: ep-new-feature run 1785662486571).
+  // Omission is now rewritten via updatedInput; this pins the WRONG-slug deny.
   withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
-    const bare = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-architect' }));
+    freezeRunPolicy(cwd, 'claude');
+    const alias = claudeTaskSpawnAlias(
+      readRunModelPolicy(cwd, 'run-test')?.roles['senior-architect']?.acceptableModels || [],
+    );
+    assert.ok(alias);
+    const bare = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'opus',
+    }));
     assert.equal(bare.kind, 'deny');
     if (bare.kind === 'deny') {
       const named = /model:\s*"([^"]+)"/.exec(bare.reason)?.[1]
         || /`model:\s*"?([A-Za-z0-9._-]+)/.exec(bare.reason)?.[1];
       assert.ok(named, `deny must name a model to pass, got: ${bare.reason.slice(0, 200)}`);
-      assert.ok(['sonnet', 'opus', 'haiku', 'fable'].includes(String(named)),
-        `deny must lead with a Task-schema alias, got "${String(named)}" in: ${bare.reason.slice(0, 300)}`);
+      assert.equal(named, alias,
+        `deny must lead with the frozen catalog alias, got "${String(named)}" in: ${bare.reason.slice(0, 300)}`);
     }
   });
 });
@@ -1625,9 +1711,16 @@ test('quick-fix pin is enforced on existing codebases too, and stakes a run clai
     assert.equal(wrong.kind, 'deny');
     if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
 
-    // No model param at all → still denied (would inherit the parent model).
-    const none = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix' }));
-    assert.equal(none.kind, 'deny');
+    // Claude fills a missing model via updatedInput; Cursor/Codex still deny.
+    freezeRunPolicy(cwd, 'claude');
+    const cheapestAlias = claudeTaskSpawnAlias(
+      readRunModelPolicy(cwd, 'run-test')?.roles['quick-fix']?.acceptableModels || [],
+    );
+    assert.ok(cheapestAlias);
+    const none = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', prompt: QUICK_FIX_SCOPE_MARKER }));
+    assert.notEqual(none.kind, 'deny', none.kind === 'deny' ? none.reason : '');
+    assert.equal(none.kind === 'context' ? none.updatedToolInput?.model : undefined, cheapestAlias);
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix' }, 'cursor')).kind, 'deny');
 
     const ok = agentModelGate(spawnCtx(cwd, {
       subagent_type: 'quick-fix',
@@ -5523,7 +5616,7 @@ test('dead-agent escape corroboration: a signal-less retry inside the hard windo
       prompt: '[t1-role: senior-architect]\nContinue architect work; deliverables still needed under the run dir.',
     }, 'parent-1', 'cursor'));
     assert.equal(quiet.kind, 'deny', 'a slow-but-live agent is not retired on a bare timer');
-    if (quiet.kind === 'deny') assert.ok(/has not exposed a valid Task `resume` UUID/i.test(quiet.reason));
+    if (quiet.kind === 'deny') assert.ok(/already running in this Cursor session/i.test(quiet.reason));
 
     // The SAME 2-min-old agent with a corroborating failure signal → retired, retry allowed.
     writeAgent();
@@ -5583,7 +5676,7 @@ test('Cursor no-marker liveness uses exhaustion of the current live model, not a
       'Terra exhaustion cannot shorten the liveness window of the current Sonnet child',
     );
     if (insideHardWindow.kind === 'deny') {
-      assert.match(insideHardWindow.reason, /has not exposed a valid Task `resume` UUID/i);
+      assert.match(insideHardWindow.reason, /already running in this Cursor session/i);
     }
     assert.equal(readRunAgentRegistry(cwd, runId)[role]?.replaced, false);
 
@@ -5633,7 +5726,7 @@ test('Cursor ambiguous replace marker obeys 90/270s timers without condemning a 
     writeLive('run-marker-fresh', 0);
     const fresh = retry(apiMarker);
     assert.equal(fresh.kind, 'deny', 'prompt-only API text cannot retire a fresh no-resume child');
-    if (fresh.kind === 'deny') assert.match(fresh.reason, /has not exposed a valid Task `resume` UUID/i);
+    if (fresh.kind === 'deny') assert.match(fresh.reason, /already running in this Cursor session/i);
     assert.deepEqual(exhaustedModelsForRole(cwd, 'run-marker-fresh', role), []);
 
     writeLive('run-marker-grace', 2 * 60 * 1000);
@@ -6385,7 +6478,7 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
     const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-architect', model: CURSOR_HIGHEST_SLUG, prompt: 'continue architecture' }, 'orchestrator-parent', 'cursor'));
     assert.equal(dup.kind, 'deny');
     if (dup.kind === 'deny') {
-      assert.ok(/has not exposed a valid Task `resume` UUID/i.test(dup.reason), dup.reason);
+      assert.ok(/already running in this Cursor session/i.test(dup.reason), dup.reason);
       assert.ok(!dup.reason.includes('resume: "tool_'), 'never suggests resuming a tool_* id');
     }
   });
@@ -7134,7 +7227,7 @@ test('Cursor await-cursor-id is preserved for a FRESH no-resume-id agent (resume
       prompt: '[t1-role: senior-architect]\nContinue architect work; deliverables still needed: .traffic-one/plan.md',
     }, 'orchestrator-parent', 'cursor'));
     assert.equal(retry.kind, 'deny', 'a fresh agent still waits — the resume id may not have been harvested yet');
-    if (retry.kind === 'deny') assert.ok(/has not exposed a valid Task `resume` UUID/i.test(retry.reason));
+    if (retry.kind === 'deny') assert.ok(/already running in this Cursor session/i.test(retry.reason));
     assert.equal(readRunAgentRegistry(cwd, 'run-fresh')['senior-architect']?.replaced, false, 'a fresh agent is not retired');
   });
 });

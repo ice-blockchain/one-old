@@ -264,6 +264,22 @@ test('skip-authority: an ignored build output, a tracked lockfile and a tracked 
   }
 });
 
+test('skip-authority: a post-capture gitignore that adds already-skipped names stays complete', () => {
+  const root = gitRepo();
+  if (!root) return;
+  try {
+    const baseline = gitBaseline(root);
+    write(root, '.gitignore', 'node_modules/\ndist/\ncoverage/\n.traffic-one/runs/\n');
+    write(root, 'apps/web/src/panels/Panel.tsx', UI);
+    const snapshot = changedPathsFromImmutableBaseline(root, baseline);
+    assert.equal(snapshot.complete, true, JSON.stringify(snapshot));
+    assert.ok(snapshot.paths.includes('.gitignore'), snapshot.paths.join(','));
+    assert.ok(snapshot.paths.includes('apps/web/src/panels/Panel.tsx'), snapshot.paths.join(','));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('skip-authority closure: an untouched authority still yields a complete diff', () => {
   const root = gitRepo();
   if (!root) return;

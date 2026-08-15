@@ -295,9 +295,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     || writingMaintenanceSource;
   if (!writingRunTeamTarget) return null;
 
-  const suffix = block('run-team-suffix',
-    'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
-  const deny = (reason: string): string => `${reason} ${suffix}`;
+  const deny = (reason: string): string => reason;
   // ALWAYS ASK WHO HOLDS THE PATH; record only when the write will be allowed.
   // Gating the whole call on the flag conflated a CHECK with a RECORD, and the
   // check is the half a doomed write still needs: measured, a path held by one
@@ -469,7 +467,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
           ? `No bounded WorkUnitContract is published for \`${acRole}\` in run ${stateRunId || '<unknown>'}, so nothing authorizes this write and none was applied. Do not retry it and do not move it to another path — only the parent can publish that contract, and no maintenance write of yours can be authorized until it does. Write your digest${digestClause} with verdict \`BLOCKED\` naming \`${targets}\` and saying no bounded contract covers it, then stop.`
           : `No per-agent run claim resolved for this write, so it was attributed to nobody and none was applied. Do not edit owned implementation source from here. Spawn the maintenance worker that should own it — a \`quick-fix\` subagent carrying ONE prompt line \`[t1-bounded-scope: {"outputs":[${writeTargetPaths.slice(0, 4).map((target) => `"${target}"`).join(', ') || '"<exact repo-relative paths>"'}]}]\` naming every exact repo-relative file the task may create or modify — and let that child make the edit; the runtime publishes its bounded contract from that line.`;
       return deny(block('run-team-maintenance-contract',
-        `Run-team enforcement gate: maintenance writes fail closed without a hash-valid runtime assignment or a bounded WorkUnitContract covering every requested output. ${recovery}`,
+        `Run-team enforcement gate: maintenance writes fail closed. ${recovery}`,
         { ROLE: acRole || 'this role', TARGETS: targets, RECOVERY: recovery }));
     }
     return null;
@@ -477,7 +475,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   if (!inSubagent) {
     if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) {
       return deny(block('run-team-maintenance-contract',
-        'Run-team enforcement gate: maintenance writes fail closed when the hook cannot resolve a spawned worker with a valid parent-published WorkUnitContract. No unattributed write was made; bind the bounded quick-fix claim and exact allowlist before retrying.'));
+        `Run-team enforcement gate: maintenance writes fail closed. This parent thread cannot edit \`${writeTargetPaths.join(', ') || filePath || 'this file'}\` — spawn the worker that owns it and let that child write.`));
     }
     // An identity-rejected claim is a fact about the CLAIM FILE, not about the
     // spawn, and this clause used to draw the opposite conclusion from it. It

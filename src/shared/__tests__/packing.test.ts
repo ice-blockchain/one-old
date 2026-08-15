@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { packBundle, packFixCycleHeader, packRuleIndex, roleDigestName } from '../packing';
+import { packBundle, packFixCycleHeader, packRuleIndex, roleDigestName, roleFromDigestWritePath } from '../packing';
 import { templatePath } from '../stacks/template-path';
 
 function tmpRoot(rels: string[]): string {
@@ -46,6 +46,17 @@ test('roleDigestName maps senior-* to its short digest name', () => {
   assert.equal(roleDigestName('senior-architect'), 'architect');
   assert.equal(roleDigestName('weird'), 'weird');
   assert.equal(roleDigestName(null), 'agent');
+});
+
+test('roleFromDigestWritePath recovers the role from a digest write, including absolute Cursor paths', () => {
+  assert.equal(roleFromDigestWritePath('.traffic-one/digests/1786812490767/reviewer.md'), 'senior-reviewer');
+  assert.equal(roleFromDigestWritePath('.traffic-one/digests/R/senior-tester.md'), 'senior-tester');
+  assert.equal(
+    roleFromDigestWritePath('/Users/me/app/.traffic-one/digests/R/architect.md'),
+    'senior-architect',
+  );
+  assert.equal(roleFromDigestWritePath('src/App.tsx'), null);
+  assert.equal(roleFromDigestWritePath('.traffic-one/digests/R/opencode-frontend.md'), null);
 });
 
 test('packFixCycleHeader points at the fix-cycle + digest files', () => {

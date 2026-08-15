@@ -46,3 +46,6 @@ export {
   invalidateStructureCache,
   writeStructureReport,
 } from './scan';
+export {
+  repairCompiledIntegrationWiring,
+} from './repair';

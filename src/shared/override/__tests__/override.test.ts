@@ -375,6 +375,16 @@ test('the hint names the run, the human, and the price', () => {
   assert.match(hint, /--unblock plan-guard --run run-42/);
   assert.match(hint, /human \(not the agent\)/);
   assert.match(hint, /verified\/shipped/);
+  assert.equal(
+    operatorOverrideHint({
+      event: 'PreToolUse',
+      denyId: 'frontend-structure-completion-gate',
+      gateId: 'plan-guard.write',
+      runId: 'run-42',
+    }),
+    '',
+    'lifting the structure gate forges IMPLEMENTED, so it is never advertised',
+  );
 });
 
 // ── the pipeline ─────────────────────────────────────────────────────────────
@@ -400,7 +410,7 @@ function withRun(projectRoot: string, runId: string): void {
   fs.writeFileSync(path.join(stateDir, '.one.json'), JSON.stringify({ currentRunId: runId }), 'utf8');
 }
 
-test('an overridable deny with no token is refused, with the command for its own gate', async () => {
+test('an overridable deny with no token is refused, and the reason does not advertise --unblock', async () => {
   await withOverrideStoreAsync(async ({ projectRoot }) => {
     withRun(projectRoot, 'run-1');
     const result = await runPipeline(
@@ -410,7 +420,45 @@ test('an overridable deny with no token is refused, with the command for its own
     assert.equal(result.kind, 'deny');
     if (result.kind !== 'deny') return;
     assert.match(result.reason, /^plan write refused/, 'the gate\'s own text still leads');
-    assert.match(result.reason, /--unblock plan-guard --run run-1/);
+    assert.doesNotMatch(result.reason, /--unblock/,
+      'Claude Code paints this reason as a user-visible Error; the hatch lives in doctor');
+  });
+});
+
+test('STOP RETRYING does not list --unblock as a fourth option, and first contact does not either', async () => {
+  await withOverrideStoreAsync(async ({ projectRoot }) => {
+    withRun(projectRoot, 'run-1');
+    const denying = gate('plan-guard', 10, () => deny('plan write refused', { denyId: 'scaffold-plan-gate' }));
+    const reasons: string[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await runPipeline([denying], ctxFor(projectRoot));
+      if (result.kind === 'deny') reasons.push(result.reason);
+    }
+    assert.equal(reasons.length, 3);
+    assert.doesNotMatch(reasons[0]!, /--unblock/, 'first refusal must not advertise the hatch');
+    assert.doesNotMatch(reasons[0]!, /STOP RETRYING/);
+    assert.match(reasons[2]!, /STOP RETRYING/);
+    assert.doesNotMatch(
+      reasons[2]!,
+      /--unblock/,
+      'escalation already listed the legal options; --unblock after that is what agents recommend',
+    );
+  });
+});
+
+test('a token cannot lift frontend-structure-completion-gate — that forges IMPLEMENTED', async () => {
+  await withOverrideStoreAsync(async ({ projectRoot }) => {
+    withRun(projectRoot, 'run-1');
+    mint({ projectRoot, target: 'plan-guard.write' });
+    const result = await runPipeline(
+      [gate('plan-guard.write', 10, () => deny('structure failed', { denyId: 'frontend-structure-completion-gate' }))],
+      ctxFor(projectRoot),
+    );
+    assert.equal(result.kind, 'deny');
+    if (result.kind !== 'deny') return;
+    assert.match(result.reason, /^structure failed/);
+    assert.doesNotMatch(result.reason, /--unblock/);
+    assert.doesNotMatch(result.reason, /OPERATOR OVERRIDE ACTIVE/);
   });
 });
 

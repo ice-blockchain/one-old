@@ -31,7 +31,6 @@ import type { DenyId } from '../config/deny-ids';
 import { handlerMatches } from './events';
 import { context, deny, isDeny, mergeResults } from './result';
 import {
-  operatorOverrideHint,
   overridableDeny,
   overrideAppliedNotice,
   overrideForDeny,
@@ -82,10 +81,12 @@ export function selectHandlers(handlers: readonly Handler[], ctx: Ctx): Handler[
 //
 //   - repeatSuffix: the deny-repeat escalation (shared/state/deny-repeat.ts),
 //     appended FIRST of the three because it is the only one addressed to the
-//     agent about what to do next; the override hint is a human's escape hatch
-//     and the ref is a pointer. Also computed by the caller, from the reason as
-//     the gate rendered it — see denyRepeat's contract for why it may never see
-//     a stamped reason.
+//     agent about what to do next. The operator hatch is NOT stamped here:
+//     Claude Code paints the deny reason as a user-visible Error, and printing
+//     `--unblock` there is what its Gate blocker UI promotes to Recommended.
+//     The hatch still exists in doctor. The ref is a pointer.
+//     Also computed by the caller, from the reason as the gate rendered it —
+//     see denyRepeat's contract for why it may never see a stamped reason.
 //
 // TWO exceptions, both about `askUser` (core/result.ts): its `reason` is not
 // agent-facing prose, it is the QUESTION rendered inside Cursor's
@@ -95,11 +96,9 @@ export function selectHandlers(handlers: readonly Handler[], ctx: Ctx): Handler[
 // whether a ref exists at all. It also already declares its own id, so the
 // fallback below never applies to it.
 //
-// `overrideSuffix` rides the same channel and inherits the same askUser
-// exception, for the same reason: an approve/reject modal is not the place to
-// offer an escape hatch from itself. It is computed by the caller (which knows
-// the run id) and is '' for every deny the override could not lift — see
-// shared/override/index.ts for the one predicate that decides both.
+// `overrideSuffix` is kept as a stampDeny parameter so a future caller can
+// attach a hatch, but the pipeline currently always passes ''. An approve/reject
+// modal is not the place to offer an escape hatch from itself either.
 // The id this deny will be KNOWN BY once it leaves — the handler's own, or the
 // synthesized fallback. Extracted so the deny-repeat counter can classify the
 // same string the decision log records: the exclusion list is a statement about
@@ -378,9 +377,13 @@ export async function runPipeline(handlers: readonly Handler[], ctx: Ctx): Promi
           ctx.log.debug(`deny-expectation: recording the unmet remedy for ${subject} was refused`);
         }
       }
-      const stamped = stampDeny(result, handler.id, correlationSuffix, overridable
-        ? operatorOverrideHint({ ...denyInput, gateId: handler.id, runId: runIdOnce() })
-        : '', repeat.suffix); // short-circuit
+      // Never print `--unblock` on a hook deny. Claude Code paints the reason
+      // as a user-visible Error and its Gate blocker UI promotes the hatch to
+      // Recommended (observed: live Claude session, parent write in
+      // maintenance). The hatch still exists in doctor; advertising it here
+      // drives users away and trains the agent to offer it.
+      const overrideSuffix = '';
+      const stamped = stampDeny(result, handler.id, correlationSuffix, overrideSuffix, repeat.suffix); // short-circuit
       settle(stamped, repeat.count);
       return stamped;
     }
