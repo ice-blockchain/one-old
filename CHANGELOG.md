@@ -28,7 +28,7 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-08-15
+## 1.0.52 — 2026-08-16
 
 ### Agent-visible content — what your agents are told
 
@@ -58,6 +58,8 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 changelog: date a section by a commit the reader can see (`c8a69397`)
+- P8 pre-push: refuse a push the changelog does not describe (`15e09f23`)
 - P8 Cursor: bind unlinked Task digest writes; gitignore digest-moves are not fatal QA unless they hide live source (`aa031085`)
 - P8 OpenCode queue: retarget kebab files at PLAN_READY instead of Error-denying (`26549c3d`)
 - P8 security scanner: match code shapes, not sentences about them (`edd5ecb2`)
