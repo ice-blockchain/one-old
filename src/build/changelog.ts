@@ -128,12 +128,16 @@ function git(args: string[], repoRoot: string, input?: string): string {
 /**
  * Every commit, newest first, with its changed paths.
  *
+ * `rev` is the tip to walk from. It exists for the pre-push check, which judges
+ * the commit being PUSHED — not necessarily HEAD, since a branch can be pushed
+ * without being checked out.
+ *
  * `--no-merges` because a merge commit's own diff is empty under `--name-only`
  * (git diffs a merge against nothing by default), so merges would contribute a
  * subject line with no paths and be filtered out one step later anyway —
  * dropping them here says so instead of relying on that coincidence.
  */
-export function readCommits(repoRoot: string = REPO_ROOT): CommitRecord[] {
+export function readCommits(repoRoot: string = REPO_ROOT, rev: string = 'HEAD'): CommitRecord[] {
   const RECORD = '\u0001';
   const FIELD = '\u0002';
   const raw = git(
@@ -145,7 +149,7 @@ export function readCommits(repoRoot: string = REPO_ROOT): CommitRecord[] {
     // author-dated 2026-08-01 commit landing after an author-dated 2026-08-02
     // one), which is exactly the drift that would produce a section headed
     // with a date earlier than an entry inside it.
-    ['log', '--no-merges', `--format=${RECORD}%H${FIELD}%cd${FIELD}%s`, '--date=short', '--name-only'],
+    ['log', '--no-merges', `--format=${RECORD}%H${FIELD}%cd${FIELD}%s`, '--date=short', '--name-only', rev],
     repoRoot,
   );
   const commits: CommitRecord[] = [];
@@ -286,8 +290,8 @@ export function renderChangelog(releases: readonly ReleaseSection[]): string {
   return `${lines.join('\n').replace(/\n+$/, '')}\n`;
 }
 
-export function generateChangelog(repoRoot: string = REPO_ROOT): string {
-  const commits = readCommits(repoRoot);
+export function generateChangelog(repoRoot: string = REPO_ROOT, rev: string = 'HEAD'): string {
+  const commits = readCommits(repoRoot, rev);
   const versions = readVersionsAtCommits(commits.map((commit) => commit.sha), repoRoot);
   return renderChangelog(buildReleases(commits, versions));
 }
@@ -307,10 +311,13 @@ export function generateChangelog(repoRoot: string = REPO_ROOT): string {
  * absent from the list, contributes nothing to the document, and there is
  * nothing to drop.
  */
-export function generateChangelogVariants(repoRoot: string = REPO_ROOT): { atHead: string; atParent: string } {
-  const commits = readCommits(repoRoot);
+export function generateChangelogVariants(
+  repoRoot: string = REPO_ROOT,
+  rev: string = 'HEAD',
+): { atHead: string; atParent: string } {
+  const commits = readCommits(repoRoot, rev);
   const versions = readVersionsAtCommits(commits.map((commit) => commit.sha), repoRoot);
-  const head = git(['rev-parse', 'HEAD'], repoRoot).trim();
+  const head = git(['rev-parse', rev], repoRoot).trim();
   const withoutHead = commits[0]?.sha === head ? commits.slice(1) : commits;
   return {
     atHead: renderChangelog(buildReleases(commits, versions)),
@@ -330,14 +337,18 @@ export function generateChangelogVariants(repoRoot: string = REPO_ROOT): { atHea
  * hand edit, a format drift, and any lag of two commits or more all still fail;
  * the one commit of tolerance is the lag inherent to the file, not slack.
  */
-export function changelogStaleness(existing: string, repoRoot: string = REPO_ROOT): string | null {
-  const { atHead, atParent } = generateChangelogVariants(repoRoot);
+export function changelogStaleness(
+  existing: string,
+  repoRoot: string = REPO_ROOT,
+  rev: string = 'HEAD',
+): string | null {
+  const { atHead, atParent } = generateChangelogVariants(repoRoot, rev);
   if (existing === atHead || existing === atParent) return null;
   // Name the oldest commit the file is missing rather than reporting inequality:
   // "stale by five commits" and "someone hand-edited the preamble" need
   // different fixes, and only the first one is what a lag looks like.
-  const head = git(['rev-parse', 'HEAD'], repoRoot).trim();
-  const missing = readCommits(repoRoot)
+  const head = git(['rev-parse', rev], repoRoot).trim();
+  const missing = readCommits(repoRoot, rev)
     // HEAD's own absence is the tolerated lag, never the complaint: counting it
     // would report "missing 2 commits" for a file that is behind by one.
     .filter((commit) => commit.sha !== head && groupsForCommit(commit.paths).length > 0)
@@ -348,21 +359,92 @@ export function changelogStaleness(existing: string, repoRoot: string = REPO_ROO
     : 'CHANGELOG.md lists every commit but does not match generated output (hand edit or format drift)';
 }
 
+/**
+ * Why the changelog at `rev` will fail CI at the NEXT commit, or null when it
+ * will not. The pre-push condition, and deliberately stricter than
+ * `changelogStaleness`.
+ *
+ * The tolerance that makes `changelogStaleness` satisfiable also hides the
+ * mistake it exists to catch, by exactly one commit. A src/-touching commit
+ * pushed with no regeneration leaves the file equal to `atParent`, which is
+ * ACCEPTED — so its author gets a green run, and the failure lands on whoever
+ * pushes next, naming a commit that is not theirs. Measured: 26549c3d passed CI
+ * on 2026-08-15 in precisely that state, and aa031085 was rejected for it hours
+ * later on both matrix legs.
+ *
+ * So the push condition is byte equality with `atHead` alone: the pushed tip
+ * must already be described. That is not the unsatisfiable invariant the header
+ * of `changelogStaleness` warns about, because it is asked of a PUSH rather than
+ * of every commit — `npm run changelog` plus a commit converges, since a
+ * changelog-only commit contributes no entry of its own and leaves `atHead`
+ * where it was. A tip that changed nothing shipped (tests, CI, docs) needs
+ * nothing either: `atHead` and `atParent` are then the same document.
+ */
+export function changelogLagAtTip(
+  existing: string,
+  repoRoot: string = REPO_ROOT,
+  rev: string = 'HEAD',
+): string | null {
+  const { atHead, atParent } = generateChangelogVariants(repoRoot, rev);
+  if (existing === atHead) return null;
+  if (existing === atParent) {
+    const tip = readCommits(repoRoot, rev)[0];
+    const named = tip ? `${tip.sha.slice(0, 8)} "${tip.subject}"` : 'the commit at the tip';
+    return `CHANGELOG.md does not describe ${named} yet. CI accepts this commit and`
+      + ' rejects the next one, naming a commit that is not its author\'s';
+  }
+  // Neither document matches, so this is not lag at all: a commit older than the
+  // tip is missing, or the file was edited by hand. That diagnosis already
+  // exists; reuse it rather than reporting a second, vaguer inequality.
+  return changelogStaleness(existing, repoRoot, rev);
+}
+
+/** The committed CHANGELOG.md at `rev`, or '' when the file did not exist yet. */
+export function readCommittedChangelog(repoRoot: string, rev: string): string {
+  try {
+    return git(['show', `${rev}:CHANGELOG.md`], repoRoot);
+  } catch {
+    return '';
+  }
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const check = argv.includes('--check');
-  const target = path.join(REPO_ROOT, 'CHANGELOG.md');
-  const generated = generateChangelog();
-  if (check) {
-    const existing = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
-    const stale = changelogStaleness(existing);
-    if (!stale) {
-      process.stdout.write('changelog:check: CHANGELOG.md is current\n');
-      return;
-    }
-    process.stderr.write(`changelog:check: ${stale} — run \`npm run changelog\`\n`);
+  const strict = argv.includes('--strict');
+  // `--rev <commit>` judges the document AS COMMITTED at that revision, which is
+  // what a pre-push hook has to do: the ref being pushed need not be checked out,
+  // and a dirty working copy is not what the remote is about to receive. Without
+  // it the working file at HEAD is judged, which is what a person or CI wants.
+  const revIndex = argv.indexOf('--rev');
+  const rev = revIndex === -1 ? null : argv[revIndex + 1];
+  if (revIndex !== -1 && (!rev || rev.startsWith('--'))) {
+    process.stderr.write('changelog: --rev needs a commit\n');
     process.exitCode = 1;
     return;
   }
+  if (strict && !check) {
+    process.stderr.write('changelog: --strict only qualifies --check\n');
+    process.exitCode = 1;
+    return;
+  }
+  const target = path.join(REPO_ROOT, 'CHANGELOG.md');
+  if (check) {
+    const label = strict ? 'changelog:check --strict' : 'changelog:check';
+    const existing = rev
+      ? readCommittedChangelog(REPO_ROOT, rev)
+      : (fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '');
+    const problem = strict
+      ? changelogLagAtTip(existing, REPO_ROOT, rev ?? 'HEAD')
+      : changelogStaleness(existing, REPO_ROOT, rev ?? 'HEAD');
+    if (!problem) {
+      process.stdout.write(`${label}: CHANGELOG.md is current${rev ? ` at ${rev.slice(0, 8)}` : ''}\n`);
+      return;
+    }
+    process.stderr.write(`${label}: ${problem} — run \`npm run changelog\` and commit it\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const generated = generateChangelog();
   fs.writeFileSync(target, generated, 'utf8');
   const sections = (generated.match(/^## /gm) || []).length;
   const entries = (generated.match(/^- /gm) || []).length;

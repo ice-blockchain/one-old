@@ -77,7 +77,7 @@ dev tooling under `src/test-environment/` + `src/build/compiled-smoke.ts`.
 - Windsurf project assets: `.devin/rules/*.md` plus generated Devin Local profiles are materialized per onboarded project when Windsurf is the host; skills remain under the canonical `.traffic-one/skills/<skill>/SKILL.md` tree.
 - Hook/runtime script entrypoints plus compiled modules under `scripts/` after `npm run build`.
 - Harness manifests: `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`.
-- Hook configs: `settings.json`, `hooks/hooks.json`, `hooks/hooks-windsurf.json`, `.githooks/pre-commit`, `.githooks/prepare-commit-msg`.
+- Hook configs: `settings.json`, `hooks/hooks.json`, `hooks/hooks-windsurf.json`, `.githooks/pre-commit`, `.githooks/prepare-commit-msg`, `.githooks/pre-push`.
 - CI workflows: `.github/workflows/cursor-sync.yml`, `.github/workflows/traffic-one-security-check.yml`.
 
 ## Source Conventions
@@ -385,6 +385,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `scripts/windsurf-host.cjs` | Windsurf user-level hook, MCP, global-rule installer, uninstaller, and doctor. |
 | `.githooks/pre-commit` | Regenerates and stages generated plugin files. |
 | `.githooks/prepare-commit-msg` | Adds `Integrated-With: Traffic One plugin <noreply@traffic.io>` commit trailer. |
+| `.githooks/pre-push` | Refuses a push whose tip `CHANGELOG.md` does not describe (`changelog.ts --check --strict`, per pushed branch). |
 | `.github/workflows/cursor-sync.yml` | CI check for generated Cursor artifacts, stack recommendation fixtures, and security runner fixtures. |
 | `.github/workflows/traffic-one-security-check.yml` | CI pre-deployment security scanner with pinned `gitleaks` and `trufflehog`. |
 | `scripts/hook-runtime.cjs` | Dependency-free hook runtime entrypoint. |

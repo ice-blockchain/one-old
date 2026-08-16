@@ -14,6 +14,7 @@
     "build:verify": "tsx src/build/verify-build.ts",
     "changelog": "tsx src/build/changelog.ts",
     "changelog:check": "tsx src/build/changelog.ts --check",
+    "changelog:check:push": "tsx src/build/changelog.ts --check --strict",
     "fallbacks": "tsx src/build/gen-skill-fallbacks.ts",
     "fallbacks:check": "tsx src/build/gen-skill-fallbacks.ts --check",
     "gen": "tsx src/gen/index.ts",

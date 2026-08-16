@@ -12,16 +12,22 @@
 // non-linear merge) that the parsing has to survive.
 
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import * as fsMod from 'node:fs';
+import * as osMod from 'node:os';
+import * as pathMod from 'node:path';
 import { test } from 'node:test';
 
 import {
   GROUP_ORDER,
   buildReleases,
+  changelogLagAtTip,
   changelogStaleness,
   classifyPath,
   generateChangelog,
   groupsForCommit,
   readCommits,
+  readCommittedChangelog,
   readVersionsAtCommits,
   renderChangelog,
   type CommitRecord,
@@ -278,4 +284,210 @@ test('a changelog missing an OLDER commit is still caught, by name', () => {
   const stale = changelogStaleness(mutilated);
   assert.ok(stale, 'a changelog missing an older commit must not pass as current');
   assert.match(stale, new RegExp(victim), 'the failure must name the commit that is missing, not just report a mismatch');
+});
+
+// ── the pre-push condition ───────────────────────────────────────────────────
+//
+// These rows use a FIXTURE repo, against this file's own stated preference, and
+// for the reason that preference gives. What is under test is not agreement with
+// real git output; it is a DISCRIMINATION between two states of one repository —
+// a tip that the committed changelog describes and a tip it does not. This
+// repository is in exactly one of those states at any moment, and once it is
+// current it stays current, so the row that carries the whole point could never
+// run against it.
+
+function fixtureGit(cwd: string, args: readonly string[]): string {
+  // Identity, signing and hooks all pinned per call. A developer's global config
+  // (a gpg key, a core.hooksPath pointing at .githooks) must not decide whether
+  // this fixture can commit, or make it run the very hook under test.
+  return execFileSync(
+    'git',
+    ['-c', 'user.name=T', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args],
+    {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    },
+  );
+}
+
+const fixtureRoots: string[] = [];
+
+function fixtureRepo(): string {
+  const root = fsMod.realpathSync(fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 't1-changelog-lag-')));
+  fixtureRoots.push(root);
+  fixtureGit(root, ['init', '--initial-branch=main']);
+  fixtureWrite(root, 'package.json', `${JSON.stringify({ name: 'fixture', version: '1.0.0' }, null, 2)}\n`);
+  fixtureWrite(root, 'src/core/seed.ts', 'export const seed = 1;\n');
+  fixtureCommit(root, 'fixture: seed the runtime');
+  return root;
+}
+
+function fixtureWrite(root: string, rel: string, text: string): void {
+  const target = pathMod.join(root, rel);
+  fsMod.mkdirSync(pathMod.dirname(target), { recursive: true });
+  fsMod.writeFileSync(target, text, 'utf8');
+}
+
+function fixtureCommit(root: string, message: string): string {
+  fixtureGit(root, ['add', '-A']);
+  fixtureGit(root, ['commit', '-m', message]);
+  return fixtureGit(root, ['rev-parse', 'HEAD']).trim();
+}
+
+/** What a maintainer does: regenerate, then commit the result on its own. */
+function fixtureRegenerate(root: string): string {
+  fixtureWrite(root, 'CHANGELOG.md', generateChangelog(root));
+  return fixtureCommit(root, 'changelog: regenerate');
+}
+
+function committedChangelog(root: string, rev = 'HEAD'): string {
+  return readCommittedChangelog(root, rev);
+}
+
+test.after(() => {
+  for (const root of fixtureRoots) fsMod.rmSync(root, { recursive: true, force: true });
+  fixtureRoots.length = 0;
+});
+
+// THE row. Both checks are asked the same question about the same commit and
+// must answer differently, because that difference is the entire reason the
+// strict one exists: the lenient answer is what let 26549c3d through and made
+// aa031085's author read a failure about someone else's commit.
+test('a src/ tip with no regeneration passes the CI check and is refused by the push check', () => {
+  const root = fixtureRepo();
+  fixtureRegenerate(root);
+
+  fixtureWrite(root, 'src/core/later.ts', 'export const later = 2;\n');
+  const tip = fixtureCommit(root, 'runtime: a change nobody wrote down');
+  const committed = committedChangelog(root);
+
+  assert.equal(changelogStaleness(committed, root), null,
+    'the CI check tolerates one commit of lag — this is the state it forgives, and the reason it must');
+  const refusal = changelogLagAtTip(committed, root);
+  assert.ok(refusal, 'the push check must refuse the same document the CI check accepts');
+  assert.match(refusal, new RegExp(tip.slice(0, 8)),
+    'the refusal must name the commit that caused it, so its own author can act on it');
+  assert.match(refusal, /rejects the next one/,
+    'and must say what happens if it is ignored, since the push itself would otherwise look fine');
+});
+
+// The push condition has to CONVERGE, or it is not a condition, it is a wall.
+// This is the fear the lenient check's header describes — regenerating re-points
+// the goalpost at the new commit — shown not to apply to a push, because the
+// commit that carries the document changes nothing shipped.
+test('regenerating and committing satisfies the push check, in one step', () => {
+  const root = fixtureRepo();
+  fixtureRegenerate(root);
+  fixtureWrite(root, 'src/core/later.ts', 'export const later = 2;\n');
+  fixtureCommit(root, 'runtime: a change nobody wrote down');
+  assert.ok(changelogLagAtTip(committedChangelog(root), root), 'fixture guard: the push check refuses this state');
+
+  fixtureRegenerate(root);
+
+  assert.equal(changelogLagAtTip(committedChangelog(root), root), null,
+    'one regeneration and one commit must clear it — a check that cannot be satisfied gets bypassed instead');
+  assert.equal(changelogStaleness(committedChangelog(root), root), null, 'and the CI check still passes');
+});
+
+// The push check must not demand a ceremonial commit for a change that reaches
+// no install. `groupsForCommit` already answers this for the generator; here it
+// is the difference between a hook people keep and a hook people disable.
+test('a tip that changed only tests needs no changelog commit', () => {
+  const root = fixtureRepo();
+  fixtureRegenerate(root);
+
+  fixtureWrite(root, 'src/core/__tests__/seed.test.ts', 'export const t = 1;\n');
+  fixtureWrite(root, 'tests/e2e/whatever.test.ts', 'export const e = 1;\n');
+  fixtureWrite(root, '.github/workflows/ci.yml', 'name: ci\n');
+  fixtureCommit(root, 'tests: nothing an install receives');
+
+  assert.equal(changelogLagAtTip(committedChangelog(root), root), null,
+    'a commit the changelog deliberately omits cannot be a reason to refuse a push');
+});
+
+// A hook judges what the REMOTE is about to receive. The working copy is not
+// that: regenerating without committing leaves the push exactly as stale as it
+// was, and a check that read the file on disk would wave it through.
+test('the push check reads the commit, not the working copy', () => {
+  const root = fixtureRepo();
+  fixtureRegenerate(root);
+  fixtureWrite(root, 'src/core/later.ts', 'export const later = 2;\n');
+  const tip = fixtureCommit(root, 'runtime: a change nobody wrote down');
+
+  // Regenerate on disk and leave it UNCOMMITTED, the honest mistake this guards.
+  fixtureWrite(root, 'CHANGELOG.md', generateChangelog(root));
+
+  const onDisk = fsMod.readFileSync(pathMod.join(root, 'CHANGELOG.md'), 'utf8');
+  assert.equal(changelogLagAtTip(onDisk, root), null,
+    'fixture guard: the regenerated bytes DO satisfy the check, so only the source of the bytes is under test');
+  assert.ok(changelogLagAtTip(committedChangelog(root, tip), root, tip),
+    'an uncommitted regeneration is not part of the push and must not satisfy it');
+});
+
+// `--rev` is not a synonym for HEAD, or the hook cannot judge a branch that is
+// pushed without being checked out.
+test('the push check can judge a commit that is not the tip of the checkout', () => {
+  const root = fixtureRepo();
+  const clean = fixtureRegenerate(root);
+  fixtureWrite(root, 'src/core/later.ts', 'export const later = 2;\n');
+  fixtureCommit(root, 'runtime: a change nobody wrote down');
+  const dirty = fixtureRegenerate(root); // HEAD is now current again
+
+  assert.equal(changelogLagAtTip(committedChangelog(root, dirty), root, dirty), null, 'HEAD is current');
+  assert.equal(changelogLagAtTip(committedChangelog(root, clean), root, clean), null,
+    'and so was the earlier commit, judged on its own history rather than on HEAD\'s');
+
+  const midway = fixtureGit(root, ['rev-parse', `${dirty}^`]).trim();
+  assert.ok(changelogLagAtTip(committedChangelog(root, midway), root, midway),
+    'the commit BETWEEN them was not, and asking about it must not be answered about HEAD');
+});
+
+// ── the hook that runs it ────────────────────────────────────────────────────
+
+// The check above is only enforced by the hook file, and the hook is shell that
+// no test would otherwise read. Two spellings of the same command now exist (the
+// hook's and package.json's), so both are pinned here: a flag renamed in
+// changelog.ts and not in the hook would leave a hook that exits 1 on every
+// push, and one renamed in the hook alone would leave a hook that checks nothing.
+test('the pre-push hook is installed, executable, and runs the strict check', () => {
+  const repoRoot = pathMod.resolve(__dirname, '..');
+  const hookPath = pathMod.join(repoRoot, '.githooks', 'pre-push');
+  assert.equal(fsMod.existsSync(hookPath), true, '.githooks/pre-push must exist to be installable');
+  assert.ok(fsMod.statSync(hookPath).mode & 0o100, 'git ignores a hook that is not executable, silently');
+
+  const hook = fsMod.readFileSync(hookPath, 'utf8');
+  assert.match(hook, /^#!\/bin\/sh/, 'the other two hooks are /bin/sh; a hook with no shebang is not run');
+  assert.match(hook, /src\/build\/changelog\.ts --check --strict --rev "\$local_sha"/,
+    'the hook must judge the PUSHED commit, which is what --rev is for');
+  assert.match(hook, /refs\/heads\/\*/, 'a tag cannot be followed by a regeneration, so only branches are judged');
+  assert.match(hook, /--no-verify/, 'a hook with no documented escape hatch gets uninstalled instead of bypassed');
+
+  const pkg = JSON.parse(fsMod.readFileSync(pathMod.join(repoRoot, 'package.json'), 'utf8')) as {
+    scripts: Record<string, string>;
+  };
+  assert.equal(pkg.scripts['changelog:check:push'], 'tsx src/build/changelog.ts --check --strict',
+    'the by-hand spelling must ask the same question as the hook, or the two drift apart');
+});
+
+// The CLI is the only surface the hook touches, and its exit code is the whole
+// contract: 0 lets a push through. Driven as a process, because `main()`
+// returning normally while setting process.exitCode is exactly how a hook can
+// end up green over a refusal.
+test('the CLI refuses --strict without --check, and needs a commit after --rev', () => {
+  const repoRoot = pathMod.resolve(__dirname, '..');
+  const cli = (args: readonly string[]): { code: number | null; stderr: string } => {
+    const run = spawnSync(process.execPath, [
+      '--import', 'tsx', pathMod.join(repoRoot, 'src', 'build', 'changelog.ts'), ...args,
+    ], { cwd: repoRoot, encoding: 'utf8' });
+    return { code: run.status, stderr: run.stderr };
+  };
+
+  const bare = cli(['--strict']);
+  assert.equal(bare.code, 1, '--strict alone must not be read as a request to WRITE the changelog');
+  assert.match(bare.stderr, /--strict only qualifies --check/);
+
+  const noRev = cli(['--check', '--strict', '--rev']);
+  assert.equal(noRev.code, 1, 'a missing --rev value must fail rather than silently judge HEAD');
+  assert.match(noRev.stderr, /--rev needs a commit/);
 });

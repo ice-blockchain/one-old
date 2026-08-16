@@ -492,7 +492,12 @@ npm run build:verify
 The tracked `.githooks/pre-commit` hook refreshes and verifies ignored `dist/`.
 The tracked `.githooks/prepare-commit-msg` hook appends
 `Integrated-With: Traffic One plugin <noreply@traffic.io>` so commits record
-the active plugin integration alongside agent co-author trailers. Enable them in a clone with:
+the active plugin integration alongside agent co-author trailers. The tracked
+`.githooks/pre-push` hook refuses a push whose tip is not described by
+`CHANGELOG.md` — `npm run changelog:check:push` asks the same question by hand,
+and it is stricter than `npm run changelog:check` on purpose: the tolerance that
+makes the CI check satisfiable also hides a missing regeneration for exactly one
+commit, so the failure would land on whoever pushes next. Enable them in a clone with:
 
 ```
 git config core.hooksPath .githooks

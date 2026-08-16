@@ -93,6 +93,20 @@ exercises their COMPOSITION.
 tree (additions-aware); `npm run golden:update` is the only supported way to
 refresh it. A version bump churns the host manifests in the snapshot — expected.
 
+A commit that touches `src/` outside tests needs `npm run changelog` and a
+commit of the result before the work is pushed, and the reason it is worth doing
+in the same push is that the check CI runs cannot bill you for forgetting.
+`CHANGELOG.md` is generated from history INCLUDING the tip, so a document
+committed alongside what it describes can never name its own hash; the CI check
+therefore accepts the document as of the tip OR as of the tip's parent. A missing
+regeneration lands in that tolerance, passes, and fails the NEXT push, naming a
+commit whose author did nothing wrong (26549c3d passed, aa031085 was rejected for
+it). `npm run changelog:check:push` asks the stricter question — is the tip
+described? — and `.githooks/pre-push` runs it per pushed branch, which is the
+only place it is enforced. Enable the tracked hooks in a fresh clone with
+`git config core.hooksPath .githooks`; without that, neither this hook nor the
+`pre-commit` dist verification runs at all.
+
 `npm test` preloads `src/build/test-preload.mjs`, which pins every test's
 `TRAFFIC_ONE_PLUGIN_ROOT` to this checkout; a test that deliberately needs a
 different root can opt out with `TRAFFIC_ONE_TEST_PLUGIN_ROOT_PIN=off` set

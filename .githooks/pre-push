@@ -1,0 +1,54 @@
+#!/bin/sh
+# Refuses a push whose tip is not described by the committed CHANGELOG.md.
+#
+# `npm run changelog:check` is NOT the check to run here. Its tolerance — the
+# document may describe HEAD or HEAD's parent — is what makes it satisfiable at
+# all, and it also hides this mistake for exactly one commit: a src/-touching
+# commit pushed with no regeneration passes, and the failure lands on whoever
+# pushes NEXT, naming a commit that is not theirs. That happened on 2026-08-15.
+# `--strict` asks the stricter question, so the author who caused it is the one
+# who hears about it, before the push leaves.
+#
+# `git push --no-verify` is the escape hatch, as for any hook.
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [ ! -x node_modules/.bin/tsx ]; then
+  echo "pre-push: missing node_modules/.bin/tsx; run npm install before pushing." >&2
+  exit 1
+fi
+
+status=0
+lines=0
+branches=0
+
+# git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  lines=$((lines + 1))
+  # BRANCHES only. A tag names a commit that already exists, and no regeneration
+  # can follow it without moving the tag, so demanding one would block a push
+  # that has no way to comply.
+  case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
+  # An all-zero sha is a branch DELETION: nothing is arriving to be described.
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  branches=$((branches + 1))
+  node_modules/.bin/tsx src/build/changelog.ts --check --strict --rev "$local_sha" || status=1
+done
+
+# No lines at all means the push shape is unknown to this hook (a wrapper, or a
+# git that fed it nothing) — judge HEAD rather than pass silently. Lines but no
+# branches is a tag or a deletion, which is genuinely nothing to judge, and
+# saying so beats a hook that looks like it ran.
+if [ "$lines" = 0 ]; then
+  node_modules/.bin/tsx src/build/changelog.ts --check --strict || status=1
+elif [ "$branches" = 0 ]; then
+  echo "pre-push: no branch update in this push; the changelog check does not apply." >&2
+fi
+
+if [ "$status" != 0 ]; then
+  echo "pre-push: push refused. Run \`npm run changelog\`, commit the result, and push again." >&2
+fi
+
+exit "$status"
