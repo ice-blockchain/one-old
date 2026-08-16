@@ -28,10 +28,11 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-08-14
+## 1.0.52 — 2026-08-15
 
 ### Agent-visible content — what your agents are told
 
+- P8 Cursor: bind unlinked Task digest writes; gitignore digest-moves are not fatal QA unless they hide live source (`aa031085`)
 - P8 shipped prose: two walks, two answers about a skipped link (`23e89265`)
 - P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
 - P5/P6 release accuracy: truthful deny causes, atomic write-set, corrected licence record (`c241fde8`)
@@ -39,6 +40,8 @@ publication date.**
 
 ### Deny prose — what a refusal says
 
+- P8 Cursor: bind unlinked Task digest writes; gitignore digest-moves are not fatal QA unless they hide live source (`aa031085`)
+- P8 OpenCode queue: retarget kebab files at PLAN_READY instead of Error-denying (`26549c3d`)
 - P8 reset-record prose: describe the mirror, and what it does not cover (`facb4c57`)
 - P8 reset record: erasing it no longer buys a free reset (`16f36fe7`)
 - P8 harness, tests and docs: latency budgets, replay corpus, release records (`b9b11c97`)
@@ -55,6 +58,8 @@ publication date.**
 
 ### Runtime — what the product does
 
+- P8 Cursor: bind unlinked Task digest writes; gitignore digest-moves are not fatal QA unless they hide live source (`aa031085`)
+- P8 OpenCode queue: retarget kebab files at PLAN_READY instead of Error-denying (`26549c3d`)
 - P8 security scanner: match code shapes, not sentences about them (`edd5ecb2`)
 - P8 tests: fixtures that only held on the machine they were written on (`ee8a2a33`)
 - P8 comments: drop references no reader outside this machine can follow (`2ce61ed4`)
