@@ -125,6 +125,38 @@ test('a commit with no readable version is kept under an honest label', () => {
   assert.match(renderChangelog(releases), /^## Unversioned history — 2026-01-01$/m);
 });
 
+// A date the reader cannot account for is worse than a coarse one: the section
+// lists three entries and is headed by the date of a fourth commit that is not
+// among them. It is also what made the committed document stop matching its own
+// history — a CHANGELOG-only commit shows nothing and used to move the date
+// anyway, so a regeneration committed the next day was already invalid.
+test('a section is dated by the newest commit it SHOWS, not by one it omits', () => {
+  const releases = buildReleases(
+    [
+      commit('aaa', '2026-08-16', 'changelog: regenerate', ['CHANGELOG.md']),
+      commit('bbb', '2026-08-16', 'tests only', ['src/core/__tests__/a.test.ts']),
+      commit('ccc', '2026-08-15', 'runtime: the change anyone can see', ['src/core/a.ts']),
+    ],
+    new Map([['aaa', '1.0.52'], ['bbb', '1.0.52'], ['ccc', '1.0.52']]),
+  );
+  assert.deepEqual(releases.map((release) => [release.version, release.date]), [['1.0.52', '2026-08-15']]);
+  assert.deepEqual(releases[0]!.groups.runtime.map((record) => record.sha), ['ccc'],
+    'fixture guard: only the runtime commit contributes, so the other two are the ones under test');
+});
+
+// The property the pre-push check rests on: a commit that shows nothing changes
+// NOTHING, so regenerating and committing converges instead of moving the target.
+test('a commit that contributes no entry cannot change the document at all', () => {
+  const shown = [commit('ccc', '2026-08-15', 'runtime: visible', ['src/core/a.ts'])];
+  const versions = new Map([['aaa', '1.0.52'], ['ccc', '1.0.52']]);
+  const withChangelogCommit = [commit('aaa', '2026-08-17', 'changelog: regenerate', ['CHANGELOG.md']), ...shown];
+  assert.equal(
+    renderChangelog(buildReleases(withChangelogCommit, versions)),
+    renderChangelog(buildReleases(shown, versions)),
+    'a changelog commit landing on a later day must leave the document byte-identical',
+  );
+});
+
 test('a section whose every commit was excluded does not appear as an empty heading', () => {
   const releases = buildReleases(
     [
@@ -460,7 +492,8 @@ test('the pre-push hook is installed, executable, and runs the strict check', ()
   assert.match(hook, /^#!\/bin\/sh/, 'the other two hooks are /bin/sh; a hook with no shebang is not run');
   assert.match(hook, /src\/build\/changelog\.ts --check --strict --rev "\$local_sha"/,
     'the hook must judge the PUSHED commit, which is what --rev is for');
-  assert.match(hook, /refs\/heads\/\*/, 'a tag cannot be followed by a regeneration, so only branches are judged');
+  assert.match(hook, /case "\$remote_ref" in refs\/heads\/\*/,
+    'the REMOTE ref decides whether a branch is being updated — the local side of `git push origin HEAD` is `HEAD`');
   assert.match(hook, /--no-verify/, 'a hook with no documented escape hatch gets uninstalled instead of bypassed');
 
   const pkg = JSON.parse(fsMod.readFileSync(pathMod.join(repoRoot, 'package.json'), 'utf8')) as {
@@ -468,6 +501,95 @@ test('the pre-push hook is installed, executable, and runs the strict check', ()
   };
   assert.equal(pkg.scripts['changelog:check:push'], 'tsx src/build/changelog.ts --check --strict',
     'the by-hand spelling must ask the same question as the hook, or the two drift apart');
+});
+
+// The hook's own shell, driven as git drives it: one line per ref on stdin,
+// `<local ref> <local sha> <remote ref> <remote sha>`. Grepping the file cannot
+// catch a ref filter that reads the wrong field — this is exactly how the first
+// version of this hook shipped a no-op, and a real push to a scratch repo is
+// what caught it.
+//
+// The commits are PINNED HISTORY, so no fixture is needed and no row depends on
+// what the tree happens to look like today. All three are from the incident that
+// produced this hook, and they are the three shapes it has to tell apart:
+//
+//   LAG      26549c3d — one commit behind. The shape CI ACCEPTS and this hook
+//                       exists to refuse; it passed on 2026-08-15.
+//   STALE    aa031085 — two behind, because the lag above went unfixed. This is
+//                       the push CI rejected, on both matrix legs.
+//   CURRENT  5d4b3f80 — the regeneration that ended it.
+//
+// Each readback is asserted before it is used, so a rewritten history reports
+// itself rather than looking like a defect in the hook.
+const LAG_COMMIT = '26549c3d165b155add47d324054a32ae5b5980f5';
+const STALE_COMMIT = 'aa031085d19e832896f34078159babc93c33b612';
+const DESCRIBED_COMMIT = '5d4b3f8000c3b0740b801e58a89401dc9d1ef07b';
+const ZERO_SHA = '0'.repeat(40);
+
+test('the pre-push hook refuses, permits and abstains as git actually calls it', () => {
+  const repoRoot = pathMod.resolve(__dirname, '..');
+  const known = (sha: string): boolean => {
+    const run = spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: repoRoot, encoding: 'utf8' });
+    return run.status === 0;
+  };
+  for (const sha of [LAG_COMMIT, STALE_COMMIT, DESCRIBED_COMMIT]) {
+    assert.ok(known(sha), `this repository no longer contains ${sha.slice(0, 8)} — history was rewritten, so `
+      + 'these rows measure nothing until they are re-pinned');
+  }
+  // FIXTURE READBACK: every row below rests on these three shapes being distinct.
+  const lag = changelogLagAtTip(readCommittedChangelog(repoRoot, LAG_COMMIT), repoRoot, LAG_COMMIT);
+  assert.equal(changelogStaleness(readCommittedChangelog(repoRoot, LAG_COMMIT), repoRoot, LAG_COMMIT), null,
+    `FIXTURE ${LAG_COMMIT.slice(0, 8)} must be the shape CI accepts, or this hook is not adding anything`);
+  assert.match(lag ?? '', /rejects the next one/,
+    `FIXTURE ${LAG_COMMIT.slice(0, 8)} must be one commit behind, which is the shape under test`);
+  assert.ok(changelogLagAtTip(readCommittedChangelog(repoRoot, STALE_COMMIT), repoRoot, STALE_COMMIT),
+    `FIXTURE ${STALE_COMMIT.slice(0, 8)} must be genuinely stale`);
+  assert.equal(changelogLagAtTip(readCommittedChangelog(repoRoot, DESCRIBED_COMMIT), repoRoot, DESCRIBED_COMMIT), null,
+    `FIXTURE ${DESCRIBED_COMMIT.slice(0, 8)} must be a commit its own changelog DOES describe`);
+
+  const hook = (stdin: string): { code: number | null; out: string } => {
+    const run = spawnSync('sh', [pathMod.join(repoRoot, '.githooks', 'pre-push')], {
+      cwd: repoRoot,
+      input: stdin,
+      encoding: 'utf8',
+    });
+    return { code: run.status, out: `${run.stdout}${run.stderr}` };
+  };
+  const line = (localRef: string, localSha: string, remoteRef: string): string =>
+    `${localRef} ${localSha} ${remoteRef} ${ZERO_SHA}\n`;
+
+  const refused = hook(line('refs/heads/master', LAG_COMMIT, 'refs/heads/master'));
+  assert.equal(refused.code, 1, 'the push CI would have accepted must be refused here — the whole point of the hook');
+  assert.match(refused.out, /26549c3d/, 'and the refusal must name the commit that caused it');
+
+  const stale = hook(line('refs/heads/master', STALE_COMMIT, 'refs/heads/master'));
+  assert.equal(stale.code, 1, 'two commits behind is refused as well');
+  assert.match(stale.out, /missing 1 commit\(s\), oldest 26549c3d/,
+    'and is diagnosed as staleness naming the oldest missing commit, not as lag — different fixes');
+
+  // The spelling that shipped a no-op: `git push -u origin HEAD` sends `HEAD` as
+  // the LOCAL ref, so a hook filtering there checks nothing on the commonest push.
+  const viaHead = hook(line('HEAD', LAG_COMMIT, 'refs/heads/master'));
+  assert.equal(viaHead.code, 1, 'pushing HEAD at a remote branch is the same push and must be judged the same');
+  assert.doesNotMatch(viaHead.out, /no branch update/,
+    'this is a branch update — reporting otherwise is how the hook passed a push it should have refused');
+
+  assert.equal(hook(line('refs/heads/master', DESCRIBED_COMMIT, 'refs/heads/master')).code, 0,
+    'a described tip must push without ceremony, or the hook gets uninstalled');
+
+  const tag = hook(line('refs/tags/v1', LAG_COMMIT, 'refs/tags/v1'));
+  assert.equal(tag.code, 0, 'a tag cannot be followed by a regeneration, so it is not judged');
+  assert.match(tag.out, /does not apply/, 'and abstaining is stated, not silent');
+
+  assert.equal(hook(line('refs/heads/gone', ZERO_SHA, 'refs/heads/gone')).code, 0,
+    'a branch DELETION brings no commit that needs describing');
+
+  // Several refs at once: one bad ref must sink the push even when another is fine.
+  const mixed = hook(
+    line('refs/heads/ok', DESCRIBED_COMMIT, 'refs/heads/ok')
+    + line('refs/heads/bad', LAG_COMMIT, 'refs/heads/bad'),
+  );
+  assert.equal(mixed.code, 1, 'git pushes every ref in one invocation; a per-ref failure must survive the loop');
 });
 
 // The CLI is the only surface the hook touches, and its exit code is the whole

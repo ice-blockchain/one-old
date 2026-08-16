@@ -25,12 +25,18 @@ lines=0
 branches=0
 
 # git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
-while read -r local_ref local_sha _remote_ref _remote_sha; do
+while read -r _local_ref local_sha remote_ref _remote_sha; do
   lines=$((lines + 1))
-  # BRANCHES only. A tag names a commit that already exists, and no regeneration
-  # can follow it without moving the tag, so demanding one would block a push
-  # that has no way to comply.
-  case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
+  # BRANCHES only, decided by the REMOTE ref. A tag names a commit that already
+  # exists, and no regeneration can follow it without moving the tag, so
+  # demanding one would block a push with no way to comply.
+  #
+  # Not the local ref: `git push origin HEAD:refs/heads/master` — and plain
+  # `git push -u origin HEAD` — spell the local side literally `HEAD`, so
+  # filtering there skipped the most common push in this repo and the hook
+  # reported "no branch update" while the branch went up. Measured, on the very
+  # push that installed this file.
+  case "$remote_ref" in refs/heads/*) ;; *) continue ;; esac
   # An all-zero sha is a branch DELETION: nothing is arriving to be described.
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
   branches=$((branches + 1))
