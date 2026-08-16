@@ -226,11 +226,22 @@ export function buildReleases(
     const version = versions.get(commit.sha) ?? 'unversioned';
     if (!current || current.version !== version) {
       if (current) releases.push(current);
-      current = { version, date: commit.date, groups: { content: [], deny: [], runtime: [] } };
+      current = { version, date: '', groups: { content: [], deny: [], runtime: [] } };
     }
-    // Dated by the section's NEWEST commit, which — walking newest-first — is
-    // the first one that opened the section, so the date is set once and not
-    // overwritten by the older commits that follow.
+    // Dated by the newest commit the section SHOWS, not by whichever commit
+    // opened it. Walking newest-first, that is the first contributing commit, so
+    // the date is set once and the older ones do not overwrite it. Every section
+    // that survives the filter below has at least one, so the date is never ''.
+    //
+    // Taking it from the opening commit instead made the document depend on a
+    // commit the reader cannot see, and a CHANGELOG-only commit is exactly that:
+    // it contributes no entry, but it used to move its section's date to its own.
+    // Regenerating on one day and committing on the next therefore produced a
+    // document that no longer matched its own history, reported as "hand edit or
+    // format drift" a day later (measured at 5d4b3f80). With the date tied to a
+    // visible entry, a changelog commit is a no-op on the document — which is
+    // what makes "regenerate, commit, push" converge in one step.
+    if (groups.length > 0 && !current.date) current.date = commit.date;
     for (const group of groups) current.groups[group].push(commit);
   }
   if (current) releases.push(current);
