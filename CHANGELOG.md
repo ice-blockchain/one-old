@@ -32,6 +32,7 @@ publication date.**
 
 ### Agent-visible content — what your agents are told
 
+- Install: reclaim generated agents; always ask Code Graph; name Cursor hook edges (`c628b61a`)
 - P8 spawn: stop fake Couldn't-start failures; skip architect when small work is already scoped (`9a5a5460`)
 - P8 Cursor: bind unlinked Task digest writes; gitignore digest-moves are not fatal QA unless they hide live source (`aa031085`)
 - P8 shipped prose: two walks, two answers about a skipped link (`23e89265`)
@@ -60,6 +61,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Install: reclaim generated agents; always ask Code Graph; name Cursor hook edges (`c628b61a`)
 - P8 spawn: stop fake Couldn't-start failures; skip architect when small work is already scoped (`9a5a5460`)
 - P8 changelog: date a section by a commit the reader can see (`c8a69397`)
 - P8 pre-push: refuse a push the changelog does not describe (`15e09f23`)
