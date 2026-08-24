@@ -426,13 +426,13 @@ function toolchainInstallPending(state: Rec, host: string): boolean {
   return false;
 }
 
-// The install task normally fires from the code-graph answer. On a machine where
-// codeGraphProvider is already set (any project after the first), that step is
-// skipped entirely, so the task must fire from the flow's terminal answer:
-// 'finalize' for new projects, the last unresolved local-preference answer for
-// existing ones. Idempotent — the runner stamps present bins and exits fast when
-// everything is already installed, and a fresh-machine flow that already ran the
-// task from code-graph is stamped by the time finalize lands here.
+// The install task normally fires from the code-graph answer. When THIS project
+// has already acknowledged and the provider is set, that step is skipped, so
+// the task must fire from the flow's terminal answer: 'finalize' for new
+// projects, the last unresolved local-preference answer for existing ones.
+// Idempotent — the runner stamps present bins and exits fast when everything
+// is already installed, and a fresh-machine flow that already ran the task
+// from code-graph is stamped by the time finalize lands here.
 function attachPendingInstallTask(
   cwd: string,
   step: string,
@@ -476,9 +476,10 @@ function attachPendingInstallTask(
  * the write, and a member seeded from the raw submitted value would carry a
  * different record than the container it inherited from.
  *
- * `code-graph` is absent from the shared set on purpose: it writes MACHINE-wide
- * state (`~/.traffic-one/one.json`), which every directory on the machine
- * already reads. Measured: a member's effective state carried the container's
+ * `code-graph` is absent from the shared set on purpose: the provider is
+ * MACHINE-wide (`~/.traffic-one/one.json`), which every directory already
+ * reads, and `codeGraphAcknowledged` is per-project — members must ack
+ * themselves. Measured: a member's effective state carried the container's
  * `codeGraphProvider` with nothing copied anywhere.
  *
  * Best-effort by contract. A member that could not take the write is a real
@@ -626,10 +627,10 @@ function applyAnswerStep(
     case 'code-graph': {
       const provider = String(value);
       if (provider !== 'gitnexus' && provider !== 'graphify') return { ok: false, error: 'invalid code-graph provider' };
-      // The provider is machine-wide (one.json), not a per-project pref — once set
-      // it is reused across projects. OpenCode was decided at the first step, so the
-      // consolidated install task can read the final choices from the effective state.
+      // Machine-wide provider (runners reuse it) plus THIS project's
+      // acknowledgement. A set provider alone does not skip the picker.
       writeGlobalCodeGraphProvider(provider, env);
+      mergeProjectPrefs(cwd, { codeGraphAcknowledged: true }, env);
       return { ok: true, task: { kind: 'onboarding-toolchain' } };
     }
     case 'project-context': {

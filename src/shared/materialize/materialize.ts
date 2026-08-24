@@ -23,6 +23,7 @@ import { nowIsoNoMs } from '../text';
 import { detectHost } from '../host';
 import { isNewProjectMode } from '../state/lifecycle';
 import { projectWritesPermitted } from '../state/plugin-use';
+import { writeProjectRootSidecar } from '../state/local-prefs';
 import {
   cleanupPrevious,
   loadPreviousManifest,
@@ -292,6 +293,8 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   if (!projectWritesPermitted(cwd)) {
     return { rules: 0, skills: 0, written: 0, removed: 0, contextProfile: 'unresolved', skipped: 'plugin-use-not-permitted' };
   }
+
+  writeProjectRootSidecar(cwd);
 
   // FIRST of the three refusals that keep this writer from deleting a project's
   // only copy of its rules and skills. This one is cheap and by LAYOUT; the

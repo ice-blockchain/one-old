@@ -25,6 +25,7 @@ import {
   canonicalHostKey,
   normalizeHostPrefs,
 } from './pref-schema';
+import { writeProjectRootSidecarAt } from './project-root-sidecar';
 
 // THE project bucket name. Three things key off it and they must agree:
 // per-project prefs (which is where the use-plugin CONSENT answer lives), the
@@ -280,6 +281,13 @@ export function normalizeProjectPrefs(prefs: unknown): Rec {
   if (Object.prototype.hasOwnProperty.call(out, 'codeGraphProvider')) {
     delete out.codeGraphProvider;
   }
+  // Preserve an explicit boolean; strip invalid values. Do NOT invent `true`
+  // for an in-memory object that merely lacks the key — that is the new-project
+  // trap (open-code writes a file, next read would skip the picker). Grandfather
+  // of a legacy on-disk file belongs in readProjectPrefs only.
+  if (out.codeGraphAcknowledged === true) out.codeGraphAcknowledged = true;
+  else if (out.codeGraphAcknowledged === false) out.codeGraphAcknowledged = false;
+  else delete out.codeGraphAcknowledged;
   // Pre-release One MCP acknowledgement shapes are intentionally not migrated.
   // The canonical acknowledgement now lives in hosts.<host>.performance.target.
   for (const key of RETIRED_LOCAL_PREF_KEYS) delete out[key];
@@ -331,16 +339,30 @@ export function normalizeProjectPrefs(prefs: unknown): Rec {
 export function readProjectPrefs(cwd: string, env: NodeJS.ProcessEnv = process.env): Rec {
   const prefsPath = projectPrefsPath(cwd, env);
   const raw = readJson(prefsPath, null);
-  if (raw && typeof raw === 'object' && Object.keys(obj(raw) || {}).length > 0) {
-    return normalizeProjectPrefs(raw);
+  const rawObj = obj(raw);
+  if (rawObj && Object.keys(rawObj).length > 0) {
+    // Upgrade path: a prefs file that already existed without the field is a
+    // finished project. Missing/empty files stay unacked so the picker shows.
+    if (!Object.prototype.hasOwnProperty.call(rawObj, 'codeGraphAcknowledged')) {
+      return normalizeProjectPrefs({ ...rawObj, codeGraphAcknowledged: true });
+    }
+    return normalizeProjectPrefs(rawObj);
   }
   return normalizeProjectPrefs({});
 }
 
+// New onboarding sessions must persist an explicit boolean so a later
+// readProjectPrefs does not grandfather the file as already-acked.
+function persistCodeGraphAcknowledged(prefs: Rec): Rec {
+  if (prefs.codeGraphAcknowledged === true) return prefs;
+  return { ...prefs, codeGraphAcknowledged: false };
+}
+
 export function writeProjectPrefs(cwd: string, prefs: unknown, env: NodeJS.ProcessEnv = process.env): Rec {
-  const normalized = normalizeProjectPrefs(prefs);
+  const normalized = persistCodeGraphAcknowledged(normalizeProjectPrefs(prefs));
   const prefsPath = projectPrefsPath(cwd, env);
   withProjectPrefsLock(prefsPath, () => writeProjectPrefsFile(prefsPath, normalized));
+  writeProjectRootSidecarAt(prefsPath, cwd);
   return normalized;
 }
 
@@ -365,10 +387,11 @@ export function updateProjectPrefs(
     // Re-read only after acquiring the cross-process lock. This is the
     // load-bearing part of the read-merge-write protocol: reading beforehand
     // would still let a Cursor capture overwrite a parallel Performance answer.
-    const normalized = normalizeProjectPrefs(update(readProjectPrefs(cwd, env)));
+    const normalized = persistCodeGraphAcknowledged(normalizeProjectPrefs(update(readProjectPrefs(cwd, env))));
     writeProjectPrefsFile(prefsPath, normalized);
     return normalized;
   });
+  writeProjectRootSidecarAt(prefsPath, cwd);
   return next;
 }
 

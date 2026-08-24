@@ -17,6 +17,7 @@ function complete(): Record<string, unknown> {
     projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
     openCode: { enabled: false, source: 'prompted' },
     codeGraphProvider: 'graphify',
+    codeGraphAcknowledged: true,
     team: { mode: 'subagents', source: 'prompted', approved: true },
     performance: { level: 'high', source: 'prompted' },
     toolchain: TOOLCHAIN,
@@ -49,10 +50,21 @@ test('nextOnboardingStep walks the canonical order as fields resolve', () => {
   const mob = complete();
   mob.mobile = { enabled: false, framework: 'none', source: 'none' };
   assert.equal(nextOnboardingStep(mob), 'mobile');
-  // missing code graph
+  // missing code-graph acknowledgement (provider alone is not an answer)
   const cg = complete();
-  delete cg.codeGraphProvider;
+  delete cg.codeGraphAcknowledged;
   assert.equal(nextOnboardingStep(cg), 'code-graph');
+  const providerOnly = complete();
+  delete providerOnly.codeGraphAcknowledged;
+  providerOnly.codeGraphProvider = 'gitnexus';
+  assert.equal(nextOnboardingStep(providerOnly), 'code-graph');
   // everything resolved → terminal 'state'
   assert.equal(nextOnboardingStep(complete()), 'state');
+});
+
+test('nextOnboardingStep: a global provider without this project ack is still code-graph', () => {
+  const s = complete();
+  delete s.codeGraphAcknowledged;
+  s.codeGraphProvider = 'gitnexus';
+  assert.equal(nextOnboardingStep(s), 'code-graph');
 });

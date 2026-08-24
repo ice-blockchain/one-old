@@ -96,7 +96,7 @@ export function uninstallDirective(host: HostId): string {
     '   - `~/.traffic-one` — the saved API key, this machine\'s per-project preferences, the runner shims, and the managed toolchains (OpenCode/GitNexus/graphify, typically over 1 GB; a future install re-downloads them).',
     '   - the user-level host integrations Traffic One installed: the OpenCode and Kilo wrappers, the Windsurf/Cascade hooks and global rule, and the Codex machine-global MCP block.',
     '   - the plugin itself, from every host CLI that has it installed.',
-    '   Onboarded projects are NOT touched — their `.traffic-one/` folders and generated instructions stay on disk.',
+    '   Onboarded project content stays (`.traffic-one/` except generated role files under `.traffic-one/agents/`, AGENTS.md, plan, memory, runs). Generated host Task/subagent files (`.cursor/agents`, `.kilo/agents`, `.github/agents`, `.devin/agents`, leftover `.opencode/agents`, OpenCode `~/.config/opencode/agents/traffic-one-*.md`) are removed when their generated marker matches.',
     '',
     `2. To preview without removing anything: \`${uninstallCommand(false)}\``,
     '',

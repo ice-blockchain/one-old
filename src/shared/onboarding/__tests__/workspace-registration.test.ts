@@ -21,7 +21,7 @@ import * as path from 'path';
 
 import { computeOnboarding, applyAnswer } from '../../onboarding-server/flow';
 import { buildRunModelPolicy } from '../../run-model-policy';
-import { readEffectiveState, writeState } from '../../state';
+import { mergeProjectPrefs, readEffectiveState, readProjectPrefs, writeState } from '../../state';
 import { readWorkspaceMemberRegistry } from '../../hook/workspace-members';
 import {
   pluginUseDeclined,
@@ -32,7 +32,11 @@ import {
 import { registerWorkspaceMember, writeWorkspaceMemberRegistry } from '../../state/workspace-members';
 import { applyAgentTechClassification } from '../detection-stamp';
 import { resolveWorkspaceMemberTarget } from '../workspace-member-target';
-import { inheritWorkspacePrefsToMembers } from '../workspace-inherit';
+import {
+  inheritWorkspacePrefsToMembers,
+  isSharedWorkspaceAnswerStep,
+  WORKSPACE_INHERITED_PREF_KEYS,
+} from '../workspace-inherit';
 
 const fixtures: string[] = [];
 
@@ -102,7 +106,8 @@ let runSeq = 0;
 // One member, finished. The boolean is CHECKED by every caller: a fixture whose
 // state write was silently refused would make "the container is not done" pass
 // for the wrong reason.
-function finishMember(dir: string): boolean {
+function finishMember(dir: string, env: NodeJS.ProcessEnv): boolean {
+  mergeProjectPrefs(dir, { codeGraphAcknowledged: true }, env);
   return writeState(dir, { mode: 'existing-codebase', onboardingComplete: true, stack: 'react-node' });
 }
 
@@ -126,6 +131,11 @@ test('a member registered BEFORE the container is answered still freezes a run p
     'baseline: an unanswered workspace freezes no run policy for its member');
 
   answerSharedStepsAtContainer(ws.container, ws.env);
+  // The last shared-step fan-out runs before code-graph, when the container
+  // still holds persist-false. Re-inherit AFTER the container is acked so this
+  // assertion has teeth: adding `codeGraphAcknowledged` to
+  // WORKSPACE_INHERITED_PREF_KEYS would copy that true into the member.
+  inheritWorkspacePrefsToMembers(ws.container, ws.env);
 
   assert.equal(policyFrozen(api, ws.env), 'balanced',
     'a member freezes a run policy from the container\'s performance answer');
@@ -137,6 +147,23 @@ test('a member registered BEFORE the container is answered still freezes a run p
   // Not inherited and not needing to be: the code-graph provider is MACHINE-wide.
   assert.equal(state.codeGraphProvider, 'gitnexus',
     'the code-graph answer is already visible at the member with nothing copied');
+  // The acknowledgement is per-project. Adding `code-graph` to
+  // SHARED_ANSWER_STEPS would not copy it — inherit still omits the ack key.
+  assert.notEqual(readProjectPrefs(api, ws.env).codeGraphAcknowledged, true,
+    'a member registered before the container answered does not inherit codeGraphAcknowledged');
+});
+
+test('code-graph acknowledgement is neither a shared step nor an inherited pref key', () => {
+  assert.equal(isSharedWorkspaceAnswerStep('code-graph'), false,
+    'code-graph must stay off SHARED_ANSWER_STEPS so a container ack never fans out');
+  assert.equal(isSharedWorkspaceAnswerStep('open-code'), true);
+  assert.equal(isSharedWorkspaceAnswerStep('performance'), true);
+  assert.equal(isSharedWorkspaceAnswerStep('team-confirmation'), true);
+  const inheritedKeys: readonly string[] = WORKSPACE_INHERITED_PREF_KEYS;
+  assert.equal(inheritedKeys.includes('codeGraphAcknowledged'), false,
+    'codeGraphAcknowledged must stay off WORKSPACE_INHERITED_PREF_KEYS');
+  assert.equal(inheritedKeys.includes('openCode'), true);
+  assert.equal(inheritedKeys.includes('hosts'), true);
 });
 
 test('a member registered AFTER the container is answered is seeded on registration', () => {
@@ -151,6 +178,8 @@ test('a member registered AFTER the container is answered is seeded on registrat
   assert.equal(target.kind === 'member' && target.registered, true, 'this call is what registered it');
   assert.equal(target.kind === 'member' && target.memberRoot, api);
   assert.equal(target.kind === 'member' && target.inheritance.outcome, 'inherited');
+  assert.notEqual(readProjectPrefs(api, ws.env).codeGraphAcknowledged, true,
+    'a member registered after the container acknowledged still needs its own picker');
 
   assert.equal(policyFrozen(api, ws.env), 'balanced',
     'the seeding half covers the order the fan-out cannot: member joins last');
@@ -354,9 +383,9 @@ test('a container is done only when every member is done', () => {
   answerSharedStepsAtContainer(ws.container, ws.env);
   assert.equal(computeOnboarding(ws.container, ws.env).done, false);
 
-  assert.equal(finishMember(api), true, 'fixture guard: api\'s state write landed');
+  assert.equal(finishMember(api, ws.env), true, 'fixture guard: api\'s state write landed');
   assert.equal(computeOnboarding(ws.container, ws.env).done, false, 'one member done is not every member done');
 
-  assert.equal(finishMember(web), true, 'fixture guard: web\'s state write landed');
+  assert.equal(finishMember(web, ws.env), true, 'fixture guard: web\'s state write landed');
   assert.equal(computeOnboarding(ws.container, ws.env).done, true);
 });

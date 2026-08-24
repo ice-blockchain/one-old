@@ -238,8 +238,9 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd(), onProgres
           progress.set('graph-install', 'running', `Trying ${providerLabel(sibling)} instead`);
           const fb = installGraphProvider(cwd, sibling, requireScan, onScanStart);
           if (fb.ok) {
-            // Persist the switch so every future session reuses the working
-            // provider (mirrors seed-provider's writeGlobalCodeGraphProvider).
+            // Persist the working sibling so later sessions reuse it; this
+            // does not skip the picker (routers key on this project's ack,
+            // not the provider).
             safeWriteProvider(sibling);
             r = { ...fb, action: `fell-back-to-${sibling} (${chosen} unavailable); ${fb.action}` };
           }

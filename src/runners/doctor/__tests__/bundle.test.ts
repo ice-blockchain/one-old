@@ -190,6 +190,21 @@ test('--bundle drops decision-log inputs and stateWrites entirely, keeping the v
   });
 });
 
+test('--bundle carries the Cursor edges probe when collected, else null', () => {
+  const cursorEdges = {
+    cursorPresent: true,
+    stateDbPath: '/home/dev/Library/Application Support/Cursor/User/globalStorage/state.vscdb',
+    stateDbReadable: true,
+    thirdPartyExtensibilityEnabled: false as const,
+    localInstallPresent: true,
+    localInstallPath: '/home/dev/.cursor/plugins/local/traffic-one',
+    claudeCachePresent: true,
+    claudeCachePath: '/home/dev/.claude/plugins/cache/traffic-one/traffic-one',
+  };
+  assert.deepEqual(buildDoctorBundle(bundleInput({ cursorEdges })).probes.cursorEdges, cursorEdges);
+  assert.equal(buildDoctorBundle(bundleInput()).probes.cursorEdges, null);
+});
+
 test('--bundle carries the override completeness probe, which is what a wedged project is about', () => {
   // The bundle is what gets pasted into a bug report titled "nothing will
   // certify". It had no override section at all, so the one probe that explains

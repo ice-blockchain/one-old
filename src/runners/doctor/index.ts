@@ -2,8 +2,9 @@
 // Proactive diagnostic for traffic-one (compiles to scripts/doctor.cjs).
 // Inspects the environment for the known-fragile spots (Node version, nvm
 // default, gitnexus binary location, project `.nvmrc`, `.git/`, traffic-one
-// state file, canonical API-key auth, Codex hook trust, and — with `--session <id>` —
-// a specific Codex transcript) and prints a structured JSON report.
+// state file, canonical API-key auth, Codex hook trust, Cursor silent-break
+// edges, and — with `--session <id>` — a specific Codex transcript) and prints
+// a structured JSON report.
 //
 // The report is purely informational: doctor never writes to the project,
 // never installs anything, never modifies the state file. The
@@ -23,6 +24,7 @@ import { resolveProjectRoot } from '../../shared/hook/paths';
 import { readDecisions } from '../../shared/state/decision-log';
 import {
   probeCodexHooks,
+  probeCursorEdges,
   probeGitnexus,
   probeCanonicalAuth,
   probeNode,
@@ -78,6 +80,7 @@ export type { ReconcileOutcome, ReconcileRefusal, UnblockOutcome, UnblockRefusal
 export {
   analyzeCodexSessionFile,
   probeCodexHooks,
+  probeCursorEdges,
   probeGitnexus,
   probeCanonicalAuth,
   probeNode,
@@ -88,6 +91,7 @@ export {
   probeSessionDiagnostics,
   resolveCodexSession,
 } from './probes';
+export type { CursorEdgesProbe } from './probes';
 
 // `--run <id>` diagnoses one run explicitly; every other invocation falls back
 // to whichever run the project state currently points at, so plain `doctor` —
@@ -149,6 +153,7 @@ export async function main(): Promise<void> {
   const gitnexus = probeGitnexus();
   const project = probeProject(cwd);
   const codexHooks = await probeCodexHooks(cwd);
+  const cursorEdges = probeCursorEdges();
   const auth = probeCanonicalAuth();
   const oneMcp = probeOneMcp();
   const openCodeMcp = probeOpenCodeMcp();
@@ -168,7 +173,7 @@ export async function main(): Promise<void> {
   const overrides = probeOverrides(cwd, runId);
   const findings = buildFindings({
     node, nvm, gitnexus, project, codexHooks, auth, oneMcp, openCodeMcp, sessionDiagnostics, pluginRoot, runDiagnostic,
-    overrides,
+    overrides, cursorEdges,
   });
   const summary = doctorSummary(findings);
 
@@ -182,6 +187,7 @@ export async function main(): Promise<void> {
       gitnexus,
       project,
       codexHooks,
+      cursorEdges,
       auth,
       oneMcp,
       openCodeMcp,
@@ -215,6 +221,7 @@ export async function main(): Promise<void> {
       gitnexus,
       project: redactProjectProbe(project),
       codexHooks,
+      cursorEdges,
       auth,
       oneMcp,
       openCodeMcp,

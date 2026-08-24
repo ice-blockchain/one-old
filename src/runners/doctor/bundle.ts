@@ -10,6 +10,7 @@ import type { DoctorSummary, Finding } from './findings';
 import type {
   CanonicalAuthProbe,
   CodexHooksProbe,
+  CursorEdgesProbe,
   GitnexusProbe,
   NodeProbe,
   NvmProbe,
@@ -289,6 +290,7 @@ export interface DoctorBundle {
     readonly gitnexus: GitnexusProbe;
     readonly project: RedactedProjectProbe;
     readonly codexHooks: CodexHooksProbe | null;
+    readonly cursorEdges: CursorEdgesProbe | null;
     readonly auth: CanonicalAuthProbe | null;
     readonly oneMcp: OneMcpProbe | null;
     readonly openCodeMcp: OpenCodeMcpProbe | null;
@@ -325,6 +327,7 @@ export interface BuildDoctorBundleInput {
   gitnexus: GitnexusProbe;
   project: ProjectProbe;
   codexHooks: CodexHooksProbe | null;
+  cursorEdges?: CursorEdgesProbe | null;
   auth: CanonicalAuthProbe | null;
   oneMcp: OneMcpProbe | null;
   openCodeMcp: OpenCodeMcpProbe | null;
@@ -366,6 +369,7 @@ export function buildDoctorBundle(input: BuildDoctorBundleInput): DoctorBundle {
       gitnexus: input.gitnexus,
       project: redactProjectProbe(input.project),
       codexHooks: input.codexHooks,
+      cursorEdges: input.cursorEdges ?? null,
       auth: input.auth,
       oneMcp: input.oneMcp,
       openCodeMcp: input.openCodeMcp,

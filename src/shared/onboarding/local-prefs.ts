@@ -1,8 +1,9 @@
 // src/shared/onboarding/local-prefs.ts
 // Per-user Traffic One preference STEP router for both existing projects and
 // already-configured new projects. Shared state may be present in the repo, but
-// each user still needs local choices for OpenCode, performance/team, and the
-// code graph provider before mutating work proceeds. The wizard server consumes
+// each user still needs local choices for OpenCode, performance/team, and this
+// project's code-graph acknowledgement before mutating work proceeds. The wizard
+// server consumes
 // nextLocalPreferenceStep; the prose/popup assemblers were removed when onboarding
 // moved into the local wizard (shared/onboarding-server).
 
@@ -72,6 +73,7 @@ export function nextLocalPreferenceStep(
   if (team && team.mode !== expectedTeamMode) return 'performance';
   if (expectedTeamMode === 'subagents' && !isTeamApproved(s.team)) return 'team-confirmation';
 
-  if (s.codeGraphProvider !== 'gitnexus' && s.codeGraphProvider !== 'graphify') return 'code-graph';
+  // A machine-wide provider is not an answer. Skip only when THIS project acked.
+  if (s.codeGraphAcknowledged !== true) return 'code-graph';
   return null;
 }

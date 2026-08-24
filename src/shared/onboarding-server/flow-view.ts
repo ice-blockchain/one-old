@@ -260,7 +260,7 @@ export interface AnswerOutcome {
   error?: string;
   // The code-graph answer kicks the consolidated install task (graph provider +
   // OpenCode) so the wizard can gate "Setup complete" on it. When that step is
-  // SKIPPED (codeGraphProvider already set machine-wide by an earlier project),
+  // SKIPPED (this project already acknowledged and the provider is set),
   // the flow's terminal answer fires the same task instead — otherwise OpenCode
   // stays unstamped in this project's prefs and delegation silently never
   // activates for the whole first build (observed 2026-06-12 on Codex).

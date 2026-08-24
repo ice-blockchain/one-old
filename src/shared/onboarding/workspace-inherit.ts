@@ -27,12 +27,12 @@
 //               are what the run-policy freeze reads. Inherited whole, every
 //               host the container has answered on, because "which host will
 //               this member be opened in" is not knowable here.
-//   the code-graph provider — NOT inherited, and needs no mechanism: it is
-//               MACHINE-wide (`~/.traffic-one/one.json`, see
-//               local-prefs/index.ts writeGlobalCodeGraphProvider), not a
-//               per-project preference. Measured: the member's effective state
-//               already carried `codeGraphProvider: 'gitnexus'` from the
-//               container's answer, with nothing copied anywhere.
+//   the code-graph provider — NOT inherited. The provider is MACHINE-wide
+//               (`~/.traffic-one/one.json`). The per-project
+//               `codeGraphAcknowledged` flag is also not inherited: each
+//               project must acknowledge the picker. Measured: the member's
+//               effective state already carried `codeGraphProvider` from
+//               one.json with nothing copied anywhere.
 //   originalPrompt, toolchain, agentActivity, the graph-run timestamps — NOT
 //               inherited. The prompt is the user's words about the CONTAINER
 //               and is the one field deliberately kept out of committed state
@@ -215,9 +215,8 @@ export function inheritWorkspacePrefsToMembers(
 /**
  * The wizard steps whose answers a member takes from its container.
  *
- * `code-graph` is deliberately absent — it writes machine-wide state, so a
- * member already sees it and a fan-out would be a copy of a value that is not
- * per-project in the first place.
+ * `code-graph` is deliberately absent — the provider is machine-wide, and
+ * `codeGraphAcknowledged` is per-project; a member must acknowledge itself.
  */
 const SHARED_ANSWER_STEPS = new Set(['open-code', 'performance', 'team-confirmation']);
 

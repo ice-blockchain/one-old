@@ -16,8 +16,9 @@ work.
 
 The active provider is selected at onboarding and stored as the machine-wide
 Traffic One `codeGraphProvider` setting in `~/.traffic-one/one.json`, reused
-across projects (a provider already installed locally is detected and reused, so
-onboarding stops re-prompting). Valid values:
+across projects for runners and toolchain. Onboarding does **not** skip the
+picker just because a binary is installed or `one.json` already has a provider
+— each project acknowledges. Valid values:
 `gitnexus`, `graphify`. Both produce different on-disk artefacts; the read
 protocol below covers each.
 

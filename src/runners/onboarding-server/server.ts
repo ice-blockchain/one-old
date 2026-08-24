@@ -16,7 +16,6 @@ import { probeDashboardHealth, writeDashboardHealth } from '../../shared/onboard
 import { clearServerRecord, writeServerRecord, type ServerRecord } from '../../shared/onboarding-server/registry';
 import { stateTimestamp } from '../../shared/state/io';
 import { dispatch, type RouteContext } from './routes';
-import { seedGlobalCodeGraphProviderIfInstalled } from './seed-provider';
 
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -99,17 +98,6 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
   const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
   const standalone = options.standalone ?? true;
   const cwd = options.cwd;
-
-  // Seed the machine-wide code-graph provider from an already-installed binary so
-  // the wizard can skip the code-graph prompt. Real launches only (never the
-  // in-process test server), so `which` can't non-deterministically seed tests.
-  if (standalone) {
-    try {
-      seedGlobalCodeGraphProviderIfInstalled(cwd, env);
-    } catch {
-      // best-effort — detection failure must never block the wizard
-    }
-  }
 
   let port = 0;
   let url = '';

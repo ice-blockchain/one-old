@@ -47,6 +47,10 @@ test('nextLocalPreferenceStep walks only the per-user Traffic One preference ste
   assert.equal(nextLocalPreferenceStep(state, 'codex', CURRENT), 'code-graph');
 
   state.codeGraphProvider = 'graphify';
+  assert.equal(nextLocalPreferenceStep(state, 'codex', CURRENT), 'code-graph',
+    'a set provider without this project ack is not an answer');
+
+  state.codeGraphAcknowledged = true;
   assert.equal(nextLocalPreferenceStep(state, 'codex', CURRENT), null);
 });
 
@@ -58,6 +62,7 @@ test('nextLocalPreferenceStep does not require new-project-only MVP or mobile an
     performance: { level: 'low', source: 'prompted', target: PERFORMANCE_TARGET },
     team: { mode: 'main-agent', source: 'prompted' },
     codeGraphProvider: 'gitnexus',
+    codeGraphAcknowledged: true,
   }, 'codex', CURRENT), null);
 });
 
@@ -69,6 +74,7 @@ test('nextLocalPreferenceStep rejects team/performance mismatches', () => {
     performance: { level: 'high', source: 'prompted', target: PERFORMANCE_TARGET },
     team: { mode: 'main-agent', source: 'prompted' },
     codeGraphProvider: 'graphify',
+    codeGraphAcknowledged: true,
   }, 'codex', CURRENT), 'performance');
 });
 
@@ -84,6 +90,7 @@ test('nextLocalPreferenceStep reopens only Performance when plan or applied mode
     },
     team: { mode: 'subagents', source: 'prompted', approved: true },
     codeGraphProvider: 'gitnexus',
+    codeGraphAcknowledged: true,
   };
 
   assert.equal(nextLocalPreferenceStep(state, 'codex', CURRENT), 'performance');
@@ -99,6 +106,7 @@ test('semantic Performance target accepts the same catalog and rejects model dri
     performance: { level: 'low', source: 'prompted', target: PERFORMANCE_TARGET },
     team: { mode: 'main-agent', source: 'prompted' },
     codeGraphProvider: 'gitnexus',
+    codeGraphAcknowledged: true,
   };
 
   assert.equal(nextLocalPreferenceStep(state, 'codex', CURRENT), null);

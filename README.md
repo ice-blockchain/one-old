@@ -899,10 +899,14 @@ It removes, in this order:
 1. the user-level host integrations — the Kilo and OpenCode wrappers, the
    Windsurf/Cascade hooks and global rule (all three channels), and the Codex
    machine-global MCP block;
-2. `~/.traffic-one` — the saved API key, per-project preferences, runner shims,
-   and the managed toolchains (over 1 GB; reinstalled on a future setup);
-3. the plugin bundle, via `claude plugin uninstall` / `codex plugin remove`, for
-   every marketplace that has it.
+2. the plugin bundle, via `claude plugin uninstall` / `codex plugin remove`, for
+   every marketplace that has it;
+3. generated host Task/subagent files, using the project-root sidecars under
+   `~/.traffic-one/projects/<hash>/root` (`.cursor/agents`, `.kilo/agents`,
+   `.github/agents`, `.devin/agents`, leftover `.opencode/agents`, and OpenCode
+   `~/.config/opencode/agents/traffic-one-*.md`);
+4. `~/.traffic-one` — the saved API key, per-project preferences, runner shims,
+   and the managed toolchains (over 1 GB; reinstalled on a future setup).
 
 The order is load-bearing. The Kilo wrapper is fail-closed and its bundle path is
 baked in at install time, so a wrapper left behind after the bundle is gone denies
@@ -915,8 +919,12 @@ plugin UI; the command reports it when it finds one. Restart the host afterwards
 it loaded this session's hook wiring at startup and does not reload it, so hooks
 keep resolving to the removed bundle until it restarts.
 
-Onboarded projects are deliberately untouched — their `.traffic-one/` folders and
-generated instructions are project content, not plugin state.
+Onboarded project content stays (`.traffic-one/` except generated role files
+under `.traffic-one/agents/`, AGENTS.md, plan, memory, runs). Generated host
+Task/subagent files (`.cursor/agents`, `.kilo/agents`, `.github/agents`,
+`.devin/agents`, leftover `.opencode/agents`, OpenCode
+`~/.config/opencode/agents/traffic-one-*.md`) are
+removed when their generated marker matches.
 
 ---
 

@@ -38,6 +38,7 @@ import {
   type NvmProbe,
   type ProjectProbe,
   type CodexHooksProbe,
+  type CursorEdgesProbe,
 } from '../probes';
 import {
   CODEX_TRAFFIC_ONE_HOOK_KEYS,
@@ -631,6 +632,17 @@ const codexProbe = (over: Partial<CodexHooksProbe> = {}): CodexHooksProbe => ({
   host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true,
   hookTrust: healthyHookTrust(), trustCovered: true, ...over,
 });
+const cursorEdges = (over: Partial<CursorEdgesProbe> = {}): CursorEdgesProbe => ({
+  cursorPresent: true,
+  stateDbPath: '/home/dev/Library/Application Support/Cursor/User/globalStorage/state.vscdb',
+  stateDbReadable: true,
+  thirdPartyExtensibilityEnabled: true,
+  localInstallPresent: false,
+  localInstallPath: '/home/dev/.cursor/plugins/local/traffic-one',
+  claudeCachePresent: false,
+  claudeCachePath: '/home/dev/.claude/plugins/cache/traffic-one/traffic-one',
+  ...over,
+});
 
 test('buildFindings: session-not-found', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), sessionDiagnostics: { id: 's', found: false, sessionsDir: '/d' } });
@@ -756,6 +768,83 @@ test('buildFindings: exact runnable Codex hooks are healthy', () => {
   assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOK_ABI_MISMATCH'));
   assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_DISABLED'));
   assert.ok(!f.some((x) => x.code === 'CODEX_HOOK_TRUST_INDETERMINATE'));
+});
+
+test('buildFindings: omitted cursorEdges probe emits no Cursor edge findings', () => {
+  const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject() });
+  assert.ok(!f.some((x) => x.code === 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF'));
+  assert.ok(!f.some((x) => x.code === 'CURSOR_LOCAL_AND_IMPORTED'));
+});
+
+test('buildFindings: Cursor third-party extensibility is fix-needed when the flag is not true', () => {
+  const base = { node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject() };
+  const enabled = buildFindings({ ...base, cursorEdges: cursorEdges({ thirdPartyExtensibilityEnabled: true }) });
+  assert.ok(!enabled.some((x) => x.code === 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF'));
+
+  const off = buildFindings({ ...base, cursorEdges: cursorEdges({ thirdPartyExtensibilityEnabled: false }) });
+  const offFinding = off.find((x) => x.code === 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF');
+  assert.equal(offFinding?.severity, 'fix-needed');
+  assert.ok(!offFinding?.recommendedCommand);
+  assert.match(offFinding?.message || '', /silently dead/);
+  assert.match(offFinding?.message || '', /third-party extensibility/i);
+  assert.ok(!/plugin:sync/.test(offFinding?.message || ''));
+
+  const missing = buildFindings({ ...base, cursorEdges: cursorEdges({ thirdPartyExtensibilityEnabled: null }) });
+  assert.ok(missing.some((x) => x.code === 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF'));
+
+  const unread = buildFindings({
+    ...base,
+    cursorEdges: cursorEdges({ stateDbReadable: false, thirdPartyExtensibilityEnabled: null }),
+  });
+  assert.ok(!unread.some((x) => x.code === 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF'));
+
+  const absent = buildFindings({
+    ...base,
+    cursorEdges: cursorEdges({
+      cursorPresent: false,
+      stateDbReadable: true,
+      thirdPartyExtensibilityEnabled: false,
+    }),
+  });
+  assert.ok(!absent.some((x) => x.code === 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF'));
+});
+
+test('buildFindings: Cursor Local + imported Claude cache is fix-needed; either side alone is not', () => {
+  const base = { node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject() };
+  const localOnly = buildFindings({
+    ...base,
+    cursorEdges: cursorEdges({ localInstallPresent: true, claudeCachePresent: false }),
+  });
+  assert.ok(!localOnly.some((x) => x.code === 'CURSOR_LOCAL_AND_IMPORTED'));
+
+  const importedOnly = buildFindings({
+    ...base,
+    cursorEdges: cursorEdges({ localInstallPresent: false, claudeCachePresent: true }),
+  });
+  assert.ok(!importedOnly.some((x) => x.code === 'CURSOR_LOCAL_AND_IMPORTED'));
+
+  const both = buildFindings({
+    ...base,
+    cursorEdges: cursorEdges({ localInstallPresent: true, claudeCachePresent: true }),
+  });
+  const dup = both.find((x) => x.code === 'CURSOR_LOCAL_AND_IMPORTED');
+  assert.equal(dup?.severity, 'fix-needed');
+  assert.ok(!dup?.recommendedCommand);
+  assert.match(dup?.message || '', /fires twice/);
+  assert.match(dup?.message || '', /Local/);
+  assert.match(dup?.message || '', /plugins\/local\/traffic-one/);
+  assert.ok(!/plugin:sync/.test(dup?.message || ''));
+
+  const bothEdges = buildFindings({
+    ...base,
+    cursorEdges: cursorEdges({
+      thirdPartyExtensibilityEnabled: null,
+      localInstallPresent: true,
+      claudeCachePresent: true,
+    }),
+  });
+  assert.ok(bothEdges.some((x) => x.code === 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF'));
+  assert.ok(bothEdges.some((x) => x.code === 'CURSOR_LOCAL_AND_IMPORTED'));
 });
 
 test('buildFindings: official Codex hook findings distinguish ABI, disabled, trust, and indeterminate', () => {

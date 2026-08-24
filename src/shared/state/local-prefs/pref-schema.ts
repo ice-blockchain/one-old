@@ -31,6 +31,8 @@ function inSet(set: Set<string>, value: unknown): boolean {
 
 // Preferences that remain shared by all hosts used by this user on this project.
 // codeGraphProvider is intentionally NOT here: it is MACHINE-WIDE (one.json).
+// codeGraphAcknowledged IS here: a boolean project pref. It is not a path
+// field and not machine-wide — each project must acknowledge the picker.
 //
 // `originalPrompt` is the odd one out and is here for a PRIVACY reason, not
 // because it is a setting. It is the user's raw first request, stored with only
@@ -52,6 +54,7 @@ function inSet(set: Set<string>, value: unknown): boolean {
 // are NOT, and lose the seeded prompt as a stack signal.
 export const PROJECT_PREF_KEYS = new Set([
   'openCode', 'toolchain', 'agentActivity', 'originalPrompt',
+  'codeGraphAcknowledged',
   'codeGraphAutoRun', 'graphifyAutoRun', 'graphifyLastHintedAt', 'graphifyLastRunAt',
   'graphifyLastErrorAt', 'graphifyLastError', 'gitnexusLastRunAt', 'gitnexusLastErrorAt', 'gitnexusLastError',
 ]);

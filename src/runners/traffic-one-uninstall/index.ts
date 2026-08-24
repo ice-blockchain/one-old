@@ -20,8 +20,11 @@
 //      When XDG_STATE_HOME redirects the active state dir, a leftover pre-XDG
 //      ~/.traffic-one is swept as well — a full uninstall leaves neither behind.
 //
-// Onboarded projects are deliberately untouched: their `.traffic-one/` folders
-// and generated instructions are project content, not plugin state.
+// Onboarded project content stays: `.traffic-one/` except generated role files
+// under `.traffic-one/agents/`, plus AGENTS.md, plan, memory, and runs.
+// Generated host Task/subagent files do not — they are swept file-by-file
+// (marker match only) BEFORE ~/.traffic-one is deleted, using the project-root
+// sidecars under ~/.traffic-one/projects/<hash>/root plus process.cwd().
 //
 // Consent-gated like every other user-level mutation here: no `--yes`, no writes.
 //
@@ -56,6 +59,18 @@ import {
 } from '../windsurf-host';
 import { codexConfigPath } from '../../shared/codex-mcp';
 import { globalTrafficOneDir } from '../../shared/state/traffic-one-paths';
+import { projectRootHash, readProjectRootSidecar } from '../../shared/state/local-prefs';
+import {
+  isContainedProjectRoot,
+  listRecordedProjectRoots,
+  realResolve,
+  type RecordedProjectRoot,
+} from '../../shared/state/local-prefs/recorded-project-roots';
+import {
+  projectHasRoleContractRels,
+  sweepGeneratedRoleContractsInProject,
+  sweepOpenCodeGlobalGeneratedAgents,
+} from '../../shared/materialize/role-contract-uninstall';
 import { readRegularFileOrThrow } from '../../shared/bounded-read';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string }
@@ -269,6 +284,84 @@ function residueSteps(env: NodeJS.ProcessEnv, dryRun: boolean): Step[] {
   return residue.map((item) => removeResidue(item, env, dryRun));
 }
 
+function uninstallCwd(env: NodeJS.ProcessEnv): string {
+  return realResolve(env.TRAFFIC_ONE_CWD || process.cwd());
+}
+
+function cwdLooksLikeProject(cwd: string, env: NodeJS.ProcessEnv): boolean {
+  if (projectHasRoleContractRels(cwd)) return true;
+  return readProjectRootSidecar(path.join(globalTrafficOneDir(env), 'projects', projectRootHash(cwd))) !== null;
+}
+
+function sweepDetail(verb: string, removed: string[]): string {
+  if (removed.length === 0) return 'none generated';
+  return `${verb} ${removed.length}: ${removed.join(', ')}`;
+}
+
+function skipRecordedRootStep(rec: RecordedProjectRoot): Step {
+  const target = rec.root || '(missing)';
+  const reason = rec.status === 'hash-mismatch'
+    ? `sidecar root ${target} does not match bucket ${rec.hash}`
+    : rec.status === 'missing-root'
+      ? `bucket ${rec.hash} has no sidecar root`
+      : `sidecar root ${target} is not a contained project directory`;
+  return {
+    label: `recorded project ${rec.hash}`,
+    ok: true,
+    detail: `skipped ${rec.status}: ${reason}`,
+  };
+}
+
+function roleContractSweepSteps(env: NodeJS.ProcessEnv, dryRun: boolean): Step[] {
+  const steps: Step[] = [];
+  const verb = dryRun ? 'would remove' : 'removed';
+
+  const opencode = sweepOpenCodeGlobalGeneratedAgents(env, dryRun);
+  steps.push({
+    label: 'OpenCode global agents',
+    ok: true,
+    detail: opencode.removed.length === 0 && opencode.kept.length === 0
+      ? 'none present'
+      : sweepDetail(verb, opencode.removed),
+  });
+
+  const recorded = listRecordedProjectRoots(env);
+  const swept = new Set<string>();
+  for (const rec of recorded) {
+    if (rec.status !== 'ok' || !rec.root) {
+      steps.push(skipRecordedRootStep(rec));
+      continue;
+    }
+    const key = realResolve(rec.root);
+    if (swept.has(key)) continue;
+    swept.add(key);
+    const result = sweepGeneratedRoleContractsInProject(rec.root, env, dryRun);
+    steps.push({
+      label: `role contracts ${rec.root}`,
+      ok: true,
+      detail: sweepDetail(verb, result.removed),
+    });
+  }
+
+  const cwd = uninstallCwd(env);
+  const cwdKey = realResolve(cwd);
+  if (
+    !swept.has(cwdKey)
+    && isContainedProjectRoot(cwd, env)
+    && cwdLooksLikeProject(cwd, env)
+  ) {
+    swept.add(cwdKey);
+    const result = sweepGeneratedRoleContractsInProject(cwd, env, dryRun);
+    steps.push({
+      label: `role contracts ${cwd}`,
+      ok: true,
+      detail: sweepDetail(verb, result.removed),
+    });
+  }
+
+  return steps;
+}
+
 function pluginCliArgs(install: PluginInstall): string[] {
   const spec = `${PLUGIN_NAME}@${install.marketplace}`;
   return install.host === 'codex' ? ['plugin', 'remove', spec] : ['plugin', 'uninstall', spec];
@@ -450,6 +543,7 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
     }
     if (installs.length === 0) steps.push({ label: 'plugin bundle', ok: true, detail: 'no installed bundle found' });
     if (!options.keepPlugin) steps.push(...residueSteps(env, true));
+    steps.push(...roleContractSweepSteps(env, true));
     steps.push(...removeStateDirs(env, true));
     steps.push(pipxGraphifyStep(env));
     return { code: 0, steps };
@@ -478,6 +572,10 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
   // ~/.traffic-one. Skipped under --keep-plugin: these ARE the bundle.
   if (!options.keepPlugin) steps.push(...residueSteps(env, false));
 
+  // 3c. Generated host Task/subagent files, while ~/.traffic-one/projects/*/root
+  // sidecars still exist to name onboarded trees. Project content stays.
+  steps.push(...roleContractSweepSteps(env, false));
+
   // 4. Machine-global state LAST — after every step that could touch it, so the
   // user genuinely ends with no ~/.traffic-one.
   steps.push(...removeStateDirs(env, false));
@@ -501,8 +599,12 @@ function usage(): string {
     '~/.traffic-one (saved API key, per-project preferences, runner shims,',
     'managed toolchains).',
     '',
-    'Onboarded projects are never touched: their .traffic-one/ folders are',
-    'project content. Delete them per project, or with `git rm -r`.',
+    'Onboarded project content stays (.traffic-one/ except generated role files',
+    'under .traffic-one/agents/, AGENTS.md, plan, memory, runs). Generated host',
+    'Task/subagent files (.cursor/agents, .kilo/agents, .github/agents,',
+    '.devin/agents, leftover .opencode/agents, OpenCode',
+    '~/.config/opencode/agents/traffic-one-*.md) are',
+    'removed when their generated marker matches.',
     '',
     '  --yes           apply (required; nothing is written without it)',
     '  --dry-run       print the plan and exit',

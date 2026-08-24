@@ -324,7 +324,7 @@ tree:
 | The hook trace | It is already off. Do not set `TRAFFIC_ONE_HOOK_TRACE` and do not create the marker file |
 | Managed runtime downloads | `TRAFFIC_ONE_MANAGED_RUNTIME_OFF=1` |
 | The code-graph tools entirely | `"codeGraphAutoRun": false` in your local Traffic One preferences |
-| Everything, permanently | `node /path/to/traffic-one/dist/scripts/traffic-one-uninstall.cjs --yes` removes host integrations, all of `~/.traffic-one` (key included), and the bundle. Onboarded projects' `.traffic-one/` folders are deliberately left alone — they are your content |
+| Everything, permanently | `node /path/to/traffic-one/dist/scripts/traffic-one-uninstall.cjs --yes` removes host integrations, all of `~/.traffic-one` (key included), the bundle, and generated host Task/subagent files whose marker matches. Onboarded project content stays (`.traffic-one/` except generated role files under `.traffic-one/agents/`, AGENTS.md, plan, memory, runs) |
 
 ---
 

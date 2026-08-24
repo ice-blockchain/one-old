@@ -84,7 +84,9 @@ test('uninstallDirective prescribes confirmation, the apply command, and the res
   assert.ok(directive.includes(uninstallCommand(true)), 'directive carries the apply command');
   assert.ok(directive.includes(uninstallCommand(false)), 'directive carries the preview command');
   assert.match(directive, /RESTART Claude Code/);
-  assert.match(directive, /Onboarded projects are NOT touched/);
+  assert.match(directive, /Onboarded project content stays/);
+  assert.match(directive, /Generated host Task\/subagent files/);
+  assert.match(directive, /\.opencode\/agents/);
   assert.match(directive, /Cursor/);
 });
 

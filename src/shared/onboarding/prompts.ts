@@ -39,6 +39,7 @@ export function nextOnboardingStep(state: unknown, host?: unknown): OnboardingSt
   if (!hasValidTeamState(s.team)) return 'team';
   if (!hasValidProjectContext(s.projectContext)) return 'project-context';
   if (!hasResolvedNewProjectMobileState(s.mobile)) return 'mobile';
-  if (s.codeGraphProvider !== 'gitnexus' && s.codeGraphProvider !== 'graphify') return 'code-graph';
+  // A machine-wide provider is not an answer. Skip only when THIS project acked.
+  if (s.codeGraphAcknowledged !== true) return 'code-graph';
   return 'state';
 }

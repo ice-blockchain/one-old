@@ -76,11 +76,47 @@ test('initializeTrafficOneEnv migrates completed project-local Cursor answers be
 
     const machine = readOneSettings(env);
     assert.equal(machine.codeGraphProvider, 'gitnexus');
+    assert.equal(prefs.codeGraphAcknowledged, true,
+      'a completed project-local prefs file without the key is grandfathered, not re-asked');
 
     assert.equal(fs.existsSync(path.join(stateDir, 'preferences.json')), false);
     assert.equal(fs.existsSync(path.join(stateDir, 'machine.json')), false);
     assert.equal(fs.existsSync(path.join(stateDir, 'onboarding')), false);
     assert.equal(fs.existsSync(path.join(stateDir, '.one.json')), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('first canonical write from a legacy project-local prefs file grandfathers codeGraphAcknowledged', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runtime-env-ack-'));
+  const cwd = path.join(dir, 'project');
+  const home = path.join(dir, 'home');
+  const stateDir = path.join(cwd, '.traffic-one');
+  const env: NodeJS.ProcessEnv = { HOME: home };
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'preferences.json'), JSON.stringify({
+    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-13T08:56:01Z' },
+    pluginUse: { enabled: true, source: 'prompted', decidedAt: '2026-07-13T08:56:02Z' },
+    hosts: {
+      cursor: {
+        performance: {
+          level: 'low', source: 'prompted',
+          target: { plan: 'pro', appliedFingerprint: 'a'.repeat(64), configVersion: 0 },
+        },
+        team: { mode: 'main-agent', source: 'prompted' },
+      },
+    },
+  }), 'utf8');
+
+  try {
+    assert.equal(fs.existsSync(defaultProjectPrefsPath(cwd, env)), false,
+      'fixture guard: no canonical prefs file — grandfather must come from the legacy source');
+    initializeTrafficOneEnv(cwd, 'cursor', env);
+    const prefs = readProjectPrefs(cwd, env);
+    assert.equal(prefs.codeGraphAcknowledged, true);
+    const onDisk = JSON.parse(fs.readFileSync(defaultProjectPrefsPath(cwd, env), 'utf8'));
+    assert.equal(onDisk.codeGraphAcknowledged, true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

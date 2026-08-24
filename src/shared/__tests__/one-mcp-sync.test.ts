@@ -133,6 +133,7 @@ function preferenceStep(fx: Fixture): ReturnType<typeof nextLocalPreferenceStep>
     openCode: { enabled: false, source: 'prompted' },
     ...hostPrefs,
     codeGraphProvider: 'graphify',
+    codeGraphAcknowledged: true,
   }, 'codex', currentLocalPreferenceTarget('codex', fx.env, fx.cwd));
 }
 

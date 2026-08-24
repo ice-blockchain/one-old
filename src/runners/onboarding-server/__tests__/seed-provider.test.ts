@@ -5,7 +5,28 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { seedGlobalCodeGraphProviderIfInstalled } from '../seed-provider';
+import { nextOnboardingStep } from '../../../shared/onboarding/prompts';
 import { readGlobalCodeGraphProvider, writeGlobalCodeGraphProvider } from '../../../shared/state';
+import { initializeToolchainState } from '../../../shared/state/toolchain';
+
+const TOOLCHAIN = Object.fromEntries(
+  Object.keys(initializeToolchainState({})).map((k) => [k, { installedVersion: '1', installedAt: 'now' }]),
+);
+
+function nearCompleteNewProject(provider?: string): Record<string, unknown> {
+  return {
+    mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
+    projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
+    openCode: { enabled: false, source: 'prompted' },
+    ...(provider ? { codeGraphProvider: provider } : {}),
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+    performance: { level: 'high', source: 'prompted' },
+    toolchain: TOOLCHAIN,
+    confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
+  };
+}
 
 // Isolate every input the detection reads so the result is deterministic on any
 // machine: the global store (one.json), the per-project prefs (stamp target), the
@@ -34,7 +55,15 @@ function withSeedEnv(searchPath: string, fn: (cwd: string) => void): void {
   }
 }
 
-test('seed: an already-set global provider short-circuits (no probing)', () => {
+function fakeBin(dir: string, name: string, versionLine: string): void {
+  fs.writeFileSync(
+    path.join(dir, name),
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "${versionLine}"; fi\nexit 0\n`,
+    { mode: 0o755 },
+  );
+}
+
+test('seed: an already-set global provider short-circuits (no probing, no write needed)', () => {
   withSeedEnv('', (cwd) => {
     writeGlobalCodeGraphProvider('gitnexus');
     assert.equal(seedGlobalCodeGraphProviderIfInstalled(cwd), 'gitnexus');
@@ -54,17 +83,29 @@ test('seed: nothing installed → returns null and leaves the global unset', () 
   }
 });
 
-test('seed: an installed graphify binary is detected + seeded (no gitnexus on PATH)', () => {
+test('seed: an installed graphify binary is detected, one.json stays unset, step still code-graph', () => {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-seedbin-'));
-  fs.writeFileSync(
-    path.join(binDir, 'graphify'),
-    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "graphify 0.9.13"; fi\nexit 0\n',
-    { mode: 0o755 },
-  );
+  fakeBin(binDir, 'graphify', 'graphify 0.9.13');
   try {
     withSeedEnv(binDir, (cwd) => {
       assert.equal(seedGlobalCodeGraphProviderIfInstalled(cwd), 'graphify');
-      assert.equal(readGlobalCodeGraphProvider(), 'graphify');
+      assert.equal(readGlobalCodeGraphProvider(), null);
+      const state = nearCompleteNewProject(readGlobalCodeGraphProvider() ?? undefined);
+      assert.equal(nextOnboardingStep(state), 'code-graph');
+    });
+  } finally {
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
+test('seed: both gitnexus and graphify on PATH → detect gitnexus, no auto-write', () => {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-seedboth-'));
+  fakeBin(binDir, 'gitnexus', 'gitnexus 1.6.9');
+  fakeBin(binDir, 'graphify', 'graphify 0.9.13');
+  try {
+    withSeedEnv(binDir, (cwd) => {
+      assert.equal(seedGlobalCodeGraphProviderIfInstalled(cwd), 'gitnexus');
+      assert.equal(readGlobalCodeGraphProvider(), null);
     });
   } finally {
     fs.rmSync(binDir, { recursive: true, force: true });

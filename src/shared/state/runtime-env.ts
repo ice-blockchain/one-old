@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import type { HostId } from '../../core/types';
 import { readJson } from '../fsjson';
 import { readOneSettings, updateOneSettings, type OneSettingsPatch } from '../one-settings';
-import type { Rec } from '../obj';
+import { obj, type Rec } from '../obj';
 import {
   LOCAL_PREF_KEYS,
   mergeMissingProjectPrefs,
@@ -34,7 +34,16 @@ const MIGRATABLE_PROJECT_PREF_KEYS = new Set<string>([
 ]);
 
 function migratableProjectPrefs(value: unknown): Rec {
-  const normalized = normalizeProjectPrefs(value);
+  const raw = obj(value) || {};
+  // Same upgrade path as readProjectPrefs: a non-empty legacy prefs file that
+  // does not own the key is an already-onboarded project. Without this, the
+  // first write into the canonical store would persist `false` and reopen the
+  // picker.
+  const sourced = Object.keys(raw).length > 0
+    && !Object.prototype.hasOwnProperty.call(raw, 'codeGraphAcknowledged')
+    ? { ...raw, codeGraphAcknowledged: true }
+    : raw;
+  const normalized = normalizeProjectPrefs(sourced);
   return Object.fromEntries(
     Object.entries(normalized).filter(([key]) => MIGRATABLE_PROJECT_PREF_KEYS.has(key)),
   );

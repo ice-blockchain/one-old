@@ -3,10 +3,11 @@
 // settings file holding the validated wizard API-key record (`auth`) and the
 // machine-wide code-graph provider.
 //
-// Why consolidate: the code-graph provider becomes a machine-level setting so a
-// provider already chosen/installed locally is reused across projects (onboarding
-// stops re-prompting). Keeping auth alongside it means one secure (0o600)
-// settings file for all Traffic One machine state.
+// Why consolidate: the code-graph provider is a machine-level setting reused
+// by runners across projects. Onboarding still shows the picker on every new
+// project until that project acknowledges; an installed binary or an existing
+// one.json value is never a skip. Keeping auth alongside it means one secure
+// (0o600) settings file for all Traffic One machine state.
 //
 // Concurrency: auth and code-graph writes can overlap. Every mutation takes a bounded
 // cross-process lock, RE-READS the file while holding it, patches only the

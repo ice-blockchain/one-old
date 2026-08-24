@@ -21,6 +21,7 @@ import {
 } from './pref-schema';
 import {
   normalizeProjectPrefs,
+  projectPrefsPath,
   readProjectPrefs,
 } from './prefs-store';
 import {
@@ -30,10 +31,12 @@ import {
   extractProjectPrefs,
   stripLocalPreferenceFields,
 } from './prefs-split';
+import { writeProjectRootSidecarAt } from './project-root-sidecar';
 
 // ── Machine-wide code-graph provider (one.json, not per-project) ─────────────────
-// The provider becomes a global setting so a provider already chosen/installed
-// locally is reused across projects (onboarding stops re-prompting).
+// The provider is a machine-wide setting reused by runners and toolchain across
+// projects. Onboarding still asks each project to acknowledge — an installed
+// binary or a prior one.json value is never a default.
 
 export function readGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env): string | null {
   return codeGraphProviderFromValue(readOneSettings(env).codeGraphProvider);
@@ -47,9 +50,11 @@ export function writeGlobalCodeGraphProvider(provider: string, env: NodeJS.Proce
 }
 
 // Inject the machine-wide provider onto an ALREADY-effective state object, so every
-// downstream `state.codeGraphProvider` consumer + the onboarding routers read it
-// from the same place. Mutates and returns `state`. Used by readEffectiveState and
-// by the doctor's raw-state path (which builds effectiveState directly).
+// downstream `state.codeGraphProvider` consumer (toolchain, completeness, runners)
+// reads it from the same place. Mutates and returns `state`. Routers do not treat
+// this field as "already answered" — they require this project's
+// `codeGraphAcknowledged`. Used by readEffectiveState and by the doctor's
+// raw-state path (which builds effectiveState directly).
 export function applyGlobalCodeGraphProvider(
   state: Rec,
   env: NodeJS.ProcessEnv = process.env,
@@ -127,6 +132,16 @@ export {
   readProjectPrefs,
   writeProjectPrefs,
 } from './prefs-store';
+export {
+  projectRootSidecarPath,
+  readProjectRootSidecar,
+  resolvedProjectRoot,
+  writeProjectRootSidecarAt,
+} from './project-root-sidecar';
+
+export function writeProjectRootSidecar(cwd: string, env?: NodeJS.ProcessEnv): void {
+  writeProjectRootSidecarAt(projectPrefsPath(cwd, env), cwd);
+}
 export {
   advanceProjectHostPerformanceTargetMetadata,
   clearProjectHostPrefs,

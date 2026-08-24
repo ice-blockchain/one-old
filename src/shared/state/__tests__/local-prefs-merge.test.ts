@@ -11,9 +11,11 @@ import {
   mergeMissingProjectPrefs,
   mergeProjectHostPrefs,
   mergeProjectPrefs,
+  normalizeProjectPrefs,
   PROJECT_PREFS_LOCK_TIMEOUT_MS,
   readEffectiveState,
   readProjectPrefs,
+  writeProjectPrefs,
 } from '../local-prefs';
 import { scrubProjectStateLocalPrefs } from '../normalize';
 
@@ -588,4 +590,62 @@ test('the same shared project keeps different users preferences isolated by home
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('normalizeProjectPrefs does not invent codeGraphAcknowledged true for in-memory objects', () => {
+  const missing = normalizeProjectPrefs({ openCode: { enabled: true, source: 'prompted' } });
+  assert.equal(Object.prototype.hasOwnProperty.call(missing, 'codeGraphAcknowledged'), false);
+  assert.equal(normalizeProjectPrefs({ codeGraphAcknowledged: true }).codeGraphAcknowledged, true);
+  assert.equal(normalizeProjectPrefs({ codeGraphAcknowledged: false }).codeGraphAcknowledged, false);
+  const stripped = normalizeProjectPrefs({ codeGraphAcknowledged: 'yes' });
+  assert.equal(Object.prototype.hasOwnProperty.call(stripped, 'codeGraphAcknowledged'), false);
+});
+
+test('readProjectPrefs grandfathers a non-empty legacy file that does not own the key', () => {
+  withPrefs((cwd) => {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify({
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T00:00:00Z' },
+    }), 'utf8');
+    const prefs = readProjectPrefs(cwd);
+    assert.equal(prefs.codeGraphAcknowledged, true);
+  });
+});
+
+test('readProjectPrefs does not grandfather a missing or empty prefs file', () => {
+  withPrefs((cwd) => {
+    assert.equal(Object.prototype.hasOwnProperty.call(readProjectPrefs(cwd), 'codeGraphAcknowledged'), false);
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, '{}\n', 'utf8');
+    assert.equal(Object.prototype.hasOwnProperty.call(readProjectPrefs(cwd), 'codeGraphAcknowledged'), false);
+  });
+});
+
+test('a new prefs write persists codeGraphAcknowledged false so a later read does not grandfather', () => {
+  withPrefs((cwd) => {
+    mergeProjectPrefs(cwd, { openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T00:00:00Z' } });
+    const onDisk = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'));
+    assert.equal(Object.prototype.hasOwnProperty.call(onDisk, 'codeGraphAcknowledged'), true);
+    assert.equal(onDisk.codeGraphAcknowledged, false);
+    assert.equal(readProjectPrefs(cwd).codeGraphAcknowledged, false);
+  });
+});
+
+test('writeProjectPrefs itself persists codeGraphAcknowledged false when the incoming object lacks the key', () => {
+  withPrefs((cwd) => {
+    writeProjectPrefs(cwd, { openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T00:00:00Z' } });
+    const onDisk = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'));
+    assert.equal(Object.prototype.hasOwnProperty.call(onDisk, 'codeGraphAcknowledged'), true);
+    assert.equal(onDisk.codeGraphAcknowledged, false);
+    assert.equal(readProjectPrefs(cwd).codeGraphAcknowledged, false);
+  });
+});
+
+test('a grandfathered read keeps true across a later merge', () => {
+  withPrefs((cwd) => {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify({
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T00:00:00Z' },
+    }), 'utf8');
+    assert.equal(readProjectPrefs(cwd).codeGraphAcknowledged, true);
+    mergeProjectPrefs(cwd, { originalPrompt: 'keep the ack' });
+    assert.equal(readProjectPrefs(cwd).codeGraphAcknowledged, true);
+  });
 });

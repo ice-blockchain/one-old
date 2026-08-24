@@ -14,6 +14,7 @@ import { describeSettlementLegibility } from './run-diagnostic';
 import type { RunDiagnosticProbe } from './run-diagnostic';
 import type {
   CodexHooksProbe,
+  CursorEdgesProbe,
   GitnexusProbe,
   CanonicalAuthProbe,
   NodeProbe,
@@ -68,6 +69,9 @@ export interface BuildFindingsInput {
   // caller that predates the primitive passes probes positionally by name and
   // an absent ledger is indistinguishable from "no override was ever minted".
   overrides?: OverrideProbe | null;
+  // Cursor silent-break edges. Optional so callers that predate the probe
+  // (and unit tests that omit it) stay silent — absent means "not asked".
+  cursorEdges?: CursorEdgesProbe | null;
 }
 
 // A run whose ledger has reached one of these is DONE — nothing is expected to
@@ -360,7 +364,7 @@ function describeIllegibleLedger(kind: OverrideProbe['ledger']): string {
 
 export function buildFindings({
   node, nvm, gitnexus, project, codexHooks = null, oneMcp = null, openCodeMcp = null, sessionDiagnostics = null, pluginRoot = null,
-  runDiagnostic = null, overrides = null,
+  runDiagnostic = null, overrides = null, cursorEdges = null,
 }: BuildFindingsInput): Finding[] {
   const findings: Finding[] = [];
 
@@ -623,6 +627,25 @@ export function buildFindings({
         severity: 'fix-needed',
         code: 'CODEX_WORKSPACE_UNTRUSTED',
         message: `Current workspace (${codexHooks.cwd}) is not covered by a trusted Codex project root. Codex may skip plugin hooks here; trust this workspace or a parent directory before starting Traffic One work.`,
+      });
+    }
+  }
+
+  if (cursorEdges?.cursorPresent) {
+    if (cursorEdges.stateDbReadable && cursorEdges.thirdPartyExtensibilityEnabled !== true) {
+      const db = cursorEdges.stateDbPath ?? 'Cursor state.vscdb';
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CURSOR_THIRD_PARTY_EXTENSIBILITY_OFF',
+        message: `Cursor's UI, rules, and MCP can look installed while hooks are silently dead: \`thirdPartyExtensibilityEnabled\` is not \`true\` in ${db} (a missing key counts as off — a Claude install does not write this flag). Enable third-party extensibility in Cursor. Do not turn that setting off to hide a duplicate-hook symptom.`,
+      });
+    }
+    if (cursorEdges.localInstallPresent && cursorEdges.claudeCachePresent) {
+      const local = cursorEdges.localInstallPath ?? '~/.cursor/plugins/local/traffic-one';
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CURSOR_LOCAL_AND_IMPORTED',
+        message: `Traffic One is present both as a Cursor Local plugin (${local}) and as an imported Claude user-scope bundle. Every hook fires twice. Remove the Local copy and keep the imported Claude bundle; do not add the plugin again via /add-plugin.`,
       });
     }
   }

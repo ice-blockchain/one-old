@@ -181,7 +181,9 @@ function detectCodexPlan(env: NodeJS.ProcessEnv): string | null {
 }
 
 // Cursor's global-storage SQLite path per OS (it's a VS Code fork).
-function cursorStateDb(env: NodeJS.ProcessEnv): string {
+// Exported so doctor can read the same HOME / APPDATA / XDG_CONFIG_HOME location
+// (the sync-hosts helper is macOS-only and lives outside the hook runtime).
+export function cursorStateDb(env: NodeJS.ProcessEnv): string {
   const home = homeDir(env);
   if (process.platform === 'darwin') {
     return path.join(home, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb');

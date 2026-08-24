@@ -98,7 +98,8 @@ test('the wizard step and done are decided by the per-user consent, not by a cop
     // ── consent PRESENT: the real wizard answer, recorded in the per-user store.
     assert.equal(computeOnboarding(cwd).step, 'open-code', 'fixture guard: the consent step is the one being answered');
     assert.equal(applyAnswer(cwd, 'open-code', 'enable').ok, true, 'writable baseline: the answer lands');
-    assert.equal(applyAnswer(cwd, 'performance', 'low').ok, true, 'writable baseline: the last preference lands');
+    assert.equal(applyAnswer(cwd, 'performance', 'low').ok, true, 'writable baseline: the performance answer lands');
+    assert.equal(applyAnswer(cwd, 'code-graph', 'gitnexus').ok, true, 'writable baseline: this project acks the picker');
 
     const answered = computeOnboarding(cwd);
     assert.equal(answered.done, true, 'consent present: onboarding is done');

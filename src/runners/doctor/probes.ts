@@ -371,3 +371,4 @@ export {
   probeNvm,
   probeProject,
 } from './probes-toolchain';
+export { probeCursorEdges, type CursorEdgesProbe } from './cursor-edges';

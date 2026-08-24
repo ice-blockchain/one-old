@@ -117,5 +117,9 @@ export function preseed(cwd: string, ps: PreSeed): boolean {
     });
   }
 
+  // Finished fixtures acknowledge the picker. A global provider alone must not
+  // skip it for a live new project; preseed is simulating an already-onboarded one.
+  mergeProjectPrefs(cwd, { codeGraphAcknowledged: true });
+
   return seeded;
 }
