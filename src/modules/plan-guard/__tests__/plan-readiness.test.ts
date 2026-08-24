@@ -273,6 +273,36 @@ test('plan-gate: new project, no plan.md, writing feature source', () => {
   });
 });
 
+test('plan-gate: bounded-maintenance envelope exempts the exact allowlisted file on a new project without plan.md', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: false,
+      currentRunId: 'R',
+      activeAgentRole: 'senior-frontend',
+    };
+    writeStateFile(dir, state);
+    assert.ok(ensureRunBootstrap(dir, 'R', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: 'policy-bounded-plan-gate',
+      boundedOutputs: ['src/News.tsx'],
+      boundedAllowlist: ['src/News.tsx'],
+    }), 'must publish senior-frontend:bounded-maintenance');
+    const covered = planReadinessViolations({
+      filePath: 'src/News.tsx', content: '', projectRoot: dir,
+      state, writingFeatureSource: true, block: names,
+    });
+    assert.ok(!covered.includes('plan-gate'), `covered write must skip plan-gate, got: ${covered.join(', ')}`);
+    const outside = planReadinessViolations({
+      filePath: 'src/Other.tsx', content: '', projectRoot: dir,
+      state, writingFeatureSource: true, block: names,
+    });
+    assert.ok(outside.includes('plan-gate'), `write outside the envelope must still hit plan-gate, got: ${outside.join(', ')}`);
+  });
+});
+
 test('plan-main-agent-gate: Low/main-agent writes the plan in the current thread instead of spawning', () => {
   withProject((dir) => {
     const v = planReadinessViolations({

@@ -51,8 +51,9 @@ import { defaultConfig } from '../test-config';
 
 interface Measured {
   caseId: string;
-  /** What openCodeDelegationActive() — the predicate the spawn gate and the
-   *  OpenCode-first triage clause ask — answers for the seeded project. */
+  /** What openCodeDelegationActive() — the CLI-stamped half of the spawn gate
+   *  (spawn also requires the MCP shim) and the OpenCode-first triage clause —
+   *  answers for the seeded project. */
   active: boolean;
   /** What the real assertion reported about it. */
   status: AssertionStatus;

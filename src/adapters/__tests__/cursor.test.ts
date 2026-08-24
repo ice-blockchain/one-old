@@ -304,6 +304,38 @@ test('cursor: NET-NEW — generic preToolUse(Write) fires a PreToolUse/file-writ
   assert.equal(out.permission, 'deny');
 });
 
+const SPAWN_PRETOOLUSE_DENY_PREFIX =
+  'TRAFFIC ONE GATE (not a host crash). Do not retry this Task unchanged. Next action:';
+
+test('cursor: spawn-agent PreToolUse deny prefixes user/agent messages (not a host crash)', async () => {
+  const spawnGate: Handler[] = [
+    { id: 'spawn', event: 'PreToolUse', tools: ['spawn-agent'], priority: 0, run: () => deny('architect first') },
+  ];
+  const out = JSON.parse(await dispatch(cursor, spawnGate, inv('before-tool-use', {
+    tool_name: 'Task',
+    tool_input: { subagent_type: 'senior-frontend' },
+  })));
+  assert.equal(out.permission, 'deny');
+  const expected = `${SPAWN_PRETOOLUSE_DENY_PREFIX}\n\narchitect first`;
+  assert.equal(out.user_message, expected);
+  assert.equal(out.agent_message, expected);
+  assert.ok(out.user_message.startsWith(SPAWN_PRETOOLUSE_DENY_PREFIX));
+});
+
+test('cursor: file-write PreToolUse deny is NOT spawn-prefixed', async () => {
+  const writeGate: Handler[] = [
+    { id: 'w', event: 'PreToolUse', tools: ['file-write'], priority: 0, run: () => deny('write blocked') },
+  ];
+  const out = JSON.parse(await dispatch(cursor, writeGate, inv('before-tool-use', {
+    tool_name: 'Write',
+    tool_input: { file_path: '/a.ts' },
+  })));
+  assert.equal(out.permission, 'deny');
+  assert.equal(out.user_message, 'write blocked');
+  assert.equal(out.agent_message, 'write blocked');
+  assert.equal(out.user_message.startsWith(SPAWN_PRETOOLUSE_DENY_PREFIX), false);
+});
+
 test('cursor: DE-DUP — generic preToolUse(Shell) does NOT fire a PreToolUse/shell gate (before-shell-execution owns it)', async () => {
   const shellGate: Handler[] = [{ id: 's', event: 'PreToolUse', tools: ['shell'], priority: 0, run: () => deny('shell blocked') }];
   const fixed = JSON.parse(await dispatch(cursor, shellGate, inv('before-shell-execution', { command: 'rm' })));

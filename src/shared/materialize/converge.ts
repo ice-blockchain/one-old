@@ -267,11 +267,13 @@ export function materializeRefusedOutcome(result: MaterializeResult): Materializ
  * to converge again, so without them `materializeProjectIfNeeded` re-materializes
  * on every call and keeps returning a NON-NULL outcome. Its consumer in
  * onboarding-gate/handler.ts denies EVERY non-null outcome on a mutating
- * PreToolUse; it picks the id by STATUS — `repaired-materialization` ("we just
- * repaired it, retry") for the two that converged, `materialization-not-converged`
- * for the rest — so a refused stamp turns a self-healing condition into a
- * permanent deny loop over assets that are already on disk, with nothing in
- * either message naming the write that was refused. Reported as `failed` and
+ * non-spawn PreToolUse; it picks the id by STATUS — `repaired-materialization`
+ * ("we just repaired it, retry") for the two that converged,
+ * `materialization-not-converged` for the rest — so a refused stamp turns a
+ * self-healing condition into a permanent deny loop over assets that are
+ * already on disk, with nothing in either message naming the write that was
+ * refused. Spawn never takes that deny: after a successful converge it
+ * proceeds with context. Reported as `failed` and
  * naming the fence and the exact path, the way persistCompiledArchitecture does:
  * `failed` lands in that second bucket, so the refusal an operator can act on is
  * what the deny quotes instead of a repair instruction that cannot work.

@@ -4,6 +4,8 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { stableBinDir } from '../runner-shims';
+
 import {
   deriveBatchOutcomeFromUnits,
   hasFreshArchitectQueueForRun,
@@ -202,30 +204,77 @@ test('openCodeDelegateRoles: default when unset, verbatim when set, sanitized', 
   assert.deepEqual(openCodeDelegateRoles({ openCode: { delegateRoles: [] } }), []);
 });
 
-test('shouldRunRoleOnOpenCode: requires enabled + role in the configured set', () => {
-  const enabled = { openCode: { enabled: true } };
-  assert.equal(shouldRunRoleOnOpenCode('senior-tester', enabled), true);   // default set
-  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', enabled), true);
-  assert.equal(shouldRunRoleOnOpenCode('senior-backend', enabled), false); // not in default set
-  assert.equal(shouldRunRoleOnOpenCode('senior-tester', { openCode: { enabled: false } }), false); // not enabled
-  assert.equal(shouldRunRoleOnOpenCode('senior-tester', {}), false);
-  // honors a custom set
-  assert.equal(shouldRunRoleOnOpenCode('senior-backend', { openCode: { enabled: true, delegateRoles: ['senior-backend'] } }), true);
-  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, delegateRoles: ['senior-backend'] } }), false);
+function withTempOpenCodeShim(writeShim: boolean, fn: () => void): void {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocshim-'));
+  const saved = process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(tmp, 'toolchains');
+  try {
+    if (writeShim) {
+      const binDir = stableBinDir();
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(path.join(binDir, 'opencode-mcp.cjs'), '// test shim\n', 'utf8');
+    }
+    fn();
+  } finally {
+    if (saved === undefined) delete process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+    else process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = saved;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+const OPENCODE_READY = {
+  openCode: { enabled: true },
+  toolchain: { opencode: { installedVersion: '1.17.8' } },
+};
+
+test('shouldRunRoleOnOpenCode: enabled without installedVersion is false (unified with triage)', () => {
+  withTempOpenCodeShim(true, () => {
+    assert.equal(shouldRunRoleOnOpenCode('senior-tester', { openCode: { enabled: true } }, 'claude'), false);
+    assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true } }, 'cursor'), false);
+  });
+});
+
+test('shouldRunRoleOnOpenCode: enabled + installedVersion + missing shim is false', () => {
+  withTempOpenCodeShim(false, () => {
+    assert.equal(shouldRunRoleOnOpenCode('senior-tester', OPENCODE_READY, 'claude'), false);
+    assert.equal(shouldRunRoleOnOpenCode('senior-frontend', OPENCODE_READY, 'cursor'), false);
+  });
+});
+
+test('shouldRunRoleOnOpenCode: enabled + stamped + shim + role in set + paid host is true', () => {
+  withTempOpenCodeShim(true, () => {
+    assert.equal(shouldRunRoleOnOpenCode('senior-tester', OPENCODE_READY, 'claude'), true);
+    assert.equal(shouldRunRoleOnOpenCode('senior-frontend', OPENCODE_READY, 'claude'), true);
+    assert.equal(shouldRunRoleOnOpenCode('senior-frontend', OPENCODE_READY, 'codex'), true);
+    assert.equal(shouldRunRoleOnOpenCode('senior-frontend', OPENCODE_READY, 'cursor'), true);
+    assert.equal(shouldRunRoleOnOpenCode('senior-backend', OPENCODE_READY, 'claude'), false); // not in default set
+    assert.equal(shouldRunRoleOnOpenCode('senior-tester', { openCode: { enabled: false }, toolchain: OPENCODE_READY.toolchain }, 'claude'), false);
+    assert.equal(shouldRunRoleOnOpenCode('senior-tester', {}, 'claude'), false);
+    assert.equal(shouldRunRoleOnOpenCode('senior-backend', {
+      openCode: { enabled: true, delegateRoles: ['senior-backend'] },
+      toolchain: OPENCODE_READY.toolchain,
+    }, 'claude'), true);
+    assert.equal(shouldRunRoleOnOpenCode('senior-frontend', {
+      openCode: { enabled: true, delegateRoles: ['senior-backend'] },
+      toolchain: OPENCODE_READY.toolchain,
+    }, 'claude'), false);
+  });
 });
 
 test('shouldRunRoleOnOpenCode applies on paid hosts and is inert on OpenCode-compatible self hosts', () => {
-  const enabled = { openCode: { enabled: true } };
-  // OpenCode delegation is a paid-host feature; OpenCode/Kilo hosts are inert.
-  for (const role of ['senior-frontend', 'senior-tester', 'quick-fix']) {
-    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'claude'), true);
-    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'codex'), true);
-    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'cursor'), true);
-    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'opencode'), false);
-    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'kilo'), false);
-  }
-  // a pinned model does not change eligibility — only enabled + role-in-set do
-  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.5' } }, 'codex'), true);
+  withTempOpenCodeShim(true, () => {
+    for (const role of ['senior-frontend', 'senior-tester', 'quick-fix']) {
+      assert.equal(shouldRunRoleOnOpenCode(role, OPENCODE_READY, 'claude'), true);
+      assert.equal(shouldRunRoleOnOpenCode(role, OPENCODE_READY, 'codex'), true);
+      assert.equal(shouldRunRoleOnOpenCode(role, OPENCODE_READY, 'cursor'), true);
+      assert.equal(shouldRunRoleOnOpenCode(role, OPENCODE_READY, 'opencode'), false);
+      assert.equal(shouldRunRoleOnOpenCode(role, OPENCODE_READY, 'kilo'), false);
+    }
+    assert.equal(shouldRunRoleOnOpenCode('senior-frontend', {
+      openCode: { enabled: true, model: 'opencode/gpt-5.5' },
+      toolchain: OPENCODE_READY.toolchain,
+    }, 'codex'), true);
+  });
 });
 
 test('opencode role attempt marker: write then detect (per run + role)', () => {

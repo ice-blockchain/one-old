@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
+import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode, detectStackFromCodebase } from '../../shared/detection';
@@ -88,6 +89,15 @@ const block = (name: string, vars: Record<string, string | number | null | undef
 // coarse `before-read-file`/`before-grep` subcommands arrive here already mapped
 // to Read/Grep by their tool CLASS.
 const READ_ONLY_INSPECTION_TOOL = /^(Read|Glob|Grep|LS|NotebookRead)$/i;
+const SPAWN_TOOL_NAME = /^(Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i;
+const SPAWN_AFTER_MATERIALIZE_MESSAGE =
+  'Traffic One refreshed project-local rules/skills; this spawn may proceed';
+
+function isSpawnAgentToolUse(ctx: Ctx, toolName: string): boolean {
+  if (ctx.input.tool?.class === 'spawn-agent') return true;
+  const raw = ctx.input.tool?.rawName || toolName;
+  return SPAWN_TOOL_NAME.test(stripToolNamespace(raw));
+}
 
 function isReadOnlyInspectionTool(toolName: string): boolean {
   const name = toolName.includes('.') ? (toolName.split('.').pop() as string) : toolName;
@@ -742,17 +752,26 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // returns an outcome for seven statuses (shared/materialize/converge.ts) and
     // only two of them mean the project is now current: 'materialized' (content
     // was rewritten) and 'current' (convergence ran, found nothing to change,
-    // and re-stamped the state). For those two the repair paragraph is true and
-    // its remedy works — the next call short-circuits and the tool runs.
+    // and re-stamped the state).
     //
-    // The others did not converge: 'skipped' (five plugin-root/consent causes),
-    // 'incomplete' (an invalid `.one.json`), 'failed' (the writer threw, or the
-    // stamp was refused). Denying stays correct for every one of them —
-    // proceeding is what deletes `.traffic-one/rules` and `.traffic-one/skills`,
-    // the project's only copy of content a short plugin root cannot resupply —
-    // so only the REASON changes, to the diagnosis the read-only arm below
-    // already hands over. Told they had been "repaired", those cases prescribed
-    // a rerun that cannot work and repeats until the run ends.
+    // SPAWN NEVER takes the repair deny. A spawn is not a file-changing tool,
+    // and even if someone later classifies it as mutating, `isSpawnAgentToolUse`
+    // keeps `repaired-materialization` off this path — the child must be able
+    // to start against the tree this call just wrote. Status materialized/
+    // current returns context so the spawn may proceed; any other status
+    // attaches the diagnosis the same way a read-only tool already did.
+    //
+    // MUTATING NON-SPAWN keeps today's deny-for-retry. For materialized/current
+    // the repair paragraph is true and its remedy works — the next call
+    // short-circuits and the tool runs. The others did not converge: 'skipped'
+    // (five plugin-root/consent causes), 'incomplete' (an invalid `.one.json`),
+    // 'failed' (the writer threw, or the stamp was refused). Denying stays
+    // correct for every one of them — proceeding is what deletes
+    // `.traffic-one/rules` and `.traffic-one/skills`, the project's only copy
+    // of content a short plugin root cannot resupply — so only the REASON
+    // changes, to the diagnosis the read-only arm below already hands over.
+    // Told they had been "repaired", those cases prescribed a rerun that
+    // cannot work and repeats until the run ends.
     //
     // WRAPPED rather than passed through, because the diagnosis is not written
     // to be the last thing an agent reads: 'failed' from a throw ends on an
@@ -762,6 +781,11 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // whole rendered reason, and this one repeats byte-identically by
     // construction, so a prescribed retry would drive the agent into the
     // escalation at DENY_REPEAT_ESCALATE_AT for doing what it was told.
+    if (isSpawnAgentToolUse(ctx, toolName)) {
+      return (materialized.status === 'materialized' || materialized.status === 'current')
+        ? context(materialized.context, { systemMessage: SPAWN_AFTER_MATERIALIZE_MESSAGE })
+        : context(materialized.context, { systemMessage: materialized.systemMessage });
+    }
     if (isMutatingPreToolUse(toolName, toolInput)) {
       return (materialized.status === 'materialized' || materialized.status === 'current')
         ? deny(block('repaired-materialization'), { denyId: 'repaired-materialization' })

@@ -102,7 +102,11 @@ Only `senior-architect` authors that file, in complex-tier runs.
   performance level: `senior-frontend` for UI/pages/routes and `senior-backend` for a bounded
   server/data seam. If the request truly needs both layers, spawn those two roles in parallel. Do not
   spawn an architect or create `plan-<feature>.md`; escalate to complex only when opening the files
-  reveals cross-cutting impact.
+  reveals cross-cutting impact. Every small-tier `senior-frontend` / `senior-backend` spawn MUST
+  include ONE `[t1-bounded-scope: {"outputs":["exact/file.ts"]}]` line naming every exact
+  repo-relative path the unit may create or modify (no globs or directories). Without it the spawn
+  is denied (`spawn-bounded-scope-missing`). Skip architect only because that marker (or an
+  already-published `<role>:bounded-maintenance` envelope) replaces PLAN_READY for this small unit.
   - **Reuse the live role agent across requests:** before a fresh spawn, check
     `.traffic-one/runs/<runId>/agents.json` — when a live agent is already recorded for the role,
     CONTINUE it with the new bounded task instead of spawning again (the spawn gate denies a

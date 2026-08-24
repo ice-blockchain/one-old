@@ -820,6 +820,9 @@ const TS_ONLY_PROSE: readonly string[] = [
 // empty and the resolved+exempt==total assertion below keeps it that way), so
 // "unreferenced" here means unreferenced, not merely unresolvable by parse.
 const ORPHAN_BLOCKS: readonly string[] = [
+  // Kept in SKILL.md / the fallback table; unused on the success path after
+  // first-spawn materialization falls through instead of teaching via deny.
+  'agent-model :: agent-materialization-deny',
   'plan-guard :: architecture-assignment-gate',
   'plan-guard :: run-team-unexpected',
 ];

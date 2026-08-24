@@ -745,7 +745,10 @@ test('preSpawnOrchestrationDirective: kilo subagents new-project emits spawn-fir
     const d = preSpawnOrchestrationDirective(dir, 'kilo');
     assert.match(d, /senior-architect/i);
     assert.match(d, /subagent_type/i);
-    assert.equal(preSpawnOrchestrationDirective(dir, 'cursor'), '');
+    const cursor = preSpawnOrchestrationDirective(dir, 'cursor');
+    assert.match(cursor, /generalPurpose/);
+    assert.match(cursor, /\[t1-role: senior-architect\]/);
+    assert.match(cursor, /do NOT set `run_in_background`/);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     fs.rmSync(dir, { recursive: true, force: true });

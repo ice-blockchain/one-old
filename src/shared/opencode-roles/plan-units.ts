@@ -9,6 +9,8 @@ import { detectHost } from '../host';
 import { hostFlags } from '../host/capability-flags';
 import { canonicalHost } from '../model-tiers';
 import { obj } from '../obj';
+import { openCodeMcpShimPresent } from '../opencode-mcp-ready';
+import { openCodeDelegationActive } from '../performance';
 
 export type Rec = Record<string, unknown>;
 export const OPENCODE_PLAN_MIN_UNITS = 3;
@@ -60,13 +62,14 @@ export function openCodeParallelImplementers(state: unknown): boolean {
   return obj(obj(state)?.openCode)?.parallelImplementers === true;
 }
 
-// Should this role run on OpenCode rather than a paid subagent? Delegation is a
-// paid-host feature: paid hosts may offload to OpenCode, but OpenCode/Kilo hosts
-// must not self-delegate or spawn the worker recursively.
+// Should this role run on OpenCode rather than a paid subagent? Same readiness
+// as triage (`openCodeDelegationActive`: enabled + CLI stamped) plus a cheap
+// MCP-shim existsSync. Missing shim → false so the paid spawn proceeds instead
+// of the one-shot OpenCode-first deny. Self-hosted hosts stay inert.
 export function shouldRunRoleOnOpenCode(role: string, state: unknown, host: unknown = detectHost()): boolean {
-  const h = canonicalHost(host);
-  if (hostFlags(h).opencodeSelfHosted) return false;
-  if (!role || !openCodeEnabled(state)) return false;
+  if (hostFlags(canonicalHost(host)).opencodeSelfHosted) return false;
+  if (!role || !openCodeDelegationActive(state, host)) return false;
+  if (!openCodeMcpShimPresent()) return false;
   return openCodeDelegateRoles(state).includes(role);
 }
 

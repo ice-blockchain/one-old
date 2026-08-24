@@ -48,6 +48,8 @@ function exactQuickFixPaths(value: unknown): string[] | null {
   return [...new Set(paths)].sort();
 }
 
+/** Shared bounded-scope parser for `quick-fix`, `senior-frontend`, and
+ *  `senior-backend`. Rejects globs, directories, `.traffic-one/**`, and `..`. */
 export function quickFixScopeFromSpawn(toolInput: Rec, prompt: string): QuickFixScopeInput {
   const candidates = [
     toolInput.allowedFiles,

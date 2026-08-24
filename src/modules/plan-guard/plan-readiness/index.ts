@@ -796,7 +796,17 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   const planMissing = !fs.existsSync(path.join(projectRoot, '.traffic-one', 'plan.md'));
   const writingPlan = PLAN_FILE_RE.test(filePath);
   const writingDoc = ADR_OR_DOC_RE.test(filePath);
+  let boundedMaintenanceWrite = false;
+  if ((writerRole === 'senior-frontend' || writerRole === 'senior-backend') && currentRunId) {
+    const envelope = readActiveRunBootstrap(projectRoot, currentRunId, writerRole);
+    if (envelope && envelope.workUnit.unitId === `${writerRole}:bounded-maintenance`) {
+      const normalized = filePath.trim().replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/');
+      boundedMaintenanceWrite = envelope.workUnit.outputs.includes(normalized)
+        || envelope.workUnit.allowlist.includes(normalized);
+    }
+  }
   if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc
+    && !boundedMaintenanceWrite
   ) {
     if (usesMainAgentTeam(state)) {
       violations.push(block('plan-main-agent-gate',

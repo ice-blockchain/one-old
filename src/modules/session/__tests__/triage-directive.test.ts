@@ -243,6 +243,7 @@ test('Kilo prompt boundary bypasses stale claim suppression but preserves a nont
     assert.match(directive, /MAINTENANCE PHASE/);
     assert.match(directive, /Keyword hint: small/);
     assert.match(directive, /Do NOT spawn `senior-architect`/);
+    assert.match(directive, /t1-bounded-scope|bounded-scope/);
   } finally {
     cleanup(dir);
   }

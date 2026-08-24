@@ -13,6 +13,7 @@ import { subagentStartBind } from '../subagent-bind';
 import { opencodeSubagentBind } from '../opencode-subagent-bind';
 import { SPAWN_BRIEF_KEYS, inferTrafficOneSpawnRole, inferTrafficOneSpawnRoleEvidence } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
+import { stableBinDir } from '../../../shared/runner-shims';
 import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
@@ -409,6 +410,24 @@ function queueDelegateRoles(cwd: string, roles: string[]): void {
   writeArchitectPhaseComplete(cwd, runId, one);
 }
 
+function withTempOpenCodeShim(writeShim: boolean, fn: () => void): void {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocshim-'));
+  const saved = process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(tmp, 'toolchains');
+  try {
+    if (writeShim) {
+      const binDir = stableBinDir();
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(path.join(binDir, 'opencode-mcp.cjs'), '// test shim\n', 'utf8');
+    }
+    fn();
+  } finally {
+    if (saved === undefined) delete process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+    else process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = saved;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 test('non-spawn tools are ignored', () => {
   const cwd = process.cwd();
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: 'Bash' }, tool: { class: 'shell' as ToolClass, rawName: 'Bash', command: 'ls' } };
@@ -560,7 +579,9 @@ test('spawn identity conflict is denied before any role claim is staked', () => 
 
 test('team not approved → deny with the Team Confirmation prose', () => {
   withMaterialized({ teamApproved: false }, (cwd) => {
-    const r = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    // senior-tester is not architect-phase gated; implementers would hit
+    // architect-phase-incomplete first now that that check runs before OpenCode.
+    const r = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(r.reason.includes('Team gate') && r.reason.includes('team.approved'));
   });
@@ -1757,6 +1778,7 @@ test('team.overrides cannot lift the quick-fix pin', () => {
 });
 
 test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls back to cheapest', () => {
+  withTempOpenCodeShim(true, () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
@@ -1778,6 +1800,7 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
       prompt: QUICK_FIX_SCOPE_MARKER,
     })).kind, 'noop');
   });
+  });
 });
 
 test('architect phase gate: blocks implementers when plan exists but baseline is incomplete', () => {
@@ -1794,7 +1817,36 @@ test('architect phase gate: blocks implementers when plan exists but baseline is
   });
 });
 
-test('architect phase gate rejects legacy sibling assignments in a maintenance v2 run', () => {
+test('architect phase gate beats leftover OpenCode Step-0 queue (incomplete architect, not plan-batch)', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const t1 = path.join(cwd, '.traffic-one');
+    const onePath = path.join(t1, '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-leftover-queue';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    // Leftover Step-0 queue only — do NOT complete architect (queueDelegateRoles would).
+    fs.writeFileSync(path.join(t1, 'plan.md'),
+      '# leftover queue from a prior build\n'
+      + '<!-- opencode-delegate:start -->\n'
+      + '- id: leftover-fe | role: frontend | files: a.ts | task: leftover unit. Acceptance: ok.\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.equal(denied.denyId, 'architect-phase-incomplete');
+      assert.ok(!denied.reason.includes('OpenCode plan-batch gate'), 'leftover queue must not win over incomplete architect');
+      assert.ok(denied.reason.includes('spawn `senior-architect`'), 'prose leads with the next action');
+    }
+  });
+});
+
+test('maintenance v2 unscoped frontend is spawn-bounded-scope-missing not architect-phase; scoped spawn publishes envelope', () => {
   withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
     const t1 = path.join(cwd, '.traffic-one');
     fs.writeFileSync(path.join(t1, 'plan.md'), '# partial plan', 'utf8');
@@ -1806,12 +1858,23 @@ test('architect phase gate rejects legacy sibling assignments in a maintenance v
     one.lifecycle = { phase: 'maintenance', source: 'prompt-boundary' };
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
 
-    // No assignments manifest anywhere → the gate still fires (nothing to scope by).
+    const scopeMarker = '[t1-bounded-scope: {"outputs":["src/News.tsx"]}]';
+
+    // Unscoped spawn: architect stands down so the missing-scope deny can name
+    // the real fix. Must NOT be architect-phase-incomplete.
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(denied.kind, 'deny');
-    if (denied.kind === 'deny') assert.ok(denied.reason.includes('Architect phase gate'));
+    if (denied.kind === 'deny') {
+      assert.equal(denied.denyId, 'spawn-bounded-scope-missing');
+      assert.ok(
+        denied.reason.includes('t1-bounded-scope') || denied.reason.includes('bounded maintenance'),
+        `unscoped deny must name bounded scope, got: ${denied.reason}`,
+      );
+      assert.ok(!denied.reason.includes('Architect phase gate'));
+      assert.notEqual(denied.denyId, 'architect-phase-incomplete');
+    }
 
-    // A sibling BUILD manifest is not authority for this fresh run.
+    // A sibling BUILD manifest is not authority for an UNSCOPED spawn.
     fs.mkdirSync(path.join(t1, 'runs', 'run-build'), { recursive: true });
     fs.writeFileSync(path.join(t1, 'runs', 'run-build', 'assignments.json'), JSON.stringify({
       version: 1,
@@ -1821,7 +1884,64 @@ test('architect phase gate rejects legacy sibling assignments in a maintenance v
     }), 'utf8');
     const stillDenied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(stillDenied.kind, 'deny');
-    if (stillDenied.kind === 'deny') assert.match(stillDenied.reason, /Architect phase gate/);
+    if (stillDenied.kind === 'deny') {
+      assert.equal(stillDenied.denyId, 'spawn-bounded-scope-missing');
+      assert.ok(!stillDenied.reason.includes('Architect phase gate'));
+    }
+
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: scopeMarker,
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const envelope = readActiveRunBootstrap(cwd, 'run-maint-2', 'senior-frontend');
+    assert.equal(envelope?.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+    assert.ok(envelope?.workUnit.outputs.includes('src/News.tsx'));
+  });
+});
+
+test('scoped senior-frontend spawn skips architect on new-project without plan.md', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const t1 = path.join(cwd, '.traffic-one');
+    const onePath = path.join(t1, '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-small-new';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    const planPath = path.join(t1, 'plan.md');
+    if (fs.existsSync(planPath)) fs.unlinkSync(planPath);
+
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      model: 'opus',
+      prompt: '[t1-bounded-scope: {"outputs":["src/News.tsx"]}]',
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const envelope = readActiveRunBootstrap(cwd, 'run-small-new', 'senior-frontend');
+    assert.equal(envelope?.workUnit.unitId, 'senior-frontend:bounded-maintenance');
+    assert.ok(envelope?.workUnit.outputs.includes('src/News.tsx'));
+  });
+});
+
+test('scoped senior-backend spawn skips architect on new-project without plan.md', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const t1 = path.join(cwd, '.traffic-one');
+    const onePath = path.join(t1, '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-small-new-be';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    const planPath = path.join(t1, 'plan.md');
+    if (fs.existsSync(planPath)) fs.unlinkSync(planPath);
+
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'opus',
+      prompt: '[t1-bounded-scope: {"outputs":["src/api.ts"]}]',
+    }));
+    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
+    const envelope = readActiveRunBootstrap(cwd, 'run-small-new-be', 'senior-backend');
+    assert.equal(envelope?.workUnit.unitId, 'senior-backend:bounded-maintenance');
+    assert.ok(envelope?.workUnit.outputs.includes('src/api.ts'));
   });
 });
 
@@ -1902,6 +2022,7 @@ test('opencode plan-batch gate: failed terminal batch.json clears implementers (
 });
 
 test('opencode role gate: a configured non-implementer role is denied until OpenCode is tried, then allowed (fallback)', () => {
+  withTempOpenCodeShim(true, () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // Enable OpenCode + set a currentRunId so the gate can scope the attempt marker.
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
@@ -1929,6 +2050,7 @@ test('opencode role gate: a configured non-implementer role is denied until Open
     markOpenCodePlanBatchTerminal(cwd, 'run-X', 'success');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
   });
+  });
 });
 
 test('opencode role gate: a forced role with NO queued units is NOT trapped (proceeds to paid)', () => {
@@ -1948,6 +2070,7 @@ test('opencode role gate: a forced role with NO queued units is NOT trapped (pro
 });
 
 test('opencode role gate: mints currentRunId when absent (existing-codebase) so enforcement is not skipped', () => {
+  withTempOpenCodeShim(true, () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
@@ -1963,9 +2086,10 @@ test('opencode role gate: mints currentRunId when absent (existing-codebase) so 
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
     // existing-codebase ⇒ maintenance phase, so the gate forces delegation even with no
     // plan queue (small fixes go to OpenCode ad hoc).
-
-    // senior-frontend (a default delegate role) → the gate mints a run id + denies.
-    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    //
+    // quick-fix is a default delegate role and is NOT architect-phase gated, so
+    // the OpenCode-first deny is still reachable after the architect-phase move.
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
 
@@ -1973,19 +2097,26 @@ test('opencode role gate: mints currentRunId when absent (existing-codebase) so 
     const minted = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(minted.length > 0, 'currentRunId should be minted + persisted');
 
-    // Recording the attempt clears only the OpenCode-first gate. The new run
-    // still lacks its own architecture contracts, so paid spawn remains denied.
+    // Recording the attempt clears only the OpenCode-first gate. An unscoped
+    // implementer on this fresh maintenance run still lacks a bounded scope
+    // (architect-phase stands down so the missing-scope deny can name the fix).
+    markOpenCodeRoleAttempted(cwd, minted, 'quick-fix');
     markOpenCodeRoleAttempted(cwd, minted, 'senior-frontend');
     const missingContracts = agentModelGate(spawnCtx(cwd, {
       subagent_type: 'senior-frontend',
       model: 'opus',
     }));
     assert.equal(missingContracts.kind, 'deny');
-    if (missingContracts.kind === 'deny') assert.match(missingContracts.reason, /Architect phase gate/);
+    if (missingContracts.kind === 'deny') {
+      assert.equal(missingContracts.denyId, 'spawn-bounded-scope-missing');
+      assert.ok(!missingContracts.reason.includes('Architect phase gate'));
+    }
+  });
   });
 });
 
 test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even when no attempt is ever recorded', () => {
+  withTempOpenCodeShim(true, () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // The live Codex failure mode: the host's safety reviewer rejects the
     // opencode_delegate MCP call ABOVE our code, so the runner never writes the
@@ -2006,9 +2137,11 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
     // Second spawn, with NO attempt marker (delegate was rejected externally) → allowed.
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' })).kind, 'noop');
   });
+  });
 });
 
 test('opencode role gate: deny block is clean (no leftover template placeholders)', () => {
+  withTempOpenCodeShim(true, () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
@@ -2027,9 +2160,11 @@ test('opencode role gate: deny block is clean (no leftover template placeholders
       assert.ok(!/\{\{[A-Z_]+\}\}/.test(denied.reason), 'all template placeholders must be substituted away');
     }
   });
+  });
 });
 
 test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', () => {
+  withTempOpenCodeShim(true, () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
@@ -2056,16 +2191,20 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     }));
     assert.equal(fallback.kind, 'noop', fallback.kind === 'deny' ? fallback.reason : undefined);
   });
+  });
 });
 
 test('a pinned openCode.model does not change gating (no per-model branch)', () => {
+  withTempOpenCodeShim(true, () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true, model: 'opencode/gpt-5.5' };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     setCurrentRunId(cwd, 'run-pinned');
     queueDelegateRole(cwd, 'senior-tester');
+    markVerifyGateDenied(cwd, 'run-pinned', 'senior-tester'); // pin the per-role gate alone
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
@@ -2074,6 +2213,7 @@ test('a pinned openCode.model does not change gating (no per-model branch)', () 
       // the gate no longer injects a per-model instruction into the deny
       assert.ok(!denied.reason.includes('opencode/gpt-5.5'));
     }
+  });
   });
 });
 

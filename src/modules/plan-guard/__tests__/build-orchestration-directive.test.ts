@@ -48,7 +48,9 @@ test('shouldEmitBuildOrchestration: kilo new-project subagents without plan', ()
     fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'kilo'), true);
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'opencode'), true);
-    assert.equal(shouldEmitBuildOrchestration(dir, state, 'cursor'), false);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'cursor'), true);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'claude'), true);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'codex'), true);
   });
 });
 
@@ -74,8 +76,10 @@ test('build-start architect directive is never emitted for a maintenance project
     fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'kilo'), false);
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'opencode'), false);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'cursor'), false);
     assert.equal(shouldEmitArchitectCompletionReminder(dir, state, 'kilo'), false);
     assert.equal(buildOrchestrationDirective(dir, 'kilo', state), '');
+    assert.equal(buildOrchestrationDirective(dir, 'cursor', state), '');
   });
 });
 
@@ -157,7 +161,7 @@ test('buildOrchestrationDirective: names the project-scoped global architect, no
   });
 });
 
-test('buildOrchestrationDirective: non Kilo/OpenCode hosts are side-effect free', () => {
+test('buildOrchestrationDirective: unpaid/unsupported hosts stay side-effect free', () => {
   withProject((dir) => {
     const state = subagentsState();
     const t1 = path.join(dir, '.traffic-one');
@@ -165,13 +169,79 @@ test('buildOrchestrationDirective: non Kilo/OpenCode hosts are side-effect free'
     fs.mkdirSync(t1, { recursive: true });
     fs.writeFileSync(onePath, JSON.stringify(state), 'utf8');
 
-    assert.equal(buildOrchestrationDirective(dir, 'cursor', subagentsState()), '');
-    assert.equal(buildOrchestrationDirective(dir, 'codex', subagentsState()), '');
-    assert.equal(buildOrchestrationDirective(dir, 'claude', subagentsState()), '');
+    assert.equal(buildOrchestrationDirective(dir, 'windsurf', subagentsState()), '');
+    assert.equal(buildOrchestrationDirective(dir, 'copilot', subagentsState()), '');
 
     const persisted = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     assert.equal(persisted.currentRunId, undefined);
     assert.equal(fs.existsSync(path.join(t1, 'runs')), false);
+  });
+});
+
+test('buildOrchestrationDirective: paid hosts emit architect-first when new-project subagents lack plan.md', () => {
+  withProject((dir) => {
+    const state = subagentsState();
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    for (const host of ['cursor', 'claude', 'codex'] as const) {
+      const d = buildOrchestrationDirective(dir, host, subagentsState());
+      assert.ok(d.length > 0, `${host} must emit architect-first`);
+      assert.match(d, /PARENT\/orchestrator/);
+      assert.match(d, /senior-architect/);
+      assert.match(d, /Run ID:/);
+      assert.match(d, /do NOT set `run_in_background`/);
+    }
+  });
+});
+
+test('buildOrchestrationDirective: Cursor always uses generalPurpose and forbids background', () => {
+  withProject((dir) => {
+    const state = subagentsState();
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    const d = buildOrchestrationDirective(dir, 'cursor', state);
+    assert.match(d, /generalPurpose/);
+    assert.match(d, /\[t1-role: senior-architect\]/);
+    assert.match(d, /Run ID:/);
+    assert.match(d, /do NOT set `run_in_background`/);
+    assert.doesNotMatch(d, /run_in_background:\s*true/);
+    assert.match(d, /NEVER the picker label/);
+  });
+});
+
+test('buildOrchestrationDirective: Claude and Codex use host-exact spawn fields', () => {
+  withProject((dir) => {
+    const state = subagentsState();
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    const claude = buildOrchestrationDirective(dir, 'claude', subagentsState());
+    assert.match(claude, /subagent_type: "senior-architect"/);
+    assert.match(claude, /general-purpose/);
+    assert.match(claude, /\[t1-role: senior-architect\]/);
+    const codex = buildOrchestrationDirective(dir, 'codex', subagentsState());
+    assert.match(codex, /task_name: senior_architect/);
+    assert.match(codex, /fork_turns: "none"/);
+    assert.match(codex, /spawn_agent/);
+  });
+});
+
+test('buildOrchestrationDirective: paid-host architect-incomplete reminder when plan exists without baseline', () => {
+  withProject((dir) => {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify({ ...SUBAGENTS_STATE, currentRunId: 'R' }), 'utf8');
+    fs.writeFileSync(path.join(t1, 'plan.md'), '# plan', 'utf8');
+    const d = buildOrchestrationDirective(dir, 'cursor', { ...SUBAGENTS_STATE, currentRunId: 'R' });
+    assert.match(d, /architect phase is INCOMPLETE/i);
+    assert.match(d, /generalPurpose/);
+    assert.match(d, /\[t1-role: senior-architect\]/);
+    assert.match(d, /do NOT set `run_in_background`/);
+    assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'cursor'), true);
+    assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'claude'), true);
+    assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'codex'), true);
   });
 });
 

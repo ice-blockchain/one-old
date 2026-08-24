@@ -1238,6 +1238,22 @@ test('claims newer than the lifecycle stamp DO suppress triage (mid-run guard in
   });
 });
 
+test('Cursor new-project incomplete-architect edit prompt includes the build orchestration directive', () => {
+  withAuthedProject(completeSharedState(), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const r = runUserPromptSubmit(ctxHost(cwd, 'add a login page', 'cursor'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.match(r.context, /PARENT\/orchestrator|senior-architect/);
+      assert.match(r.context, /generalPurpose/);
+      assert.match(r.context, /\[t1-role: senior-architect\]/);
+      assert.match(r.context, /Run ID/);
+      assert.match(r.context, /do NOT set `run_in_background`/);
+    }
+  });
+});
+
 test('maintenance + main-agent mode → main-agent triage variant', () => {
   withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
     writeLocalPrefs({ performance: { level: 'low', source: 'prompted' }, team: { mode: 'main-agent', source: 'prompted' } });

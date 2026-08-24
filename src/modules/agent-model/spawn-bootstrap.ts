@@ -77,7 +77,13 @@ export function spawnBootstrapPlan(input: SpawnBootstrapInput): SpawnBootstrapPl
     )
     ? activeRoleBootstrap
     : null;
+  // Shared parser: a valid `[t1-bounded-scope]` / `allowedFiles` marker on
+  // quick-fix or a senior implementer is the origin of THIS spawn's envelope
+  // and wins over inherited debt / the live active envelope. Invalid present
+  // scope stays invalid (no inherit, no publish).
   const requestedQuickFixScope = role === 'quick-fix'
+    || role === 'senior-frontend'
+    || role === 'senior-backend'
     ? quickFixScopeFromSpawn(toolInput, input.spawnPromptText)
     : null;
   const explicitQuickFixScope = requestedQuickFixScope?.present

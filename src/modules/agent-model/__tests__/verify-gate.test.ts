@@ -19,6 +19,23 @@ import {
 } from '../../../shared/opencode-roles';
 import { buildOpenCodeQueue, writeOpenCodeQueue } from '../../../shared/opencode-queue';
 import { withMaterialized } from './agent-model-fixtures';
+import { stableBinDir } from '../../../shared/runner-shims';
+
+function withTempOpenCodeShim(fn: () => void): void {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-vg-ocshim-'));
+  const saved = process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(tmp, 'toolchains');
+  try {
+    const binDir = stableBinDir();
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'opencode-mcp.cjs'), '// test shim\n', 'utf8');
+    fn();
+  } finally {
+    if (saved === undefined) delete process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+    else process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = saved;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
 
 const STATE = {
   mode: 'new-project',
@@ -97,6 +114,7 @@ test('a dead or terminal batch never gates the verifiers; implementer roles are 
 // The tester sits in BOTH gates (verify + per-role OpenCode-first): distinct
 // marker budgets, so the worst case is exactly two denies, then through.
 test('tester composition: verify-gate deny, then the OpenCode-first deny, then through', () => {
+  withTempOpenCodeShim(() => {
   const dir = liveBatchProject('run-vg-tester');
   try {
     // Queue a TESTER unit too so the per-role OpenCode-first gate has work.
@@ -128,6 +146,7 @@ test('tester composition: verify-gate deny, then the OpenCode-first deny, then t
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+  });
 });
 
 test('marker helpers: verified-write convention', () => {

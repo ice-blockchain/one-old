@@ -3,9 +3,10 @@
 // triage LEGS. Everything routes through the production functions — the
 // prompt-boundary composition (unresolvedRunDirective || maintenanceTriageDirective),
 // the real rotation (beginFreshMaintenanceRun inside the directive), the real
-// bounded-WorkUnit publisher (ensureRunBootstrap), and the real plan-write gate
-// for every worker write — so what the transcript records is what a user's
-// follow-up message would actually have experienced.
+// spawn gate (agentModelGate: unscoped deny then scoped publish), the bounded
+// WorkUnit publisher (ensureRunBootstrap only if the spawn did not publish),
+// and the real plan-write gate for every worker write — so what the transcript
+// records is what a user's follow-up message would actually have experienced.
 
 import * as path from 'path';
 import * as fs from 'fs';
@@ -15,16 +16,19 @@ import {
   readRuntimeAssignments,
   type CompiledArchitectureV1,
 } from '../../../shared/architecture-contract';
+import { agentModelGate } from '../../../modules/agent-model/handler';
 import {
   beginFreshMaintenanceRun,
   maintenanceTriageDirective,
   unresolvedRunDirective,
 } from '../../../modules/session/triage-directive';
+import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { isRuntimeControlPrompt } from '../../../shared/detection';
 import type { Rec } from '../../../shared/obj';
 import {
   ensureRunBootstrap,
   quickFixDigestPath,
+  readActiveRunBootstrap,
 } from '../../../shared/run-bootstrap-policy';
 import { readRunModelPolicy } from '../../../shared/run-model-policy';
 import { readRunSettlement } from '../../../shared/run-settlement';
@@ -51,6 +55,50 @@ import { applyAll, applyScriptedWrite, bindRole } from './write';
 // The parent session id every leg's prompt rides in on. Deliberately NOT a
 // subagent shape: routing must see the main thread.
 const PARENT_RAW = { session_id: 'run-sim-parent' };
+
+// PreToolUse spawn Ctx matching write.ts / agent-model tests. Host `claude`
+// matches existing ensureRunBootstrap host in this file.
+function spawnGateCtx(cwd: string, toolInput: Record<string, unknown>): Ctx {
+  const input: HookInput = {
+    event: 'PreToolUse',
+    host: 'claude',
+    cwd,
+    raw: { tool_name: 'Task', tool_input: toolInput },
+    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+  };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+// The spawn-gate composition the write-only path used to skip: unscoped must
+// deny, then the `[t1-bounded-scope]` marker must publish and allow.
+function assertSpawnGateComposition(
+  cwd: string,
+  label: string,
+  role: string,
+  preferredModel: string,
+  files: string[],
+): string | null {
+  const unscoped = agentModelGate(spawnGateCtx(cwd, {
+    subagent_type: role,
+    model: preferredModel,
+  }));
+  if (unscoped.kind !== 'deny') {
+    return `${label} unscoped ${role} spawn must be deny spawn-bounded-scope-missing (got ${unscoped.kind})`;
+  }
+  if (unscoped.denyId !== 'spawn-bounded-scope-missing' && !unscoped.reason.includes('t1-bounded-scope')) {
+    return `${label} unscoped ${role} spawn denied for the wrong reason: ${unscoped.denyId ?? ''} ${unscoped.reason}`;
+  }
+  const outputs = files.map((file) => JSON.stringify(file)).join(',');
+  const scoped = agentModelGate(spawnGateCtx(cwd, {
+    subagent_type: role,
+    model: preferredModel,
+    prompt: `[t1-bounded-scope: {"outputs":[${outputs}]}]`,
+  }));
+  if (scoped.kind === 'deny') {
+    return `${label} scoped ${role} spawn denied: ${scoped.reason}`;
+  }
+  return null;
+}
 
 interface OpenRun {
   runId: string;
@@ -268,12 +316,22 @@ function runQuickFixLeg(
     return `${label} an unattributed parent write to ${parentProbe.path} was ALLOWED in maintenance`;
   }
 
-  const envelope = ensureRunBootstrap(cwd, runId, 'quick-fix', readEffectiveState(cwd), {
-    host: 'claude',
-    hostAgentType: 'quick-fix',
-    modelPolicyId: policy.policyId,
-    boundedOutputs: quickFix.files.map((file) => file.path),
-  });
+  const preferredModel = policy.roles['quick-fix']?.preferredModel;
+  if (!preferredModel) return `${label} frozen policy has no preferredModel for quick-fix`;
+  const gateFail = assertSpawnGateComposition(
+    cwd, label, 'quick-fix', preferredModel, quickFix.files.map((file) => file.path),
+  );
+  if (gateFail) return gateFail;
+
+  let envelope = readActiveRunBootstrap(cwd, runId, 'quick-fix');
+  if (!envelope) {
+    envelope = ensureRunBootstrap(cwd, runId, 'quick-fix', readEffectiveState(cwd), {
+      host: 'claude',
+      hostAgentType: 'quick-fix',
+      modelPolicyId: policy.policyId,
+      boundedOutputs: quickFix.files.map((file) => file.path),
+    });
+  }
   if (!envelope) return `${label} ensureRunBootstrap refused the bounded quick-fix WorkUnit`;
 
   if (!bindRole(cwd, 'quick-fix')) return `${label} could not bind the quick-fix claim`;
@@ -322,12 +380,22 @@ function runBoundedRoleLeg(
   const policy = readRunModelPolicy(cwd, runId);
   if (!policy) return `${label} the rotated run has no frozen model policy`;
 
-  const envelope = ensureRunBootstrap(cwd, runId, bounded.role, readEffectiveState(cwd), {
-    host: 'claude',
-    hostAgentType: bounded.role,
-    modelPolicyId: policy.policyId,
-    boundedOutputs: bounded.files.map((file) => file.path),
-  });
+  const preferredModel = policy.roles[bounded.role]?.preferredModel;
+  if (!preferredModel) return `${label} frozen policy has no preferredModel for ${bounded.role}`;
+  const gateFail = assertSpawnGateComposition(
+    cwd, label, bounded.role, preferredModel, bounded.files.map((file) => file.path),
+  );
+  if (gateFail) return gateFail;
+
+  let envelope = readActiveRunBootstrap(cwd, runId, bounded.role);
+  if (!envelope) {
+    envelope = ensureRunBootstrap(cwd, runId, bounded.role, readEffectiveState(cwd), {
+      host: 'claude',
+      hostAgentType: bounded.role,
+      modelPolicyId: policy.policyId,
+      boundedOutputs: bounded.files.map((file) => file.path),
+    });
+  }
   if (!envelope) return `${label} ensureRunBootstrap refused the bounded ${bounded.role} WorkUnit`;
   if (envelope.workUnit.unitId !== `${bounded.role}:bounded-maintenance`) {
     return `${label} expected a ${bounded.role}:bounded-maintenance unit, got ${envelope.workUnit.unitId}`;

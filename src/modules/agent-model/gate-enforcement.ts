@@ -13,12 +13,15 @@ import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import {
   ensureRunAgentClaimResult,
+  isMaintenancePhase,
   isNewProjectMode,
   isTeamApproved,
   readEffectiveState,
   retryWhileUnavailable,
   statePath,
 } from '../../shared/state';
+import { readRuntimeAssignments } from '../../shared/architecture-contract';
+import { readActiveRunBootstrap } from '../../shared/run-bootstrap-policy';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { openCodeGlobalAgentName } from '../../shared/materialize/opencode-assets';
@@ -38,6 +41,7 @@ import {
   modelSatisfiesTier,
   namedOpenCodeAgentDeny,
   spawnAgentType,
+  quickFixScopeFromSpawn,
 } from './spawn-shape';
 import {
   recordSpawnParentSession,
@@ -93,8 +97,53 @@ function claimMintDeny(g: GateContext, model: string): HookResult | null {
   }, SPAWN_CLAIM_UNAVAILABLE_FALLBACK), { denyId: 'spawn-claim-unavailable', denyTarget: role });
 }
 
+// Implementers (senior-frontend / senior-backend) must bind to this run's
+// architecture input, compiled contracts, assignments, and PLAN_READY digest.
+// Runs BEFORE OpenCode-first so a leftover Step-0 queue cannot mis-report
+// incomplete architect work as `opencode-plan-batch-required` (incident 8c).
+export function architectPhaseGate(g: GateContext): HookResult | null {
+  const { cwd, state, role, spawnRunId, toolInput, spawnPromptText } = g;
+  if (!isPlanBatchGatedRole(role)) return null;
+  // Sequencing for subagents. Low/main-agent must reach performance-main-agent
+  // (do not implement as a team; do not spawn architect) instead of this deny.
+  const team = obj(state.team);
+  if (team && team.mode === 'main-agent') return null;
+  const performance = obj(state.performance);
+  const level = performance && typeof performance.level === 'string' ? performance.level : '';
+  if (level && teamModeForLevel(level) !== 'subagents') return null;
+  // Small-work skip: a senior implementer that already carries (or already
+  // published) an exact-file bounded-maintenance envelope does not need
+  // PLAN_READY. Invalid present scope is NOT a skip — do not publish, do
+  // not treat it as scoped.
+  if (role === 'senior-frontend' || role === 'senior-backend') {
+    const requested = quickFixScopeFromSpawn(toolInput, spawnPromptText);
+    if (requested.present && requested.valid) return null;
+    const published = readActiveRunBootstrap(cwd, spawnRunId, role);
+    if (published?.workUnit.unitId === `${role}:bounded-maintenance`) return null;
+  }
+  // Maintenance with no compiled assignments: stand down so handler.ts's
+  // `spawn-bounded-scope-missing` can name the real fix for an unscoped spawn.
+  // Greenfield implementers still need architect.
+  if (isMaintenancePhase(state, state.mode) && !readRuntimeAssignments(cwd, spawnRunId)) {
+    return null;
+  }
+  const incomplete = architectPhaseIncompleteReasons(cwd, state);
+  if (incomplete.length === 0) return null;
+  // The block must LEAD with the exact next action: observed 8c, the
+  // orchestrator mis-read this deny as a Step-0 request and burned a second
+  // dead spawn. It carried a hand-transcribed copy of that paragraph here
+  // until the two drifted; the generated table (shared/skill-fallbacks.generated.ts)
+  // now renders the shipped wording on a torn install, so there is one text.
+  return deny(block('architect-phase-incomplete', {
+    ROLE: role,
+    RUN_ID: spawnRunId,
+    MISSING: incomplete.join('; '),
+  }), { denyId: 'architect-phase-incomplete', denyTarget: role });
+}
+
 export function modelEnforcementGates(g: GateContext): HookResult {
-  const { ctx, cwd, state, raw, toolName, toolInput, role, roleEvidence, spawnRunId, runPolicy, allowSpawn } = g;
+  const { ctx, cwd, raw, toolName, toolInput, role, roleEvidence, spawnRunId, runPolicy, allowSpawn } = g;
+  let { state } = g;
   // quick-fix is the post-build maintenance worker: its cheapest-model pin is
   // enforced in EVERY mode — the per-role tier gate below is new-project-scoped,
   // but maintenance triage mostly fires on existing codebases — and the pin is
@@ -122,34 +171,41 @@ export function modelEnforcementGates(g: GateContext): HookResult {
 
   const isNewProject = isNewProjectMode(state);
   if (isNewProject && !isCompletedTrafficOneMaterialization(cwd, state)) {
-    // The stamp's own answer, and it deliberately does NOT vote on which deny.
-    // The read-back below is strictly stronger for that: it also catches a stamp
-    // that landed over incomplete assets, and an already-stamped project whose
-    // assets the sweep just restored under a REFUSED re-stamp — that project is
-    // complete and owes the re-issue deny, which `stamped` alone would downgrade.
-    // What only `stamped` can say is that this deny will REPEAT forever: a
-    // refused stamp is durable, so every later spawn re-runs the full sweep and
-    // lands here again with nothing on disk to show for it. Carried as the
-    // denyTarget — the refused path itself — because that is the channel the
-    // per-target deny budget and the decision record already read, and neither
-    // deny's prose can name a cause it cannot see.
+    // Sweep, then let the read-back decide whether the project is complete.
+    // The stamp boolean does NOT vote on the verdict: it only names the CAUSE
+    // of an incomplete read-back. A refused stamp is durable, so every later
+    // spawn re-runs the full sweep and lands here again with nothing on disk
+    // to show for it. Carried as denyTarget — the refused path itself —
+    // because that is the channel the per-target deny budget and the decision
+    // record already read, and the missing deny's prose cannot name a cause
+    // it cannot see.
     //
-    // `CAUSE` is the HUMAN-readable half of that same fact, rendered from the
-    // same boolean so the two cannot disagree. `denyTarget` is a field: the
-    // budget and the decision record read it, nothing says it aloud, so the
-    // operator still faced a deny that recurs on every spawn with no reason
-    // anywhere in the text. Only THIS arm carries it — the re-issue deny above
-    // does not repeat, because its read-back says the project is materialized,
-    // so the next spawn's `state` clears the check at the top of this branch and
-    // never reaches here.
+    // Successful converge is NOT a teaching deny. If the re-read says the
+    // project is complete, fall through so performance / team /
+    // model checks still apply, against the stamped state
+    // (`g.state` is refreshed below). Only the incomplete arm refuses —
+    // `agent-materialization-missing`. `agent-materialization-deny` is unused
+    // on this path.
+    //
+    // `CAUSE` is the HUMAN-readable half of that same refused-stamp fact,
+    // rendered from the same boolean so the two cannot disagree. `denyTarget`
+    // is a field: the budget and the decision record read it, nothing says it
+    // aloud, so the operator still faced a deny that recurs on every spawn
+    // with no reason anywhere in the text. Only the incomplete arm carries
+    // it — a successful converge does not repeat, because the next spawn's
+    // `state` clears the check at the top of this branch and never reaches
+    // here.
     const stamped = materializeIfNeeded(cwd);
-    if (isCompletedTrafficOneMaterialization(cwd, readEffectiveState(cwd))) return deny(block('agent-materialization-deny'), { denyId: 'agent-materialization-deny' });
-    return deny(block('agent-materialization-missing', {
-      CAUSE: stamped ? '' : materializationStampRefusedCause(statePath(cwd)),
-    }, AGENT_MATERIALIZATION_MISSING_FALLBACK), {
-      denyId: 'agent-materialization-missing',
-      ...(stamped ? {} : { denyTarget: statePath(cwd) }),
-    });
+    g.state = readEffectiveState(cwd);
+    state = g.state;
+    if (!isCompletedTrafficOneMaterialization(cwd, state)) {
+      return deny(block('agent-materialization-missing', {
+        CAUSE: stamped ? '' : materializationStampRefusedCause(statePath(cwd)),
+      }, AGENT_MATERIALIZATION_MISSING_FALLBACK), {
+        denyId: 'agent-materialization-missing',
+        ...(stamped ? {} : { denyTarget: statePath(cwd) }),
+      });
+    }
   }
 
   const performance = obj(state.performance);
@@ -166,26 +222,6 @@ export function modelEnforcementGates(g: GateContext): HookResult {
   }
   if (!isTeamApproved(state.team)) {
     return deny(block('team-confirmation', { LEVEL: level }), { denyId: 'team-confirmation' });
-  }
-
-  // Every active subagent run—greenfield or existing-codebase—must bind
-  // implementers to the current run's semantic architecture input, runtime
-  // compiled contracts, exact assignments, and PLAN_READY digest. A resilient
-  // or sibling manifest is never authority for a v2 run.
-  if (isPlanBatchGatedRole(role)) {
-    const incomplete = architectPhaseIncompleteReasons(cwd, state);
-    if (incomplete.length > 0) {
-      // The block must LEAD with the exact next action: observed 8c, the
-      // orchestrator mis-read this deny as a Step-0 request and burned a second
-      // dead spawn. It carried a hand-transcribed copy of that paragraph here
-      // until the two drifted; the generated table (shared/skill-fallbacks.generated.ts)
-      // now renders the shipped wording on a torn install, so there is one text.
-      return deny(block('architect-phase-incomplete', {
-        ROLE: role,
-        RUN_ID: spawnRunId,
-        MISSING: incomplete.join('; '),
-      }), { denyId: 'architect-phase-incomplete', denyTarget: role });
-    }
   }
 
   const team = obj(state.team);

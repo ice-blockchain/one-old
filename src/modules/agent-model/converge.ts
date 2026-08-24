@@ -22,12 +22,14 @@ const isKnownStackName = isKnownStack;
  * oversight to be tidied up later.
  *
  * WHY. Its only consumer is gate-enforcement.ts#modelEnforcementGates, whose
- * branch is `isNewProject && !isCompletedTrafficOneMaterialization(...)`, and
- * BOTH arms of that branch return a deny — one after `materializeIfNeeded`
- * repairs (`agent-materialization-deny`, "rerun the same spawn"), one when it
- * cannot (`agent-materialization-missing`). Entering the branch is therefore
- * unconditionally a refusal, so widening the entry condition is not "one more
- * freshness check", it is a new class of denied spawn.
+ * branch is `isNewProject && !isCompletedTrafficOneMaterialization(...)`. A
+ * successful `materializeIfNeeded` no longer denies — the spawn falls through
+ * to the remaining enforcement gates. The incomplete arm still denies
+ * `agent-materialization-missing`. Adding the freshness term to THIS predicate
+ * would still be a new class of denied spawn: the same predicate is the
+ * read-back after the sweep, so a build mismatch that the repair cannot clear
+ * (torn plugin root) would deny `agent-materialization-missing` on every
+ * spawn, forever, with `CAUSE` empty.
  *
  * And the repair cannot clear a build mismatch against exactly the root state a
  * build change produces. `materializeProjectAssets` refuses a torn or partial
@@ -107,15 +109,16 @@ export function isCompletedTrafficOneMaterialization(cwd: string, state: Rec): b
  *
  * Measured on a project whose `.one.json` was fenced move-aside: the assets land
  * (3 -> 93 files), no `materialized*` key reaches disk, the read-back answers
- * `false`, and the consumer denies `agent-materialization-missing` rather than
- * `agent-materialization-deny`. Both are denies and they are distinguishable, so
- * the run already failed closed on the correct one — this is a diagnosis fix, not
- * a fail-open fix.
+ * `false`, and the consumer denies `agent-materialization-missing`. A successful
+ * stamp is no longer a deny — the spawn continues through remaining gates — so
+ * the two outcomes are distinguishable by more than deny-id: complete falls
+ * through, incomplete refuses. This is a diagnosis fix, not a fail-open fix.
  *
  * NOT the permanent-deny-loop consumer: that one is
- * shared/materialize/converge.ts's, whose caller reads any non-null outcome as
- * `repaired-materialization`, and it already reports the refusal
- * (stateWriteRefusedOutcome).
+ * shared/materialize/converge.ts's, whose onboarding-gate caller discriminates
+ * mutating non-spawn outcomes by STATUS (`repaired-materialization` vs
+ * `materialization-not-converged`). Spawn never takes that deny. The refusal
+ * path is already reported (stateWriteRefusedOutcome).
  *
  * WHAT THIS BOOLEAN ALSO CANNOT EXPRESS, since the list above was written when
  * the stamp refusal was the only such fact: the sweep below now also reports
@@ -126,7 +129,7 @@ export function isCompletedTrafficOneMaterialization(cwd: string, state: Rec): b
  *
  * DELIBERATE, and the two reasons are worth stating because the shortfall is
  * real. First, this boolean is consumed as "did the stamp land", and its caller
- * turns anything falsy into one of two denies whose prose names
+ * turns anything falsy into the missing deny whose prose names
  * `materializedStack`/`materializedAt` and five paths — none of which is the
  * problem when a role directory is occupied, so folding the condition in here
  * would produce a permanent refusal describing a state that is false, which is

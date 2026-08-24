@@ -33,7 +33,8 @@ import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isUninstallTrafficOneIntent, uninstallDirective } from '../../shared/uninstall-intent';
-import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, patchState, readEffectiveState, readState, statePath } from '../../shared/state';
+import { hookSessionIdentity, isMaintenancePhase, isSubagentThread, legacyStatePath, normalizeState, patchState, readEffectiveState, readState, statePath } from '../../shared/state';
+import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { uiLibraryFromPrompt } from '../../shared/capabilities';
 import { firstEmitThisSession } from '../../shared/once';
@@ -361,7 +362,13 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     : '';
   const triage = unresolved || maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
-  const prefixOpenCode = [uiLibraryRefused, openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');
+  const orchestration = (!isSubagentThread(raw) && !runtimeControl && !isMaintenancePhase(normalizedState, normalizedState.mode))
+    ? buildOrchestrationDirective(cwd, ctx.host, normalizedState)
+    : '';
+  const orchestrationDirective = orchestration && firstEmitThisSession(cwd, 'build-orchestration', sessionId)
+    ? orchestration
+    : '';
+  const prefixOpenCode = [uiLibraryRefused, openCodeReadiness, planBatchReminder, orchestrationDirective].filter(Boolean).join('\n');
 
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });

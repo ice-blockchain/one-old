@@ -11,12 +11,14 @@
 //
 //   if (isNewProject && !isCompletedTrafficOneMaterialization(cwd, state)) {
 //     const stamped = materializeIfNeeded(cwd);
-//     if (isCompletedTrafficOneMaterialization(cwd, readEffectiveState(cwd))) return deny('agent-materialization-deny');
-//     return deny('agent-materialization-missing', { CAUSE: stamped ? '' : <refused-stamp cause> });
+//     g.state = readEffectiveState(cwd);
+//     if (!isCompletedTrafficOneMaterialization(cwd, g.state)) return deny('agent-materialization-missing', { CAUSE: stamped ? '' : <refused-stamp cause> });
+//     // fall through — successful converge is not a teaching deny
 //   }
 //
-// Both arms deny, so widening the entry condition is not one more check — it is
-// a new class of denied spawn.
+// The incomplete arm still denies. Adding the freshness term to this predicate
+// would still be a new class of denied spawn: the same predicate is the
+// read-back after the sweep, so a torn plugin root would deny missing forever.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +31,11 @@ import { materializeProjectAssets } from '../../../shared/materialize/materializ
 import { assertInstalledPluginRoot } from '../../../shared/materialize/__tests__/fixtures/installed-root';
 import { hasMaterializedProjectAssets } from '../../../shared/materialize';
 import { isMaterialized, readEffectiveState, stateVersion } from '../../../shared/state';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from '../converge';
+import { modelEnforcementGates } from '../gate-enforcement';
+import type { GateContext } from '../gate-context';
+import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
@@ -133,7 +139,7 @@ test('the spawn gate does not deny a spawn for a plugin-build mismatch alone', (
     assert.equal(hasMaterializedProjectAssets(cwd, state), true, 'every tracked file is on disk');
 
     assert.equal(isCompletedTrafficOneMaterialization(cwd, state), true,
-      'a build mismatch alone must not enter gate-enforcement.ts\'s branch, because both of its arms deny');
+      'a build mismatch alone must not enter gate-enforcement.ts\'s branch: adding the term to this predicate would make the incomplete arm fire forever on a torn root');
   });
 });
 
@@ -185,5 +191,76 @@ test('a stricter predicate would deny every spawn forever against a torn plugin 
     // previous release's complete assets, rather than a permanent refusal whose
     // text describes a condition that is false.
     assert.equal(isCompletedTrafficOneMaterialization(cwd, state), true);
+  });
+});
+
+function architectGateContext(cwd: string, host: 'claude' | 'cursor', model?: string): GateContext {
+  const toolInput: Record<string, unknown> = {
+    subagent_type: 'senior-architect',
+    prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan.',
+    ...(model ? { model } : {}),
+  };
+  const input: HookInput = {
+    event: 'PreToolUse', host, cwd,
+    raw: { tool_name: 'Task', tool_input: toolInput },
+    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+  };
+  const ctx = { input, host, cwd, now: () => 'x' } as unknown as Ctx;
+  return {
+    ctx,
+    cwd,
+    state: readEffectiveState(cwd) as never,
+    raw: {},
+    toolName: 'Task',
+    toolInput,
+    role: 'senior-architect',
+    roleEvidence: { role: 'senior-architect' } as never,
+    spawnRunId: '1700000000000',
+    runPolicy: null,
+    subagentTeam: true,
+    spawnPromptText: String(toolInput.prompt),
+    allowSpawn: (r) => r,
+  } as GateContext;
+}
+
+test('first High/subagents architect spawn after converge is not agent-materialization-deny', () => {
+  withInstalledPluginRoot((base, plugin) => {
+    const cwd = seedProject(base, 'high-unmaterialized');
+    convergePluginRoot(plugin, cwd);
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    assert.ok(prefsPath, 'fixture guard: installed-root helper pins prefs');
+    fs.writeFileSync(prefsPath, JSON.stringify(hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    )), 'utf8');
+    const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    try {
+      const stampedState = readEffectiveState(cwd);
+      assert.equal(isCompletedTrafficOneMaterialization(cwd, stampedState), false,
+        'fixture guard: the project is onboarded and not yet materialized');
+      assert.equal((stampedState.performance as { level?: string } | undefined)?.level, 'high',
+        'fixture guard: prefs applied High so the next gate cannot be performance-main-agent');
+      assert.equal((stampedState.team as { mode?: string } | undefined)?.mode, 'subagents',
+        'fixture guard: prefs applied subagents');
+
+      const claude = modelEnforcementGates(architectGateContext(cwd, 'claude', 'opus'));
+      assert.notEqual(claude.kind === 'deny' ? claude.denyId : undefined, 'agent-materialization-deny',
+        'successful converge must not teach via agent-materialization-deny');
+      assert.notEqual(claude.kind === 'deny' ? claude.denyId : undefined, 'agent-materialization-missing',
+        'writable High/subagents converge must complete, then leave materialization');
+      assert.notEqual(claude.kind === 'deny' ? claude.denyId : undefined, 'performance-main-agent',
+        'High/subagents must not fall through into the low/main-agent deny');
+      assert.equal(isCompletedTrafficOneMaterialization(cwd, readEffectiveState(cwd)), true,
+        'the first spawn stamped the project so later gates see completed materialization');
+
+      const cursor = modelEnforcementGates(architectGateContext(cwd, 'cursor'));
+      assert.notEqual(cursor.kind === 'deny' ? cursor.denyId : undefined, 'agent-materialization-deny',
+        'a later Cursor model deny is fine; materialization must not re-issue');
+    } finally {
+      if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+      else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    }
   });
 });

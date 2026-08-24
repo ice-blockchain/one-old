@@ -8,12 +8,14 @@
 // same deny is re-issued on every later spawn, forever, with nothing naming the
 // path that caused it.
 //
-// The read-back stays authoritative for WHICH deny, deliberately — it is stronger
-// than the boolean, because it also catches a stamp that landed over incomplete
-// assets, and an already-stamped project whose assets the sweep just restored
-// under a refused re-stamp (that project IS complete and owes the re-issue deny,
-// which the boolean alone would downgrade). The boolean names the cause only, and
-// is carried as the deny's target.
+// The read-back stays authoritative for WHETHER the project is complete —
+// it is stronger than the boolean, because it also catches a stamp that
+// landed over incomplete assets, and an already-stamped project whose assets
+// the sweep just restored under a refused re-stamp (that project IS complete
+// and falls through; the boolean alone would look incomplete). The boolean
+// names the cause of the missing deny only, and is carried as the deny's
+// target. A successful converge is not a teaching deny: the spawn continues
+// through remaining enforcement.
 //
 // WHY THIS LIVES IN THE CORPUS DIRECTORY, rather than beside the module it tests:
 // `materializeProjectAssets` refuses a 'source'-layout plugin root outright
@@ -108,14 +110,14 @@ test('materializeIfNeeded forwards its stamp write: true when recorded, false wh
 test('the spawn gate carries the refused state path on the deny it could not otherwise explain', () => {
   const open = onboardedNotMaterialized('claude');
   const converged = modelEnforcementGates(gateContext(open));
-  assert.equal(converged.kind, 'deny', 'writable baseline: an unmaterialized new project denies the spawn');
+  assert.equal(converged.kind, 'deny', 'writable baseline: after converge, remaining gates still apply');
   if (converged.kind === 'deny') {
-    assert.equal(converged.denyId, 'agent-materialization-deny',
-      'writable baseline: having converged, the gate asks for the call to be re-issued');
-    assert.equal(converged.denyTarget, undefined,
-      'writable baseline: and names no refused path, because nothing was refused');
+    assert.equal(converged.denyId, 'performance-main-agent',
+      'writable baseline: the fixture is low/main-agent, so the next gate after a successful converge is performance-main-agent — not a teaching materialization deny');
+    assert.equal(converged.denyTarget, 'senior-frontend',
+      'writable baseline: performance-main-agent names the role, because nothing about the stamp was refused');
     assert.ok(!converged.reason.includes('WHY THIS REPEATS'),
-      'writable baseline: and says nothing about a refusal — this deny is re-issued once and then passes, so a cause clause here would be a lie');
+      'writable baseline: and says nothing about a refusal — successful converge is not a re-issue deny');
   }
 
   const fenced = onboardedNotMaterialized('claude');

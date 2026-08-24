@@ -9,7 +9,7 @@
 import * as path from 'path';
 
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
-import { toolClassForRawName } from '../core/events';
+import { stripToolNamespace, toolClassForRawName } from '../core/events';
 import { parseJson } from '../shared/fsjson';
 import { patchTextFromToolInput } from '../shared/apply-patch';
 import { asRecord, firstString } from './coerce';
@@ -53,6 +53,27 @@ const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: Tool
 // tool-PRESENT (so the no-tools materialize-project gate stays a no-op).
 const GENERIC_PRE_ADMIT: ReadonlySet<ToolClass> = new Set(['file-write', 'file-edit', 'search', 'spawn-agent']);
 const GENERIC_POST_ADMIT: ReadonlySet<ToolClass> = new Set(['file-write', 'spawn-agent']);
+
+// Cursor paints every PreToolUse Task deny as "Couldn't start". Prefix only
+// spawn-agent denies so the agent sees a gate, not a host crash, and does not
+// retry the same Task unchanged. Write/Bash/context/noop stay unprefixed.
+const SPAWN_PRETOOLUSE_DENY_PREFIX =
+  'TRAFFIC ONE GATE (not a host crash). Do not retry this Task unchanged. Next action:';
+const SPAWN_TOOL_NAME_RE = /^(?:Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i;
+
+function isSpawnAgentPreToolUse(input: { event?: string; tool?: { class: ToolClass; rawName: string } } | undefined): boolean {
+  if (input?.event !== 'PreToolUse' || !input.tool) return false;
+  if (input.tool.class === 'spawn-agent') return true;
+  return SPAWN_TOOL_NAME_RE.test(stripToolNamespace(input.tool.rawName));
+}
+
+function prefixSpawnDenyMessage(
+  message: string,
+  input: { event?: string; tool?: { class: ToolClass; rawName: string } } | undefined,
+): string {
+  if (!message || !isSpawnAgentPreToolUse(input)) return message;
+  return `${SPAWN_PRETOOLUSE_DENY_PREFIX}\n\n${message}`;
+}
 
 function subcommandOf(argv: readonly string[]): string {
   const known = argv.filter((arg) => Object.prototype.hasOwnProperty.call(SUB_TO_EVENT, arg));
@@ -222,10 +243,11 @@ export function makeCursorAdapter(): HostAdapter {
           agent_message: result.agentMessage || message,
         });
       }
+      const denyMessage = prefixSpawnDenyMessage(message, input);
       return JSON.stringify({
         ...(result.context && result.context.trim() ? { additional_context: result.context } : {}),
         ...(isPre ? { permission: 'deny' } : {}),
-        ...(message ? { user_message: message, agent_message: message } : {}),
+        ...(denyMessage ? { user_message: denyMessage, agent_message: denyMessage } : {}),
       });
     },
   };

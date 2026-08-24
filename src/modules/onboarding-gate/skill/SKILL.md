@@ -317,6 +317,46 @@ Runtime capability contract: {{PROFILE_SUMMARY}}.
 Implementer spawns are blocked until the digest carries `PLAN_READY` on disk.
 <!-- T1BLOCK:END kilo-opencode-architect-incomplete -->
 
+<!-- T1BLOCK:BEGIN paid-host-spawn-first -->
+[traffic-one] {{HOST}} build start — `team.mode="subagents"` is ACTIVE and `.traffic-one/plan.md` is still missing. You are the PARENT/orchestrator.
+
+DO NOT write feature source, scaffold app files, or run package installs yourself in this thread.
+Your FIRST action: spawn `senior-architect` via the host `{{TASK_TOOL}}` tool:
+{{SPAWN_INSTRUCTIONS}}
+- include `Run ID: {{RUN_ID}}` and the user's original request
+- Foreground only: do NOT set `run_in_background`.
+
+Runtime capability contract: {{PROFILE_SUMMARY}}.
+Do not replace these detected surfaces, roots, framework conventions, skill buckets, or QA adapters with an unrelated default.
+
+{{IMPLEMENTER_DIRECTIVE}}
+{{QA_DIRECTIVE}}
+Read `.traffic-one/rules/common/senior-engineer-team.md` before the first eligible implementer spawn.
+<!-- T1BLOCK:END paid-host-spawn-first -->
+
+<!-- T1BLOCK:BEGIN paid-host-architect-incomplete -->
+[traffic-one] {{HOST}} build — `.traffic-one/plan.md` exists but the architect phase is INCOMPLETE. You are the PARENT/orchestrator.
+
+DO NOT write feature source. DO NOT spawn any implementation role from the runtime capability contract yet. DO NOT patch `assignments.json` or `digests/{{RUN_ID}}/architect.md` yourself unless the user explicitly opts out of subagents.
+
+Missing architect deliverables: {{MISSING}}
+
+Respawn `senior-architect` via `{{TASK_TOOL}}` with:
+{{SPAWN_INSTRUCTIONS}}
+- `Run ID: {{RUN_ID}}`
+- Foreground only: do NOT set `run_in_background`.
+- instruct the architect to finish project memory and semantic
+  `.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json`, then write
+  `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`; runtime
+  compiles architecture/verification, assignments, and work-unit bootstraps
+
+Runtime capability contract: {{PROFILE_SUMMARY}}.
+{{IMPLEMENTER_DIRECTIVE}}
+{{QA_DIRECTIVE}}
+
+Implementer spawns are blocked until the digest carries `PLAN_READY` on disk.
+<!-- T1BLOCK:END paid-host-architect-incomplete -->
+
 <!-- T1BLOCK:BEGIN team-mode-marker-guard -->
 Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. Do not add or refresh it in `.traffic-one/.one.json` manually.
 <!-- T1BLOCK:END team-mode-marker-guard -->
@@ -332,7 +372,7 @@ The latest user prompt explicitly requested switching away from subagents to Low
 <!-- T1BLOCK:BEGIN maintenance-triage-subagents -->
 [MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. Pick the tier, then ROUTE it — in this (subagents) mode do NOT implement trivial or small work yourself in this thread; handing it to a cheaper worker is the whole point of post-build triage. You judge the TIER (the keyword hint is a prior, not a verdict); the routing for the chosen tier is required, not optional. State your routing in one sentence and proceed — do not ask the user which tier, worker, or model to use.
 - trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: spawn a `quick-fix` subagent with model "{{CHEAPEST_MODEL}}" on hosts whose spawn tool supports `model`; omit `model` on OpenCode/Kilo/Copilot/Windsurf unless the exact host tool documents support. On Codex use one fresh `spawn_agent` call with `task_name: "quick_fix"`, `fork_turns: "none"`, and `model: "{{CHEAPEST_MODEL}}"`; never retry with a generic task name, inherited/full history, or a different available model. Do NOT make the edit yourself.{{QUICK_FIX_OPENCODE_CLAUSE}} Give it the exact file(s), the precise change, and one verification step; the worker makes the change and verifies it (screenshot if visual). Include ONE line in the spawn prompt of the form `[t1-bounded-scope: {"outputs":["src/exact/File.tsx"]}]` naming every exact repo-relative file the fix may create or modify (no globs or directories) — the runtime publishes the bounded WorkUnitContract from that line, and a spawn without it is denied.
-- small — one component, one page/route, one small endpoint, or a scoped bug fix: spawn the owning implementation role(s) directly at their normal tier. Use `senior-frontend` for UI/routes and `senior-backend` for server/data; when the bounded request genuinely touches both, spawn those two roles in parallel. On Kilo, each direct role uses built-in `general` with its first-line role marker and matching `.kilo/agents/senior-<role>.md` contract, with no `model`.{{SMALL_OPENCODE_CLAUSE}} Do NOT spawn `senior-architect` or create a feature plan unless the work turns cross-cutting.
+- small — one component, one page/route, one small endpoint, or a scoped bug fix: spawn the owning implementation role(s) directly at their normal tier. Use `senior-frontend` for UI/routes and `senior-backend` for server/data; when the bounded request genuinely touches both, spawn those two roles in parallel. On Kilo, each direct role uses built-in `general` with its first-line role marker and matching `.kilo/agents/senior-<role>.md` contract, with no `model`.{{SMALL_OPENCODE_CLAUSE}} Every small-tier `senior-frontend` / `senior-backend` spawn MUST include ONE `[t1-bounded-scope: {"outputs":["exact/file.ts"]}]` line naming every exact repo-relative path the unit may create or modify (no globs). Without it the spawn is denied (`spawn-bounded-scope-missing`). Do NOT spawn `senior-architect` or create a feature plan unless the work turns cross-cutting — skip architect only because that marker (or an already-published envelope) replaces PLAN_READY for this small unit.
 - complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW, before any edit, as a SINGLE-FEATURE run — the architect plans just this feature, decides frontend/backend/both and the per-role model tiers, then implement → review → test.
 Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
 <!-- T1BLOCK:END maintenance-triage-subagents -->

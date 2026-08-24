@@ -55,7 +55,7 @@ import {
 import type { GateContext } from './gate-context';
 import { openCodeFirstGates } from './gate-opencode-first';
 import { reuseReplaceGates } from './gate-reuse';
-import { modelEnforcementGates } from './gate-enforcement';
+import { architectPhaseGate, modelEnforcementGates } from './gate-enforcement';
 
 /**
  * WHY THE PERSIST WAS REFUSED — asked of the disk here, because the enumeration
@@ -943,6 +943,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
     ctx, cwd, state, raw, toolName, toolInput, role, roleEvidence,
     spawnRunId, runPolicy, subagentTeam, spawnPromptText, allowSpawn,
   };
+  const architectPhase = architectPhaseGate(gateCtx);
+  if (architectPhase) return architectPhase;
   const openCodeFirst = openCodeFirstGates(gateCtx);
   if (openCodeFirst) return openCodeFirst;
   const reuse = reuseReplaceGates(gateCtx);
