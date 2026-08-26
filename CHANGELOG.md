@@ -63,6 +63,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Setup: persist OpenCode authorization before prefs and heal first-time .one.json (`4ff4c823`)
 - Gates: brief write and spawn rules before the first tool (`a162a469`)
 - Install: reclaim generated agents; always ask Code Graph; name Cursor hook edges (`c628b61a`)
 - P8 spawn: stop fake Couldn't-start failures; skip architect when small work is already scoped (`9a5a5460`)
