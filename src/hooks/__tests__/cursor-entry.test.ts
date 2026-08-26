@@ -77,6 +77,7 @@ function materializeCompleteCursorProject(cwd: string): void {
     onboardingComplete: true,
     confirmedAt: '2026-01-01T00:00:00Z',
     materializedStack: 'default|react-vite|supabase|none',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
   }), 'utf8');
   fs.writeFileSync(path.join(stateDir, 'rules', 'common', 'auth-gate.md'), 'rule\n', 'utf8');
   fs.writeFileSync(path.join(stateDir, 'skills', 'project-memory', 'SKILL.md'), 'skill\n', 'utf8');

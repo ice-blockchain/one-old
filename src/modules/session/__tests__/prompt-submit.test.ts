@@ -151,6 +151,7 @@ function completeSharedState(extra: Record<string, unknown> = {}): Record<string
     projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
     confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
     materializedStack: 'default|react-vite|supabase|none',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     ...extra,
   };
 }
@@ -165,6 +166,7 @@ function existingSharedState(extra: Record<string, unknown> = {}): Record<string
     confirmed: true,
     onboardingComplete: true,
     confirmedAt: '2026-01-01T00:00:00Z',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     ...extra,
   };
 }
@@ -786,6 +788,7 @@ test('maintenance runtime-control prompts stay with the parent and do not mint a
       materializedStack: 'minimal|none|other|none',
       currentRunId: 'existing-run',
       spawnIndex: { 'quick-fix': 1 },
+      openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     }), (cwd) => {
       writeLocalPrefs({
         openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
@@ -827,7 +830,10 @@ test('maintenance + OpenCode ACTIVE → triage routes to opencode_delegate FIRST
   // opencode (enabled + present) was never stamped, so openCodeDelegationActive() was
   // false and the directive dropped its OpenCode clause. With opencode enabled AND
   // stamped, the directive must push the delegate tool first.
-  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+  withAuthedProject(existingSharedState({
+    materializedStack: 'minimal|none|other|none',
+    openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
+  }), (cwd) => {
     writeLocalPrefs({
       openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
       toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
@@ -844,7 +850,10 @@ test('maintenance + OpenCode ACTIVE → triage routes to opencode_delegate FIRST
 });
 
 test('maintenance + OpenCode ACTIVE on Codex → routes to opencode_delegate FIRST (host-agnostic) + self-registers the MCP server', () => {
-  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+  withAuthedProject(existingSharedState({
+    materializedStack: 'minimal|none|other|none',
+    openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
+  }), (cwd) => {
     const env = process.env;
     assert.ok(env.CODEX_HOME, 'test CODEX_HOME is sandboxed');
     const pluginRoot = path.join(env.CODEX_HOME, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one');
@@ -879,6 +888,7 @@ test('maintenance triage mints a fresh run id so stale OpenCode role attempts do
     materializedStack: 'minimal|none|other|none',
     currentRunId: 'old-maintenance-run',
     spawnIndex: { 'senior-frontend': 1 },
+    openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
   }), (cwd) => {
     writeLocalPrefs({
       openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
@@ -949,6 +959,7 @@ test('a nonterminal current run emits continuation routing and preserves its rol
   withAuthedProject(completeSharedState({
     currentRunId: 'verify-run',
     spawnIndex: { 'senior-reviewer': 1, 'senior-tester': 1 },
+    openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
   }), (cwd) => {
     writeLocalPrefs({
       openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },

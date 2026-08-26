@@ -74,6 +74,7 @@ function existingState(extra: Record<string, unknown> = {}): Record<string, unkn
     confirmed: true,
     onboardingComplete: true,
     confirmedAt: '2026-01-01T00:00:00Z',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     ...extra,
   };
 }

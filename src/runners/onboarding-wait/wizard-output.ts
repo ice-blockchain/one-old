@@ -178,12 +178,31 @@ export function declineOutput(cwd: string, _host: string): string {
 // flow NOTHING was written before this recorded yes — this is the FIRST write
 // that may create the project's .traffic-one folder, exactly at decision time.
 // The seed feeds the wizard's stack derivation and the post-setup triage.
+// Returns whether the yes landed. beginOnboardingAttempt ignores it; main
+// speaks via abortIfUseNotRecorded after the attempt. An unrecorded yes is not seeded.
 export function applyUseChoice(
   cwd: string,
   argv: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
-): void {
-  recordPluginUseChoice(cwd, true, 'command', env);
-  const seedArg = argv.find((a) => a.startsWith('--seed-prompt='));
-  if (seedArg) seedOriginalPrompt(cwd, seedArg.slice('--seed-prompt='.length), env);
+): boolean {
+  const recorded = recordPluginUseChoice(cwd, true, 'command', env);
+  if (recorded) {
+    const seedArg = argv.find((a) => a.startsWith('--seed-prompt='));
+    if (seedArg) seedOriginalPrompt(cwd, seedArg.slice('--seed-prompt='.length), env);
+  }
+  return recorded;
+}
+
+// Same shape as the unrecorded-decline body in declineOutput: the yes never
+// reached disk (prefs-store will not create a bucket for a directory an
+// enclosing project already owns). Line 1 is the stdout protocol token — not
+// TRAFFIC_ONE_DISABLED (that means decline) and not SETUP_READY / COMPLETE /
+// PENDING (setup did not start). Printing belongs in main(), not here.
+export function useNotRecordedOutput(cwd: string): string {
+  const enclosing = enclosingProjectRoot(cwd);
+  return 'TRAFFIC_ONE_SETUP_USE_NOT_RECORDED\n'
+    + 'The yes was NOT saved, so do not report it as settled: this directory\'s preferences belong to '
+    + `${enclosing || 'an enclosing project'}, and Traffic One opens no preferences root for a sub-directory of `
+    + 'one — nothing was written. With no answer on record the question returns next session. Only a yes '
+    + `recorded against ${enclosing || 'the enclosing project root'} lasts.\n`;
 }

@@ -16,6 +16,7 @@ function complete(): Record<string, unknown> {
     technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
     projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
     openCode: { enabled: false, source: 'prompted' },
+    openCodeDelegation: { approved: false },
     codeGraphProvider: 'graphify',
     codeGraphAcknowledged: true,
     team: { mode: 'subagents', source: 'prompted', approved: true },
@@ -67,4 +68,14 @@ test('nextOnboardingStep: a global provider without this project ack is still co
   delete s.codeGraphAcknowledged;
   s.codeGraphProvider = 'gitnexus';
   assert.equal(nextOnboardingStep(s), 'code-graph');
+});
+
+test('nextOnboardingStep reopens open-code when durable delegation is missing', () => {
+  const s = complete();
+  delete s.openCodeDelegation;
+  assert.equal(nextOnboardingStep(s), 'open-code');
+  assert.equal(nextOnboardingStep(s, 'opencode'), 'state',
+    'self-hosted hosts still skip the whole OpenCode step');
+  s.openCodeDelegation = { approved: false };
+  assert.equal(nextOnboardingStep(s), 'state');
 });

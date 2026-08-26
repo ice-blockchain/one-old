@@ -23,6 +23,10 @@
 //   openCode  — a PROJECT_PREF_KEY, per directory. Inherited. It is also the
 //               FIRST step `nextLocalPreferenceStep` returns, so without it a
 //               member re-opens the wizard at question one.
+//   openCodeDelegation — committed `.one.json` authorization, not a pref. Copied
+//               after the prefs merge via persistWizardSharedFields so a member
+//               whose prefs answered is not reopened for a missing durable field.
+//               Not in WORKSPACE_INHERITED_PREF_KEYS.
 //   hosts     — `hosts.<host>.performance` / `.team`, the HOST_PREF_KEYS. These
 //               are what the run-policy freeze reads. Inherited whole, every
 //               host the container has answered on, because "which host will
@@ -57,12 +61,13 @@
 
 import * as path from 'path';
 
-import { type Rec } from '../obj';
+import { obj, type Rec } from '../obj';
 import {
   readWorkspaceMemberRegistry,
   type WorkspaceMemberIdentity,
 } from '../hook/workspace-members';
-import { mergeProjectPrefs, readProjectPrefs } from '../state';
+import { persistWizardSharedFields } from '../onboarding-server/wizard-state-write';
+import { mergeProjectPrefs, readProjectPrefs, readState, stateTimestamp } from '../state';
 
 /**
  * The preference keys a member takes from its container.
@@ -158,6 +163,23 @@ function inheritedKeysPresent(memberDir: string, expected: Rec, env: NodeJS.Proc
 }
 
 /**
+ * The container's durable OpenCode authorization to stamp onto a member.
+ *
+ * Prefs inheritance alone is not enough: both routers require the member's own
+ * `.one.json` `openCodeDelegation`. Copy the container's committed record when
+ * it already has one; otherwise synthesize from prefs `openCode.enabled`.
+ */
+function inheritedOpenCodeDelegation(workspaceRoot: string, env: NodeJS.ProcessEnv): Rec | null {
+  const committed = obj(readState(workspaceRoot).openCodeDelegation);
+  if (committed && typeof committed.approved === 'boolean') return { ...committed };
+  const enabled = obj(readProjectPrefs(workspaceRoot, env).openCode)?.enabled;
+  if (typeof enabled === 'boolean') {
+    return { approved: enabled, source: 'inherited-from-workspace', decidedAt: stateTimestamp() };
+  }
+  return null;
+}
+
+/**
  * Give ONE member the container's shared answers.
  *
  * Idempotent: re-running writes the same values and re-reports `inherited`.
@@ -180,6 +202,23 @@ export function inheritWorkspacePrefsToMember(
       why: `${member} did not accept the inherited preference${missing.length === 1 ? '' : 's'} `
         + `${missing.join(', ')} — its per-user preference bucket could not be created or written`,
     };
+  }
+  const delegation = inheritedOpenCodeDelegation(workspaceRoot, env);
+  if (delegation) {
+    let persisted = false;
+    try {
+      persisted = persistWizardSharedFields(member, { openCodeDelegation: delegation });
+    } catch {
+      persisted = false;
+    }
+    if (!persisted) {
+      return {
+        outcome: 'refused',
+        member,
+        why: `${member} did not accept the inherited openCodeDelegation — its .one.json `
+          + 'could not be created or written',
+      };
+    }
   }
   return { outcome: 'inherited', member, keys: landed };
 }

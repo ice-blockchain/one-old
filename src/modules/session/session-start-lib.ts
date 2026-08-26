@@ -32,12 +32,12 @@ import {
   isExistingProjectMode,
   isNewProjectMode,
   normalizeState,
-  patchState,
   readEffectiveState,
   stackFingerprint,
   stateVersion,
   writeState,
 } from '../../shared/state';
+import { persistWizardSharedFields } from '../../shared/onboarding-server/wizard-state-write';
 import { projectWritesPermitted } from '../../shared/state/plugin-use';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { obj } from '../../shared/obj';
@@ -332,7 +332,6 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
     const delegation = state.openCodeDelegation && typeof state.openCodeDelegation === 'object' ? (state.openCodeDelegation as Rec) : null;
     if (delegation?.approved !== true) {
       const record = { approved: true, source: 'backfilled-from-enabled-pref', decidedAt: nowIsoNoMs() };
-      state.openCodeDelegation = record;
       try {
         // The whole point of this write is that the field is MACHINE-READABLE at
         // call time — the spawn gate cites it to prove the user authorized
@@ -342,21 +341,20 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
         // so in the notice this function exists to return, next to the heal
         // notices; there is no silent recovery to fall back on.
         //
-        // `patchState`, because this is a BACKFILL of one field onto a file this
-        // function does not own the rest of, and it runs on the SessionStart /
-        // UserPromptSubmit path where other hooks are writing the same file. The
-        // old `writeState(cwd, { ...readState(cwd), … })` took its base outside
-        // the state lock, so a concurrent scrub or wizard answer landing in
-        // between was erased; and it read a torn `.one.json` as `{}`, replacing
-        // the project's whole state with this one authorization record while
-        // answering true. Refusing an illegible base is right HERE specifically:
-        // the caller's own `writeState(cwd, state)` still runs afterwards and
-        // still heals through the quarantine path, so this refusal wedges
-        // nothing — it only declines to be the writer that guesses.
-        if (!patchState(cwd, { openCodeDelegation: record })) {
+        // `persistWizardSharedFields`, not a bare `patchState`: a first-time
+        // empty / torn file with no `"stack"` in the RAW bytes heals through
+        // `writeState` (quarantine to `.one.json.corrupt`). A stacked-torn or
+        // unreadable file is refused — `readState` answers those with `{}`, and
+        // replacing a stacked project with one authorization record would
+        // destroy it. Assign the in-memory field only after the persist
+        // succeeds: a refused write must not leave SessionStart's later
+        // `writeState(cwd, state)` claiming a field that is not on disk.
+        if (!persistWizardSharedFields(cwd, { openCodeDelegation: record })) {
           notice += '[opencode] delegation authorization could not be recorded — `.traffic-one/.one.json` did not '
             + 'accept the write (the state write fence refused it, or its current contents could not be read), '
             + 'so `opencode_delegate` may still be rejected as not explicitly authorized.\n';
+        } else {
+          state.openCodeDelegation = record;
         }
       } catch { /* best-effort */ }
     }

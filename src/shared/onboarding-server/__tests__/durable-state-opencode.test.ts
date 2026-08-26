@@ -8,7 +8,7 @@ import { STATE_FILE } from '../../../config/paths';
 import { writeSimpleAuth } from '../../auth';
 import { detectHost } from '../../host';
 import { currentLocalPreferenceTarget } from '../../onboarding/local-prefs';
-import { readEffectiveState, readProjectPrefs, writeGlobalCodeGraphProvider } from '../../state';
+import { mergeProjectPrefs, readEffectiveState, readProjectPrefs, writeGlobalCodeGraphProvider } from '../../state';
 import { applyAnswer, computeOnboarding } from '../flow';
 import { effectiveOnboardingState, lacksDurableOnboardingState } from '../flow-view';
 
@@ -134,5 +134,39 @@ test('the wizard step and done are decided by the per-user consent, not by a cop
     assert.equal(laundered.done, false, 'consent absent from the store: onboarding is NOT done');
     assert.equal(laundered.step, 'open-code', 'consent absent from the store: the consent step re-opens');
     assert.equal(durableCheck(cwd), true, 'and the durable-state guard is what says so');
+  });
+});
+
+// Prefs can answer `openCode` while `.one.json` still lacks `openCodeDelegation`
+// (a failed patch that wrote prefs first, or an older project enabled before
+// the durable field existed). The step must reopen until the shared field
+// lands; a state-file `openCode` copy still is not consent (test above).
+test('prefs-answered OpenCode reopens until openCodeDelegation is on disk', () => {
+  withProject(COMMITTED, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    mergeProjectPrefs(cwd, { openCode: { enabled: true, source: 'prompted' } });
+
+    const missing = computeOnboarding(cwd);
+    assert.equal(missing.step, 'open-code', 'prefs without durable openCodeDelegation reopen the step');
+    assert.equal(missing.done, false);
+    assert.equal(readStateFile(cwd).openCodeDelegation, undefined, 'fixture guard: the durable field is absent');
+    assert.ok(readProjectPrefs(cwd).openCode, 'fixture guard: prefs already answered');
+
+    assert.equal(applyAnswer(cwd, 'open-code', 'enable').ok, true, 'the write that records the durable field lands');
+    const after = computeOnboarding(cwd);
+    assert.notEqual(after.step, 'open-code', 'once the durable field is on disk the step is no longer open-code');
+    assert.equal(after.step, 'performance');
+    assert.equal((readStateFile(cwd).openCodeDelegation as { approved?: boolean } | undefined)?.approved, true);
+  });
+
+  withProject({
+    ...COMMITTED,
+    openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
+  }, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    mergeProjectPrefs(cwd, { openCode: { enabled: true, source: 'prompted' } });
+    const view = computeOnboarding(cwd);
+    assert.notEqual(view.step, 'open-code', 'durable approved:true is enough to leave open-code');
+    assert.equal(view.step, 'performance');
   });
 });

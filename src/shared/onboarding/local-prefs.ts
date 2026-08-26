@@ -14,6 +14,7 @@ import { canonicalHost } from '../model-tiers';
 import { currentHostModelTarget } from '../current-model-tiers';
 import { teamModeForLevel } from '../performance';
 import {
+  hasDurableOpenCodeDelegation,
   hasResolvedOpenCodeState,
   hasValidPerformanceState,
   hasValidTeamState,
@@ -58,7 +59,9 @@ export function nextLocalPreferenceStep(
   const s = obj(state);
   if (!s || !s.stack) return null;
   const activeHost = canonicalHost(host);
-  if (!hostFlags(activeHost).opencodeSelfHosted && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
+  if (!hostFlags(activeHost).opencodeSelfHosted) {
+    if (!hasResolvedOpenCodeState(s.openCode) || !hasDurableOpenCodeDelegation(s)) return 'open-code';
+  }
   if (!hasValidPerformanceState(s.performance)) return 'performance';
   const current = target === undefined ? currentLocalPreferenceTarget(activeHost) : target;
   if (current && !performanceTargetMatches(s.performance, current)) return 'performance';

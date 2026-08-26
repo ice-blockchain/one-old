@@ -332,7 +332,12 @@ test('existing project: plan/model drift reopens Performance while metadata-only
 });
 
 test('performance and repick update only the active host and preserve Cursor availableModels', () => {
-  withProject({ mode: 'existing-codebase', stack: 'default', onboardingComplete: true }, (cwd) => {
+  withProject({
+    mode: 'existing-codebase',
+    stack: 'default',
+    onboardingComplete: true,
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-07-12T08:00:00Z' },
+  }, (cwd) => {
     writeGlobalCodeGraphProvider('gitnexus');
     mergeProjectPrefs(cwd, { openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T08:00:00Z' } });
     mergeProjectHostPrefs(cwd, 'cursor', {
@@ -776,7 +781,12 @@ test('team step model menu follows Codex and exposes both verified v2 models acr
 });
 
 test('computeOnboarding explicit env owns the preference target and model metadata', () => {
-  withProject({ mode: 'existing-codebase', stack: 'default', onboardingComplete: true }, (cwd) => {
+  withProject({
+    mode: 'existing-codebase',
+    stack: 'default',
+    onboardingComplete: true,
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-07-15T00:00:00Z' },
+  }, (cwd) => {
     const env = {
       ...process.env,
       TRAFFIC_ONE_HOST: 'codex',
@@ -1378,6 +1388,7 @@ test('legacy on-disk prefs without codeGraphAcknowledged grandfather as acknowle
     frontend: 'none',
     backend: 'other',
     onboardingComplete: true,
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
   }, (cwd) => {
     writeGlobalCodeGraphProvider('gitnexus');
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
@@ -1541,6 +1552,7 @@ test('computeOnboarding: an unstamped team never leaks the raw "team" step (kind
     frontend: 'react-vite',
     backend: 'go',
     performance: { level: 'high', source: 'prompted' },
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     // no `team` key → hasValidTeamState false
   };
   withProject(committed, (cwd) => {
@@ -1632,10 +1644,13 @@ test('new-project: an unwritable user home never falls back to project-local pre
 });
 
 // ── applyAnswer over an ILLEGIBLE `.one.json` ───────────────────────────────
-// The three `patchSharedState` steps are field merges; `finalize` is the
-// wizard's commit. That difference is the whole reason they now answer an
-// illegible base differently, and these two tests pin both halves — the second
-// is what makes the first safe to ship, because it is the in-product way out.
+// Shared-field answers now heal-or-refuse: first-time empty / torn with no
+// `"stack"` in the RAW bytes heals through `writeState`; a torn file whose
+// bytes already carry a stack is refused so a stacked project is not replaced
+// with one wizard answer. The CORRUPT fixture below is the refuse half
+// (`"stack":"defa"`). First-time heal is pinned in wizard-state-write.test.ts.
+// `finalize` still heals any corrupt file, which is why refusing a stacked-torn
+// merge does not wedge the wizard.
 //
 // The base the old spelling wrote from is asserted directly rather than argued:
 // `readState` answers a torn file with `{}`, so `writeState(cwd, { ...readState(cwd),
@@ -1715,19 +1730,23 @@ test('a wizard answer is refused over a `.one.json` that cannot be read, and the
   }
 });
 
-test('`finalize` still HEALS the same torn `.one.json`, which is why refusing the merge steps wedges nothing', () => {
+test('`finalize` still HEALS a stacked-torn `.one.json`, which is why refusing the merge steps wedges nothing', () => {
   withProject(null, (cwd) => {
     recordPluginUseChoice(cwd, true, 'command');
-    const torn = '{"mode":"new-project","projectContext":{"originalPrompt":"build a sa';
+    // Heal-or-refuse: a first-time torn file WITHOUT a stack is now healed by
+    // the merge steps themselves. This fixture is the refuse half — raw bytes
+    // already carry `"stack"` — so mobile still fails closed and finalize is
+    // still the in-product way out (it keeps `writeState`).
+    const torn = '{"mode":"new-project","stack":"default","onboardingComplete":tr';
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
     fs.writeFileSync(statePath(cwd), torn, 'utf8');
     assert.equal(readJsonResult(statePath(cwd)).kind, 'corrupt', 'fixture guard: the base is unparseable');
     assert.equal(applyAnswer(cwd, 'mobile', 'web_only').ok, false,
-      'fixture guard: the merge steps really are refused on this exact file');
+      'fixture guard: a stacked-torn file is still refused by the merge steps');
 
     // `finalize` deliberately keeps `writeState`: it MEANS to replace the file,
-    // and it is the repair path a corrupt state has to heal through. So the user
-    // whose merge answers were just refused is not stuck — the commit still works.
+    // and it is the repair path a stacked-torn state has to heal through. So the
+    // user whose merge answers were just refused is not stuck — the commit still works.
     assert.deepEqual(applyAnswer(cwd, 'finalize', true), { ok: true },
       'the wizard commit is a whole-file replacement and still lands over an unreadable base');
     assert.equal(typeof readState(cwd).stack, 'string', 'the project is onboarded again');

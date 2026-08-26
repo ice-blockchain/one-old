@@ -580,7 +580,8 @@ test('ensureOpenCodeDelegationReady: an authorization backfill over an illegible
       'the base the old spelling merged onto: a torn file reads as an EMPTY project, so this one '
       + "backfill used to become the file's entire contents");
 
-    const notice = ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } });
+    const state: Record<string, unknown> = { openCode: { enabled: true } };
+    const notice = ensureOpenCodeDelegationReady(cwd, state);
     assert.match(notice, /delegation authorization could not be recorded/,
       'a backfill whose base could not be read must be said out loud — the gate that cites this field will reject the delegation');
     assert.match(notice, /could not be read/,
@@ -589,6 +590,8 @@ test('ensureOpenCodeDelegationReady: an authorization backfill over an illegible
       "the user's state is byte-identical — a patch it could not read the base of destroys nothing");
     assert.equal(fs.existsSync(`${statePath}.corrupt`), false,
       'and nothing was quarantined, because nothing was replaced');
+    assert.equal(state.openCodeDelegation, undefined,
+      'in-memory state must not claim a field the refused persist never wrote');
   });
 
   withOpenCodeEnv('other', (cwd, { managedBin }) => {
@@ -607,6 +610,40 @@ test('ensureOpenCodeDelegationReady: an authorization backfill over an illegible
     assert.match(notice, /delegation authorization could not be recorded/,
       'control: bytes that exist and cannot be copied are refused too');
     assert.equal(fs.readFileSync(statePath, 'utf8'), bytes, 'and they survive');
+  });
+});
+
+test('ensureOpenCodeDelegationReady: an empty first-time `.one.json` is healed and quarantined', () => {
+  withOpenCodeEnv('other', (cwd, { managedBin }) => {
+    installStubCli(managedBin);
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    fs.writeFileSync(statePath, '', 'utf8');
+    const state: Record<string, unknown> = { openCode: { enabled: true } };
+    const notice = ensureOpenCodeDelegationReady(cwd, state);
+    assert.doesNotMatch(notice, /could not be recorded/,
+      'first-time empty heals — the authorization must land, not be refused');
+    const one = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(one.openCodeDelegation?.approved, true);
+    assert.equal((state.openCodeDelegation as Record<string, unknown>)?.approved, true);
+    assert.equal(fs.existsSync(`${statePath}.corrupt`), true);
+    assert.equal(fs.readFileSync(`${statePath}.corrupt`, 'utf8'), '');
+  });
+});
+
+test('ensureOpenCodeDelegationReady: a first-time torn `.one.json` without a stack is healed', () => {
+  withOpenCodeEnv('other', (cwd, { managedBin }) => {
+    installStubCli(managedBin);
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const torn = '{"mode":"new';
+    fs.writeFileSync(statePath, torn, 'utf8');
+    const state: Record<string, unknown> = { openCode: { enabled: true } };
+    const notice = ensureOpenCodeDelegationReady(cwd, state);
+    assert.doesNotMatch(notice, /could not be recorded/,
+      'first-time torn with no stack heals through persistWizardSharedFields');
+    const one = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(one.openCodeDelegation?.approved, true);
+    assert.equal((state.openCodeDelegation as Record<string, unknown>)?.approved, true);
+    assert.equal(fs.readFileSync(`${statePath}.corrupt`, 'utf8'), torn);
   });
 });
 

@@ -221,6 +221,7 @@ function existingState(extra: Record<string, unknown> = {}): Record<string, unkn
     onboardingComplete: true,
     confirmedAt: '2026-01-01T00:00:00Z',
     materializedStack: 'minimal|none|other|none',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     ...extra,
   };
 }
@@ -1174,6 +1175,7 @@ const completeNewProject = (): Record<string, unknown> => ({
   projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
   confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
   materializedStack: 'default|react-vite|supabase|none',
+  openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
 });
 
 const cursorCaptureCommand = (cwd: string): string => [

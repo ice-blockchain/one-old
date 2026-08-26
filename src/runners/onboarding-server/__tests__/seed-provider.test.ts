@@ -20,6 +20,7 @@ function nearCompleteNewProject(provider?: string): Record<string, unknown> {
     technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
     projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
     openCode: { enabled: false, source: 'prompted' },
+    openCodeDelegation: { approved: false },
     ...(provider ? { codeGraphProvider: provider } : {}),
     team: { mode: 'subagents', source: 'prompted', approved: true },
     performance: { level: 'high', source: 'prompted' },

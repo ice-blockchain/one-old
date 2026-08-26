@@ -69,6 +69,7 @@ const COMPLETE_PROJECT: Record<string, unknown> = {
   confirmedAt: '2026-01-01T00:00:00Z',
   onboardingComplete: true,
   materializedStack: 'default|react-vite|supabase|none',
+  openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
   realtime: 'none',
   supabaseFunctionsAutoDeploy: 'ask',
 };

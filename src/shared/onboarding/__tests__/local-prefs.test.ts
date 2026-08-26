@@ -37,6 +37,9 @@ test('nextLocalPreferenceStep walks only the per-user Traffic One preference ste
   assert.equal(nextLocalPreferenceStep(state, 'kilo', CURRENT), 'performance');
 
   state.openCode = { enabled: false, source: 'prompted' };
+  assert.equal(nextLocalPreferenceStep(state, 'codex', CURRENT), 'open-code',
+    'prefs without durable openCodeDelegation reopen the step');
+  state.openCodeDelegation = { approved: false };
   assert.equal(nextLocalPreferenceStep(state, 'codex', CURRENT), 'performance');
 
   state.performance = { level: 'high', source: 'prompted', target: PERFORMANCE_TARGET };
@@ -59,6 +62,7 @@ test('nextLocalPreferenceStep does not require new-project-only MVP or mobile an
     mode: 'existing-codebase',
     stack: 'minimal',
     openCode: { enabled: false, source: 'prompted' },
+    openCodeDelegation: { approved: false },
     performance: { level: 'low', source: 'prompted', target: PERFORMANCE_TARGET },
     team: { mode: 'main-agent', source: 'prompted' },
     codeGraphProvider: 'gitnexus',
@@ -71,6 +75,7 @@ test('nextLocalPreferenceStep rejects team/performance mismatches', () => {
     mode: 'existing-codebase',
     stack: 'default',
     openCode: { enabled: false, source: 'prompted' },
+    openCodeDelegation: { approved: false },
     performance: { level: 'high', source: 'prompted', target: PERFORMANCE_TARGET },
     team: { mode: 'main-agent', source: 'prompted' },
     codeGraphProvider: 'graphify',
@@ -83,6 +88,7 @@ test('nextLocalPreferenceStep reopens only Performance when plan or applied mode
     mode: 'existing-codebase',
     stack: 'default',
     openCode: { enabled: false, source: 'prompted' },
+    openCodeDelegation: { approved: false },
     performance: {
       level: 'balanced',
       source: 'prompted',
@@ -103,6 +109,7 @@ test('semantic Performance target accepts the same catalog and rejects model dri
     mode: 'existing-codebase',
     stack: 'default',
     openCode: { enabled: false, source: 'prompted' },
+    openCodeDelegation: { approved: false },
     performance: { level: 'low', source: 'prompted', target: PERFORMANCE_TARGET },
     team: { mode: 'main-agent', source: 'prompted' },
     codeGraphProvider: 'gitnexus',

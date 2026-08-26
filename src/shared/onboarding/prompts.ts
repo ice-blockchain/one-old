@@ -6,6 +6,7 @@
 
 import { obj } from '../obj';
 import {
+  hasDurableOpenCodeDelegation,
   hasResolvedNewProjectMobileState,
   hasResolvedOpenCodeState,
   hasValidPerformanceState,
@@ -33,7 +34,9 @@ export function nextOnboardingStep(state: unknown, host?: unknown): OnboardingSt
   const s = obj(state);
   if (!s || s.mode !== 'new-project') return null;
   const activeHost = canonicalHost(host);
-  if (!hostFlags(activeHost).opencodeSelfHosted && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
+  if (!hostFlags(activeHost).opencodeSelfHosted) {
+    if (!hasResolvedOpenCodeState(s.openCode) || !hasDurableOpenCodeDelegation(s)) return 'open-code';
+  }
   if (!hasValidPerformanceState(s.performance)) return 'performance';
   if (needsTeamConfirmation(s, host)) return 'team-confirmation';
   if (!hasValidTeamState(s.team)) return 'team';

@@ -25,7 +25,9 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { applyReconsiderChoice } from '../consent';
-import { applyUseChoice, declineOutput } from '../wizard-output';
+import { abortIfUseNotRecorded } from '../index';
+import { applyUseChoice, declineOutput, useNotRecordedOutput } from '../wizard-output';
+import { usePluginQuestionPending } from '../../../shared/onboarding-server/flow';
 import {
   projectWritesPermitted,
   pluginUseDeclined,
@@ -132,13 +134,11 @@ test('declineOutput stops promising silence when the decline never reached disk'
 
 // ── CALLER 2: applyUseChoice — the `--use` yes path ──────────────────────────
 //
-// VERDICT: left alone. It returns void into `beginOnboardingAttempt`, whose own
-// answer is `alreadyDone` (a different question), and it asserts nothing — so
-// there is no false statement to correct and no value a caller already consumes.
-// This test is the evidence behind that verdict, not a blessing of the silence:
-// it pins the blast radius, so a change to the prefs guard that makes the yes
-// land, or a future surface that starts speaking here, has to come back through
-// this file.
+// The boolean is consumed: applyUseChoice returns whether the yes landed, and
+// main() aborts (exit 2, TRAFFIC_ONE_SETUP_USE_NOT_RECORDED) when --use /
+// --reconsider leaves usePluginQuestionPending true. beginOnboardingAttempt
+// still ignores the boolean — speaking belongs in main(). This test pins both
+// returns plus the blast radius (stderr, fence, no project write).
 
 test('the --use yes path records nothing on an enclosed sub-directory, and the fence keeps it harmless', () => {
   withEnclosedSubdirectory((ctx) => {
@@ -150,12 +150,14 @@ test('the --use yes path records nothing on an enclosed sub-directory, and the f
       seen.push(String(chunk));
       return (realWrite as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
     }) as typeof process.stderr.write;
+    let subRecorded: boolean;
     try {
-      applyUseChoice(ctx.sub, ['--use', ctx.sub, '--seed-prompt=build a billing dashboard with charts']);
+      subRecorded = applyUseChoice(ctx.sub, ['--use', ctx.sub, '--seed-prompt=build a billing dashboard with charts']);
     } finally {
       process.stderr.write = realWrite;
     }
 
+    assert.equal(subRecorded, false, 'applyUseChoice reports that the yes did not land');
     assert.equal(fs.existsSync(prefsPath), false, 'fixture guard: no preferences root was created');
     assert.equal(readPluginUseChoice(ctx.sub), null, 'fixture guard: the yes is NOT on record');
     // The floor the verdict rests on: the refusal is not silent even with every
@@ -165,8 +167,8 @@ test('the --use yes path records nothing on an enclosed sub-directory, and the f
       'recordPluginUseChoice still reports the unrecorded answer on stderr',
     );
     // …and nothing destructive happened on this path. The yes writes no project
-    // files, and `seedOriginalPrompt` — which runs afterwards regardless — checks
-    // projectWritesPermitted itself, so an unrecorded yes cannot seed either.
+    // files, and seed is skipped when the yes did not land (seedOriginalPrompt
+    // would also no-op behind projectWritesPermitted).
     assert.equal(projectWritesPermitted(ctx.sub), false,
       'the write fence is still closed, because the question is still unanswered');
     assert.equal(fs.existsSync(stateFile), false, 'no project state file is created by an unrecorded yes');
@@ -174,8 +176,41 @@ test('the --use yes path records nothing on an enclosed sub-directory, and the f
 
     // Writable baseline in the same call shape.
     ctx.usePrefs('root-use');
-    applyUseChoice(ctx.repo, ['--use', ctx.repo]);
+    const rootRecorded = applyUseChoice(ctx.repo, ['--use', ctx.repo]);
+    assert.equal(rootRecorded, true, 'applyUseChoice reports that the yes landed on the repo root');
     assert.equal(readPluginUseChoice(ctx.repo)?.enabled, true, 'baseline: the same call writes when allowed');
+  });
+});
+
+test('useNotRecordedOutput names the enclosing root and does not claim setup started', () => {
+  withEnclosedSubdirectory((ctx) => {
+    ctx.usePrefs('sub-use-output');
+    const out = useNotRecordedOutput(ctx.sub);
+    assert.equal(out.startsWith('TRAFFIC_ONE_SETUP_USE_NOT_RECORDED\n'), true,
+      'line 1 is the unrecorded-yes protocol token');
+    assert.ok(out.includes(ctx.repo),
+      'names the enclosing project root, which is the only place a yes would stick');
+    assert.match(out, /yes was NOT saved/, 'names what did not happen');
+    assert.doesNotMatch(out, /TRAFFIC_ONE_SETUP_READY/, 'does not claim setup started');
+    assert.doesNotMatch(out, /TRAFFIC_ONE_SETUP_COMPLETE/, 'does not claim setup completed');
+    assert.doesNotMatch(out, /TRAFFIC_ONE_DISABLED/, 'does not use the decline token');
+  });
+});
+
+test('abortIfUseNotRecorded is true after --use on an enclosed sub, false on the repo root', () => {
+  withEnclosedSubdirectory((ctx) => {
+    ctx.usePrefs('sub-use-abort');
+    applyUseChoice(ctx.sub, ['--use', ctx.sub]);
+    assert.equal(usePluginQuestionPending(ctx.sub), true,
+      'the question is still pending — the yes never reached disk');
+    assert.equal(abortIfUseNotRecorded(ctx.sub, ['--use', ctx.sub]), true,
+      'main would write useNotRecordedOutput and exit 2');
+
+    ctx.usePrefs('root-use-abort');
+    applyUseChoice(ctx.repo, ['--use', ctx.repo]);
+    assert.equal(usePluginQuestionPending(ctx.repo), false, 'the yes landed on the repo root');
+    assert.equal(abortIfUseNotRecorded(ctx.repo, ['--use', ctx.repo]), false,
+      'main continues into stamp / ensureOnboardingServer');
   });
 });
 

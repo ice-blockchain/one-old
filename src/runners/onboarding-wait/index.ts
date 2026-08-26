@@ -59,12 +59,19 @@ import {
   bootstrapReadyOutput,
   declineOutput,
   rearmSetupLinkNudge,
+  useNotRecordedOutput,
 } from './wizard-output';
 import {
   beginOnboardingAttempt,
   consentPhaseFailureOutput,
   syncSessionFromArgv,
 } from './consent';
+
+// True when --use/--reconsider ran but the yes never reached disk, so main
+// must speak and exit 2 rather than launch the wizard. Does not print or exit.
+export function abortIfUseNotRecorded(cwd: string, argv: readonly string[]): boolean {
+  return (argv.includes('--use') || argv.includes('--reconsider')) && usePluginQuestionPending(cwd);
+}
 
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
@@ -83,6 +90,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     alreadyDone = beginOnboardingAttempt(cwd, host, argv);
   } catch (error) {
     process.stdout.write(consentPhaseFailureOutput(cwd, host, argv, error));
+    process.exit(2);
+  }
+  // --use/--reconsider that did not land (prefs-store refuses a bucket for an
+  // enclosed subdirectory) must not start the wizard: the question is still
+  // pending. SessionStart and the onboarding gate already skip prepare while
+  // usePluginQuestionPending is true; this waiter used not to.
+  if (abortIfUseNotRecorded(cwd, argv)) {
+    process.stdout.write(useNotRecordedOutput(cwd));
     process.exit(2);
   }
   // Stamp an existing codebase's detected identity as soon as consent is on record.
@@ -487,6 +502,7 @@ export {
   bootstrapReadyOutput,
   declineOutput,
   rearmSetupLinkNudge,
+  useNotRecordedOutput,
 } from './wizard-output';
 export {
   applyReconsiderChoice,

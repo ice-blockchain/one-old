@@ -131,6 +131,7 @@ function preferenceStep(fx: Fixture): ReturnType<typeof nextLocalPreferenceStep>
   return nextLocalPreferenceStep({
     stack: 'minimal',
     openCode: { enabled: false, source: 'prompted' },
+    openCodeDelegation: { approved: false },
     ...hostPrefs,
     codeGraphProvider: 'graphify',
     codeGraphAcknowledged: true,

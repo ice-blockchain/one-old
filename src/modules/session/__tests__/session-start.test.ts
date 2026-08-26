@@ -126,6 +126,7 @@ function existingState(extra: Record<string, unknown> = {}): Record<string, unkn
     confirmed: true,
     onboardingComplete: true,
     confirmedAt: '2026-01-01T00:00:00Z',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     ...extra,
   };
 }
@@ -149,6 +150,7 @@ function newProjectSharedState(extra: Record<string, unknown> = {}): Record<stri
     confirmed: true,
     onboardingComplete: true,
     confirmedAt: '2026-01-01T00:00:00Z',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
     ...extra,
   };
 }
@@ -181,6 +183,7 @@ test('runSessionStartAuthed from a workspace package resolves to the ancestor pr
     onboardingComplete: true,
     confirmed: true,
     materializedStack: 'default|react-vite|supabase|none',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
   }, (cwd) => {
     writeLocalPrefs({
       performance: { level: 'high', source: 'prompted' },

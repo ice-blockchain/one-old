@@ -29,7 +29,6 @@ import {
   clearProjectHostPrefs,
   mergeProjectHostPrefs,
   mergeProjectPrefs,
-  patchState,
   readEffectiveState,
   readState,
   writeGlobalCodeGraphProvider,
@@ -53,6 +52,11 @@ import {
   type OnboardingView,
   type WizardStep,
 } from './flow-view';
+import {
+  persistWizardSharedFields,
+  wizardSharedWriteWillNotHeal,
+  wizardStateWriteRefused,
+} from './wizard-state-write';
 
 // State as the preference-step router should see it: with the stamped stack, or
 // — when the stamp hasn't landed yet (ask-first same-session flow, or a wiped
@@ -335,41 +339,31 @@ function workspaceContainerOnboarding(
 // authorization the spawn gate cites, so delegation is later denied as "not
 // explicitly authorized" for a permission the user did grant.
 //
-// `patchState`, not `writeState(cwd, { ...readState(cwd), ...patch })`. Three
-// things change, and all three are what a wizard answer wants:
+// `persistWizardSharedFields`, not a bare `patchState`. A readable or absent
+// file still merges inside the state lock. An illegible file is split:
 //
-//   - the base is re-read INSIDE the state lock, so a SessionStart backfill or
-//     another wizard tab landing between this step's read and its write is no
-//     longer erased. Every caller here declares one or two fields and means
-//     exactly those; the old spelling published a whole-object snapshot taken
-//     before the lock and dropped whatever arrived in between.
-//   - an ILLEGIBLE base now REFUSES instead of healing. That is the important
-//     half: `readState` answers a torn `.one.json` with `{}`, so the old
-//     spelling replaced the user's whole project state with this one answer
-//     plus a version — stack, mode and onboardingComplete gone — and reported
-//     success. The bytes went to `.one.json.corrupt`, where nothing reads them.
-//     A refusal keeps the file, and the three steps below already have the
-//     channel to say so.
-//   - `finalize` deliberately keeps `writeState`: it is the wizard's COMMIT, it
-//     means to replace the file, and it is the repair path a corrupt state has
-//     to heal through. Refusing there would wedge a hand-broken `.one.json`
-//     with no in-product way out.
+//   - first-time empty / null / torn with no `"stack"` in the RAW bytes heals
+//     through `writeState` (quarantine to `.one.json.corrupt`). OpenCode is
+//     earlier than `finalize`, so that heal has to live here or a brand-new
+//     project whose first write tore can never record delegation.
+//   - a torn file whose raw bytes already carry a stack is refused. `readState`
+//     answers those with `{}`, and healing would replace a stacked project
+//     with one wizard answer plus a version.
+//
+// `finalize` still uses `writeState` directly: it is the wizard's COMMIT and
+// the repair path a stacked-torn file has to heal through.
 function patchSharedState(cwd: string, patch: Rec): boolean {
-  return patchState(cwd, patch);
+  return persistWizardSharedFields(cwd, patch);
 }
 
 // The wizard renders `error` (routes.ts answers 400 `{ ok:false, error }`;
 // wizard.html rethrows it into showError), and the step does not advance. Both
 // reasons a wizard answer fails to reach disk are durable — a planted symlink
 // stays planted, an unanswered "use Traffic One here?" stays unanswered, and a
-// torn `.one.json` stays torn — so there is nothing to retry silently; name the
-// answer that was not recorded and the file that did not take it.
-function stateWriteRefused(subject: string): AnswerOutcome {
-  return {
-    ok: false,
-    error: `\`.traffic-one/.one.json\` did not accept the write (the project state write fence refused it, `
-      + `or its current contents could not be read), so ${subject} was not recorded`,
-  };
+// torn stacked `.one.json` stays torn — so there is nothing to retry silently;
+// name the answer that was not recorded and the specific reason when we have one.
+function stateWriteRefused(subject: string, cwd: string, env: NodeJS.ProcessEnv): AnswerOutcome {
+  return wizardStateWriteRefused(subject, cwd, env);
 }
 
 function mobileFromChoice(value: unknown): { enabled: boolean; framework: string } | null {
@@ -514,19 +508,21 @@ function applyAnswerStep(
   switch (step) {
     case 'open-code': {
       const enabled = value === true || value === 'enable' || value === 'enabled';
-      mergeProjectPrefs(cwd, { openCode: { enabled, source: 'prompted', decidedAt: stateTimestamp() } }, env);
-      // Record the consent as a DURABLE AUTHORIZATION in committed project state
-      // (.traffic-one/.one.json), not just per-user prefs. Hosts with an
-      // action-level safety reviewer (Codex) reject the opencode_delegate tool
-      // call as "external delegation … not explicitly authorized" unless the
-      // user's authorization is visible at call time — this field is that
-      // machine-readable record, cited by the spawn gate's deny message so
-      // delegation never re-asks the user for approval.
+      // `openCodeDelegation` is the durable authorization the spawn gate cites.
+      // Shared write FIRST: writing the per-user toggle first let a failed
+      // patch skip this step on refresh (`hasResolvedOpenCodeState` reads prefs)
+      // while `.one.json` still lacked the field and delegation was later
+      // denied. A refusal that will not heal is named before either write so
+      // prefs cannot answer the step alone.
+      if (wizardSharedWriteWillNotHeal(cwd, env)) {
+        return stateWriteRefused('your OpenCode delegation answer', cwd, env);
+      }
       if (!patchSharedState(cwd, {
         openCodeDelegation: { approved: enabled, source: 'onboarding', decidedAt: stateTimestamp() },
       })) {
-        return stateWriteRefused('your OpenCode delegation answer');
+        return stateWriteRefused('your OpenCode delegation answer', cwd, env);
       }
+      mergeProjectPrefs(cwd, { openCode: { enabled, source: 'prompted', decidedAt: stateTimestamp() } }, env);
       return { ok: true };
     }
     case 'performance': {
@@ -683,7 +679,7 @@ function applyAnswerStep(
         ...(rescued ? { originalPrompt: rescued } : {}),
         projectContext: { source: 'prompted', summary, answers, collectedAt: stateTimestamp() },
       })) {
-        return stateWriteRefused('what you want built');
+        return stateWriteRefused('what you want built', cwd, env);
       }
       return { ok: true };
     }
@@ -691,7 +687,7 @@ function applyAnswerStep(
       const mobile = mobileFromChoice(value);
       if (!mobile) return { ok: false, error: 'invalid mobile choice' };
       if (!patchSharedState(cwd, { mode: 'new-project', mobile: { ...mobile, source: 'prompted' } })) {
-        return stateWriteRefused('your mobile choice');
+        return stateWriteRefused('your mobile choice', cwd, env);
       }
       return { ok: true };
     }
@@ -743,7 +739,7 @@ function applyAnswerStep(
       // while `.one.json` still carried no stack — after which every gate reads an
       // unonboarded project and re-opens the wizard with no explanation. The step
       // already has an error channel the wizard renders; use it.
-      if (!writeState(cwd, next)) return stateWriteRefused('the stack this wizard just committed');
+      if (!writeState(cwd, next)) return stateWriteRefused('the stack this wizard just committed', cwd, env);
       return { ok: true };
     }
     default:

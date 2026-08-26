@@ -40,6 +40,14 @@ export function hasResolvedOpenCodeState(openCode: unknown): boolean {
   return Boolean(o && typeof o.enabled === 'boolean' && inSet(OPEN_CODE_SOURCE_IDS, o.source));
 }
 
+// Durable `.one.json` authorization the spawn gate cites. True for approved
+// true OR false — "not now" is a recorded decision. Missing / non-object /
+// non-boolean `approved` is not durable. Prefs `openCode` is a different field.
+export function hasDurableOpenCodeDelegation(state: unknown): boolean {
+  const d = asObject(asObject(state)?.openCodeDelegation);
+  return Boolean(d && !Array.isArray(d) && typeof d.approved === 'boolean');
+}
+
 export function hasValidTeamState(team: unknown): boolean {
   const t = asObject(team);
   return Boolean(t && inSet(TEAM_MODE_IDS, t.mode) && inSet(TEAM_SOURCE_IDS, t.source));

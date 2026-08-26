@@ -53,6 +53,7 @@ function onboardedProject(label: string): string {
   assert.equal(writeState(dir, {
     mode: 'existing-codebase', stack: 'minimal', frontend: 'none', backend: 'other', realtime: 'none',
     confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z', currentRunId: 'SL-1',
+    openCodeDelegation: { approved: false, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
   }), true, 'fixture guard: the real writer accepted the state file');
   execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
   execFileSync('git', ['-C', dir, '-c', 'user.email=a@b', '-c', 'user.name=t', 'commit', '-qm', 'state'], { stdio: 'ignore' });

@@ -21,7 +21,7 @@ import * as path from 'path';
 
 import { computeOnboarding, applyAnswer } from '../../onboarding-server/flow';
 import { buildRunModelPolicy } from '../../run-model-policy';
-import { mergeProjectPrefs, readEffectiveState, readProjectPrefs, writeState } from '../../state';
+import { mergeProjectPrefs, readEffectiveState, readProjectPrefs, readState, statePath, writeState } from '../../state';
 import { readWorkspaceMemberRegistry } from '../../hook/workspace-members';
 import {
   pluginUseDeclined,
@@ -33,6 +33,7 @@ import { registerWorkspaceMember, writeWorkspaceMemberRegistry } from '../../sta
 import { applyAgentTechClassification } from '../detection-stamp';
 import { resolveWorkspaceMemberTarget } from '../workspace-member-target';
 import {
+  inheritWorkspacePrefsToMember,
   inheritWorkspacePrefsToMembers,
   isSharedWorkspaceAnswerStep,
   WORKSPACE_INHERITED_PREF_KEYS,
@@ -108,7 +109,7 @@ let runSeq = 0;
 // for the wrong reason.
 function finishMember(dir: string, env: NodeJS.ProcessEnv): boolean {
   mergeProjectPrefs(dir, { codeGraphAcknowledged: true }, env);
-  return writeState(dir, { mode: 'existing-codebase', onboardingComplete: true, stack: 'react-node' });
+  return writeState(dir, { ...readState(dir), mode: 'existing-codebase', onboardingComplete: true, stack: 'react-node' });
 }
 
 function policyFrozen(dir: string, env: NodeJS.ProcessEnv): string | null {
@@ -162,6 +163,8 @@ test('code-graph acknowledgement is neither a shared step nor an inherited pref 
   const inheritedKeys: readonly string[] = WORKSPACE_INHERITED_PREF_KEYS;
   assert.equal(inheritedKeys.includes('codeGraphAcknowledged'), false,
     'codeGraphAcknowledged must stay off WORKSPACE_INHERITED_PREF_KEYS');
+  assert.equal(inheritedKeys.includes('openCodeDelegation'), false,
+    'openCodeDelegation is committed state, not a pref key');
   assert.equal(inheritedKeys.includes('openCode'), true);
   assert.equal(inheritedKeys.includes('hosts'), true);
 });
@@ -296,6 +299,63 @@ test('the container fan-out writes nothing into an opted-out member', () => {
   assert.equal(policyFrozen(excluded, ws.env), null);
 });
 
+test('inherit refuses when the member `.one.json` write fence does not accept openCodeDelegation', () => {
+  const ws = workspace('inherit-fence');
+  const api = ws.member('api');
+  assert.equal(writeWorkspaceMemberRegistry(ws.container, ['api']).outcome, 'written');
+  answerSharedStepsAtContainer(ws.container, ws.env);
+
+  const file = statePath(api);
+  assert.ok(writeState(api, { mode: 'existing-codebase', stack: 'react-node' }),
+    'fixture guard: the member can hold a state file');
+  const aside = `${file}.aside`;
+  fs.renameSync(file, aside);
+  fs.symlinkSync(aside, file);
+
+  const result = inheritWorkspacePrefsToMember(ws.container, api, ws.env);
+  assert.equal(result.outcome, 'refused');
+  assert.match(result.outcome === 'refused' ? result.why : '', /\.one\.json/);
+  assert.equal(readProjectPrefs(api, ws.env).openCode != null, true,
+    'prefs may land; the durable field is what this refuse names');
+  assert.equal(JSON.parse(fs.readFileSync(aside, 'utf8')).openCodeDelegation, undefined,
+    'the planted link is not written through');
+});
+
+test('inherit refuses a stacked-torn member `.one.json` and does not replace it', () => {
+  const ws = workspace('inherit-stacked-torn');
+  const api = ws.member('api');
+  assert.equal(writeWorkspaceMemberRegistry(ws.container, ['api']).outcome, 'written');
+  answerSharedStepsAtContainer(ws.container, ws.env);
+
+  const file = statePath(api);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const torn = '{"mode":"new-project","stack":"default","onboardingComplete":tr';
+  fs.writeFileSync(file, torn, 'utf8');
+
+  const result = inheritWorkspacePrefsToMember(ws.container, api, ws.env);
+  assert.equal(result.outcome, 'refused');
+  assert.match(result.outcome === 'refused' ? result.why : '', /\.one\.json/);
+  assert.equal(fs.readFileSync(file, 'utf8'), torn, 'stacked-torn bytes stay byte-identical');
+  assert.equal(fs.existsSync(`${file}.corrupt`), false, 'nothing was quarantined');
+});
+
+test('inherit synthesizes openCodeDelegation from prefs when the container has no committed record', () => {
+  const ws = workspace('inherit-synthesize');
+  const api = ws.member('api');
+  assert.equal(writeWorkspaceMemberRegistry(ws.container, ['api']).outcome, 'written');
+  mergeProjectPrefs(ws.container, {
+    openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+  }, ws.env);
+  assert.equal(readState(ws.container).openCodeDelegation, undefined,
+    'fixture guard: no committed record — this is the synthesize path');
+
+  const result = inheritWorkspacePrefsToMember(ws.container, api, ws.env);
+  assert.equal(result.outcome, 'inherited');
+  const onDisk = readState(api).openCodeDelegation as { approved?: boolean; source?: string } | undefined;
+  assert.equal(onDisk?.approved, true);
+  assert.equal(onDisk?.source, 'inherited-from-workspace');
+});
+
 // ── A container is not an upgrade of a project ───────────────────────────────
 
 test('a directory already onboarded as a project is refused as a workspace container', () => {
@@ -388,4 +448,12 @@ test('a container is done only when every member is done', () => {
 
   assert.equal(finishMember(web, ws.env), true, 'fixture guard: web\'s state write landed');
   assert.equal(computeOnboarding(ws.container, ws.env).done, true);
+  assert.notEqual(computeOnboarding(api, ws.env).step, 'open-code',
+    'a finished member must not sit on the shared open-code step it inherited');
+  assert.notEqual(computeOnboarding(web, ws.env).step, 'open-code',
+    'a finished member must not sit on the shared open-code step it inherited');
+  assert.equal((readState(api).openCodeDelegation as { approved?: boolean } | undefined)?.approved, false,
+    'the container\'s open-code=false lands as durable authorization on the member');
+  assert.equal((readState(web).openCodeDelegation as { approved?: boolean } | undefined)?.approved, false,
+    'the container\'s open-code=false lands as durable authorization on the member');
 });

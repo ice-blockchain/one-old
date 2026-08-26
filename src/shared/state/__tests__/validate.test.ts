@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  hasDurableOpenCodeDelegation,
   hasResolvedOpenCodeState,
   hasValidPerformanceState,
   hasValidProjectContext,
@@ -20,6 +21,14 @@ test('hasResolvedOpenCodeState requires a boolean enabled', () => {
   assert.equal(hasResolvedOpenCodeState({ enabled: false, source: 'prompted' }), true);
   assert.equal(hasResolvedOpenCodeState({ enabled: 'no', source: 'prompted' }), false);
   assert.equal(hasResolvedOpenCodeState([]), false);
+});
+
+test('hasDurableOpenCodeDelegation requires an object with a boolean approved', () => {
+  assert.equal(hasDurableOpenCodeDelegation({ openCodeDelegation: { approved: true } }), true);
+  assert.equal(hasDurableOpenCodeDelegation({ openCodeDelegation: { approved: false } }), true);
+  assert.equal(hasDurableOpenCodeDelegation({}), false);
+  assert.equal(hasDurableOpenCodeDelegation({ openCodeDelegation: {} }), false);
+  assert.equal(hasDurableOpenCodeDelegation({ openCodeDelegation: { approved: 'yes' } }), false);
 });
 
 test('hasValidTeamState requires a known mode + source', () => {
