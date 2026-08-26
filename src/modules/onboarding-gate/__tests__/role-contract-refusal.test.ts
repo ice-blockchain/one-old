@@ -38,6 +38,13 @@ import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 import { writeSimpleAuth } from '../../../shared/auth';
 import type { Ctx, HookInput, HookResult, ToolClass } from '../../../core/types';
 
+// These tests exercise post-onboarding gates. The shipped ask-first default
+// (ASK_USE_PLUGIN_FIRST) would otherwise refuse rematerialize as
+// plugin-use-not-permitted and send SessionStart through the consent question
+// — pin it off the same way onboarding-gate.test.ts does. A test that wants
+// the question sets the flag to '1' itself.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
+
 // A project the wizard has FINISHED — `computeOnboarding` must answer
 // `done: true`, or every gate below short-circuits into the setup deny long
 // before the role-contract check. Measured while building this fixture: with
@@ -179,9 +186,11 @@ test('a refused role-contract directory denies file-changing work, under its own
   withCursorProject((cwd) => {
     // BASELINE FIRST. A predicate that denied everything would satisfy every
     // assertion below, and this is the only thing that rules it out. This first
-    // call converges the fixture, so its verdict is the pre-existing
-    // `repaired-materialization` notice — measured, and NOT this refusal.
+    // call converges the fixture; a successful heal is allow+context, not a
+    // `repaired-materialization` deny — measured, and NOT this refusal.
     const healthyWrite = write(cwd);
+    assert.notEqual(healthyWrite.kind, 'deny',
+      `a healthy project must not be refused (got ${healthyWrite.kind}/${denyId(healthyWrite)})`);
     assert.notEqual(denyId(healthyWrite), 'host-role-contracts-unwritable',
       `a healthy project must not be refused (got ${healthyWrite.kind}/${denyId(healthyWrite)})`);
     assert.ok(contractsOnDisk(cwd) >= 6, 'fixture: the healthy run has contracts on disk');
@@ -217,6 +226,17 @@ test('a refused role-contract directory denies file-changing work, under its own
     // against a project that genuinely has no role contracts.
     assert.equal(fs.statSync(planted).isDirectory(), false);
     assert.equal(contractsOnDisk(cwd), 0);
+  });
+});
+
+test('a successful rematerialize allows the mutating tool with agent context', () => {
+  withCursorProject((cwd) => {
+    fs.rmSync(path.join(cwd, 'AGENTS.md'), { force: true });
+    const healed = write(cwd);
+    assert.notEqual(healed.kind, 'deny', `a successful heal must not refuse (got ${healed.kind}/${denyId(healed)})`);
+    assert.equal(healed.kind, 'context');
+    const note = 'systemMessage' in healed ? String(healed.systemMessage ?? '') : '';
+    assert.match(note, /Traffic One refreshed project-local rules\/skills; this tool may proceed/);
   });
 });
 

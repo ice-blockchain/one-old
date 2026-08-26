@@ -193,7 +193,7 @@ function negativeRows(cwd: string, runId: string, implement: ImplementContext): 
     path: `.traffic-one/runs/${runId}/verification-v2.json`,
     content: '{"schemaVersion":2}\n',
     expectDeny: true,
-    denyMatch: 'generated and atomically published by Traffic One runtime',
+    denyMatch: 'is published by the runtime',
   });
 
   // A role reaching into another role's compiled output.
@@ -256,6 +256,7 @@ export async function runSimulatedRun(
     durationMs: 0,
     phasesCompleted: [],
     writes: [],
+    spawns: [],
     facts: {},
   };
   const finish = (failure?: string): RunSimTranscript => {

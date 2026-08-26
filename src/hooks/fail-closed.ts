@@ -8,7 +8,10 @@ import { isExemptShellToolName, isTrafficOneDoctorCommand, isTrafficOneResetComm
 
 // Shared remediation sentence — interpolated into every fail-closed deny,
 // including generated host wrappers (kilo-host), so the prose can't drift.
-export const PRE_TOOL_REMEDIATION = 'Run Traffic One doctor or reinstall/update the plugin, then retry.';
+// Cursor's user channel gets the short first sentence; the agent channel
+// (and every single-channel host) gets the full sentence.
+export const PRE_TOOL_USER_REMEDIATION = 'Retry the same action.';
+export const PRE_TOOL_REMEDIATION = `${PRE_TOOL_USER_REMEDIATION} If it keeps happening, run Traffic One doctor.`;
 
 // Host hook payloads are required to be JSON objects. The shared adapters use a
 // permissive parser for lifecycle compatibility, so validate at the entry
@@ -635,7 +638,7 @@ export function isFailClosedRecoveryExemption(
 }
 
 export function preToolFailureReason(host: string): string {
-  return `Traffic One ${host} pre-tool gate failed before it could make a decision, so this tool call is blocked fail-closed. ${PRE_TOOL_REMEDIATION}`;
+  return `Traffic One ${host} pre-tool gate could not make a decision because the host payload or runtime failed, so this tool call is blocked fail-closed. ${PRE_TOOL_REMEDIATION}`;
 }
 
 export function isGatePreToolSubcommand(subcommand: string | undefined): boolean {
@@ -664,8 +667,12 @@ export function nestedPreToolDeny(host: string, reason: string = preToolFailureR
   });
 }
 
-export function cursorPreToolDeny(reason: string = preToolFailureReason('Cursor')): string {
-  return JSON.stringify({ permission: 'deny', user_message: reason, agent_message: reason });
+export function cursorPreToolDeny(reason?: string): string {
+  const agentMessage = reason ?? preToolFailureReason('Cursor');
+  // Default fail-closed path: calm user chrome, full reason to the agent.
+  // A caller-supplied reason (managed MCP deny) stays the same on both sides.
+  const userMessage = reason === undefined ? PRE_TOOL_USER_REMEDIATION : agentMessage;
+  return JSON.stringify({ permission: 'deny', user_message: userMessage, agent_message: agentMessage });
 }
 
 export function copilotPreToolDeny(surface: 'cli' | 'vscode', reason: string = preToolFailureReason('Copilot')): string {

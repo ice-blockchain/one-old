@@ -42,7 +42,12 @@ test('prepareOnboardingServer: every host turns EPERM/EACCES into an exact actio
       assert.ok(result.reason.includes(`(${code})`), `${host}: reason names ${code}`);
       assert.ok(result.reason.includes(bootstrapCommand), `${host}: reason embeds the exact bootstrap command`);
       assert.ok(result.reason.includes(waitCommand), `${host}: reason embeds the exact normal waiter command`);
-      assert.match(result.reason, /Building(?:, installs, and subagent work)? remains? blocked/, `${host}: recovery remains fail-closed`);
+      if (COMPACT_HOSTS.has(host)) {
+        assert.match(result.reason, /Hold feature writes until the waiter reports completion/, `${host}: compact hold/wait wording`);
+      } else {
+        assert.match(result.reason, /Hold feature writes, installs, and subagent work until setup completes/, `${host}: long hold/wait wording`);
+      }
+      assert.doesNotMatch(result.reason, /blocked/i, `${host}: bootstrap recipe must not say blocked`);
 
       if (COMPACT_HOSTS.has(host)) {
         assert.ok(result.reason.includes('Run with approval:'), `${host}: compact recipe keeps the approval action`);
@@ -126,28 +131,61 @@ test('prepareOnboardingServer: Codex recipe requests escalation with the exact f
 });
 
 test('prepareOnboardingServer: non-permission launcher failures are terminal and never prescribe bootstrap again', () => {
-  for (const code of ['ENOENT', 'ENOTDIR', 'START_FAILED']) {
-    const error = Object.assign(new Error(`${code}: broken installed runner`), { code });
+  const missing = Object.assign(
+    new Error('traffic-one onboarding server runner is missing: /plugin/scripts/onboarding-server.cjs'),
+    { code: 'ENOENT' },
+  );
+  const missingResult = prepareOnboardingServer(CWD, 'codex', {
+    ensure: () => { throw missing; },
+  });
+  assert.equal(missingResult.kind, 'start-failed', 'ENOENT');
+  if (missingResult.kind === 'start-failed') {
+    assert.equal(missingResult.errorCode, 'ENOENT');
+    assert.match(missingResult.reason, /runner is missing/);
+    assert.match(missingResult.reason, /Reinstall\/update/);
+    assert.match(missingResult.reason, /doctor/);
+    assert.doesNotMatch(missingResult.reason, /plugin\/runtime failure/);
+    assert.doesNotMatch(missingResult.reason, /TRAFFIC_ONE_SETUP_READY|Run this exact bootstrap|sandbox_permissions/);
+  }
+
+  for (const code of ['ENOTDIR', 'START_FAILED']) {
+    const error = Object.assign(new Error(`${code}: launcher child exited`), { code });
     const result = prepareOnboardingServer(CWD, 'codex', {
       ensure: () => { throw error; },
     });
     assert.equal(result.kind, 'start-failed', code);
     if (result.kind !== 'start-failed') continue;
     assert.equal(result.errorCode, code);
-    assert.match(result.reason, /plugin\/runtime failure/);
-    assert.match(result.reason, /doctor|reinstall\/update/);
+    assert.match(result.reason, new RegExp(`${code}: launcher child exited`));
+    assert.match(result.reason, /doctor/);
+    assert.doesNotMatch(result.reason, /plugin\/runtime failure/);
+    assert.doesNotMatch(result.reason, /Reinstall\/update|reinstall the plugin|plugin is broken/i);
     assert.doesNotMatch(result.reason, /TRAFFIC_ONE_SETUP_READY|Run this exact bootstrap|sandbox_permissions/);
   }
 
   const reason = onboardingStartFailureReason(Object.assign(new Error('missing child'), { code: 'ENOENT' }));
   assert.match(reason, /Do NOT rerun `--bootstrap-only`/);
-  assert.doesNotMatch(reason, /onboardingBootstrapCommand|TRAFFIC_ONE_SETUP_READY/);
+  assert.match(reason, /Reinstall\/update/);
+  assert.doesNotMatch(reason, /onboardingBootstrapCommand|TRAFFIC_ONE_SETUP_READY|plugin\/runtime failure/);
 
   for (const host of COMPACT_HOSTS) {
-    const compact = onboardingStartFailureReason(Object.assign(new Error('missing child'), { code: 'ENOENT' }), host);
-    assert.match(compact, /plugin\/runtime failure/);
-    assert.match(compact, /doctor|reinstall\/update/);
-    assert.doesNotMatch(compact, /Do NOT|TRAFFIC_ONE_SETUP_READY|--bootstrap-only/);
+    const compactMissing = onboardingStartFailureReason(
+      Object.assign(new Error('traffic-one onboarding server runner is missing: entry'), { code: 'ENOENT' }),
+      host,
+    );
+    assert.match(compactMissing, /runner is missing/);
+    assert.match(compactMissing, /doctor/);
+    assert.match(compactMissing, /Reinstall\/update/);
+    assert.doesNotMatch(compactMissing, /plugin\/runtime failure|Do NOT|TRAFFIC_ONE_SETUP_READY|--bootstrap-only/);
+
+    const compactOther = onboardingStartFailureReason(
+      Object.assign(new Error('launcher child exited'), { code: 'START_FAILED' }),
+      host,
+    );
+    assert.match(compactOther, /START_FAILED: launcher child exited/);
+    assert.match(compactOther, /doctor/);
+    assert.doesNotMatch(compactOther, /plugin\/runtime failure|Reinstall\/update|plugin is broken/i);
+    assert.doesNotMatch(compactOther, /Do NOT|TRAFFIC_ONE_SETUP_READY|--bootstrap-only/);
   }
 });
 
@@ -203,7 +241,8 @@ test('prepareOnboardingServer: permission and packaging failures are UNAFFECTED 
     });
     assert.equal(result.kind, 'start-failed', `${code} stays terminal`);
     if (result.kind !== 'start-failed') continue;
-    assert.match(result.reason, /plugin\/runtime failure/);
+    assert.match(result.reason, /doctor/);
     assert.doesNotMatch(result.reason, /Retry this exact tool call/);
+    assert.doesNotMatch(result.reason, /plugin\/runtime failure/);
   }
 });

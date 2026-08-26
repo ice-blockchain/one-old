@@ -24,6 +24,8 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   assert.ok(out.includes('## Active Rule Kernel'));
   assert.ok(out.includes('never re-read root `AGENTS.md`'));
   assert.ok(out.includes('AUTO-RUN only the roles eligible'));
+  assert.ok(out.includes('skills/senior-eng-orchestrator'));
+  assert.ok(out.includes('skills/task-triage'));
   assert.ok(out.includes('run maintenance triage before that greenfield team flow'));
   assert.ok(out.includes('never probe package registries'));
   assert.ok(out.includes('per-user local preferences'));

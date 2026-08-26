@@ -519,6 +519,7 @@ test('every emitted senior agent doc keeps its T1KERNEL markers', () => {
     for (const role of [
       'senior-architect', 'senior-frontend', 'senior-backend',
       'senior-reviewer', 'senior-tester', 'senior-shipper',
+      'quick-fix',
     ]) {
       const doc = fs.readFileSync(path.join(dir, 'agents', `${role}.md`), 'utf8');
       const match = /<!-- T1KERNEL:BEGIN -->\r?\n?([\s\S]*?)<!-- T1KERNEL:END -->/.exec(doc);
@@ -533,6 +534,32 @@ test('every emitted senior agent doc keeps its T1KERNEL markers', () => {
       if (role === 'senior-frontend' || role === 'senior-backend') {
         assert.match(kernel, /collapsed code/,
           `${role} kernel must carry the collapse invariant: the write gate denies it unconditionally`);
+        assert.match(kernel, /[Nn]o `any`/,
+          `${role} kernel must carry the no-any write-gate: fallback hosts never see the full contract first`);
+      }
+      if (role === 'senior-frontend') {
+        assert.match(kernel, /[Nn]amed exports/,
+          `${role} kernel must carry the named-export write-gate`);
+        assert.match(kernel, /style=\{\{\}\}/,
+          `${role} kernel must carry the inline-style write-gate`);
+        assert.match(kernel, /src\/pages\//,
+          `${role} kernel must carry the pages/Expo placement write-gate`);
+      }
+      if (role === 'quick-fix') {
+        assert.match(kernel, /collapsed code/,
+          `${role} kernel must carry the collapse write-gate`);
+        assert.match(kernel, /src\/pages\//,
+          `${role} kernel must carry the pages/Expo placement write-gate`);
+        assert.match(kernel, /[Nn]amed exports/,
+          `${role} kernel must keep the existing UI write-gate line`);
+        assert.ok(!/install owned prettier/i.test(kernel),
+          `${role} kernel must not carry frontend/backend completion tooling`);
+        assert.ok(!/Every compiled output file must exist/.test(kernel),
+          `${role} kernel must not carry the compiled-output completion id`);
+      }
+      if (role === 'senior-tester') {
+        assert.match(kernel, /NO_TEST_EVIDENCE/,
+          `${role} kernel must require NO_TEST_EVIDENCE on an empty suite`);
       }
     }
   } finally {

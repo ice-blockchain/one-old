@@ -123,6 +123,11 @@ test('a throwing PreToolUse handler is denied fail-closed instead of escaping to
   if (result.kind === 'deny') {
     assert.match(result.reason, /onboarding gate failed \(EPERM\)/);
     assert.match(result.reason, /blocked fail-closed/);
+    assert.match(result.reason, /Retry the same action/);
+    assert.match(result.reason, /Traffic One doctor/);
+    assert.doesNotMatch(result.reason, /setup\/plugin error/);
+    assert.doesNotMatch(result.reason, /reinstall/i);
+    assert.equal(result.userReason, 'Retry the same action.');
     // The IDENTITY of the crash deny, not just its prose. This is the one id
     // the deny-budget plan marks non-overridable (a crashed gate may never be
     // allowed through at N), and asserting only the reason text let stampDeny
@@ -268,6 +273,41 @@ test('a handler\'s own denyId survives the pipeline untouched', async () => {
 // existed. It also carries its own catalog id rather than being reported as an
 // unattributed fallback: a budget must be able to SKIP approval prompts, and
 // `unattributed-handler:` is reserved for genuine gaps.
+test('stampDeny suffixes reason only and leaves userReason untouched', async () => {
+  const cwd = freshProjectDir();
+  withCurrentRunId(cwd, 'run-user-reason');
+  const result = await runPipeline(
+    [gate('g', 10, () => deny('agent recipe', {
+      userReason: 'Stay in this workspace.',
+      denyId: 'workspace-boundary-guard',
+    }))],
+    ctxFor('PreToolUse', 'Bash', cwd),
+  );
+  assert.equal(result.kind, 'deny');
+  if (result.kind === 'deny') {
+    assert.match(result.reason, /^agent recipe/);
+    assert.match(result.reason, /\(traffic-one ref:/);
+    // Correlation-ref only: this single call never reaches deny-repeat
+    // escalation. userReason stays the handler's sentence, un-suffixed.
+    assert.equal(result.userReason, 'Stay in this workspace.');
+  }
+});
+
+test('stampDeny does not invent a default userReason when the handler omitted one', async () => {
+  const cwd = freshProjectDir();
+  withCurrentRunId(cwd, 'run-no-user-reason');
+  const result = await runPipeline(
+    [gate('g', 10, () => deny('agent recipe', { denyId: 'workspace-boundary-guard' }))],
+    ctxFor('PreToolUse', 'Bash', cwd),
+  );
+  assert.equal(result.kind, 'deny');
+  if (result.kind === 'deny') {
+    assert.equal(result.userReason, undefined);
+    assert.match(result.reason, /^agent recipe/);
+    assert.match(result.reason, /\(traffic-one ref:/);
+  }
+});
+
 test('askUser keeps its question suffix-free and carries its own denyId, not the fallback', async () => {
   const cwd = freshProjectDir();
   withCurrentRunId(cwd, 'run-ask');

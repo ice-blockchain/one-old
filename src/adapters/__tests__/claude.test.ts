@@ -54,6 +54,7 @@ test('claude: PreToolUse Bash deny → nested permissionDecision JSON', async ()
   assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
   // The handler's own text, verbatim — see the T1_DECISION_LOG pin above.
   assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'no rm -rf');
+  assert.equal(parsed.hookSpecificOutput.additionalContext, undefined);
 });
 
 test('claude: SessionStart context → additionalContext JSON', async () => {
@@ -185,6 +186,47 @@ test('codex: exec_command parses cmd/workdir and routes context to the inner app
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('claude: PreToolUse deny with userReason splits Error chrome from the agent recipe', () => {
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd: '/tmp/p', raw: {} };
+  const parsed = JSON.parse(claude.serialize(deny('no rm -rf', { userReason: 'Stay in this workspace.' }), input));
+  assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'Stay in this workspace.');
+  assert.equal(parsed.hookSpecificOutput.additionalContext, 'no rm -rf');
+});
+
+test('claude: PreToolUse deny with userReason keeps existing context and joins the recipe', () => {
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd: '/tmp/p', raw: {} };
+  const parsed = JSON.parse(claude.serialize(
+    deny('no rm -rf', { userReason: 'Stay in this workspace.', context: 'evidence marker' }),
+    input,
+  ));
+  assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'Stay in this workspace.');
+  assert.equal(parsed.hookSpecificOutput.additionalContext, 'evidence marker\n\nno rm -rf');
+});
+
+test('claude: Stop deny with userReason still uses result.reason as decision.reason', () => {
+  const input: HookInput = { event: 'Stop', host: 'claude', cwd: '/tmp/p', raw: {} };
+  const parsed = JSON.parse(claude.serialize(
+    deny('post the setup link', { userReason: 'Stay in this workspace.' }),
+    input,
+  ));
+  assert.equal(parsed.decision, 'block');
+  assert.equal(parsed.reason, 'post the setup link');
+  assert.equal('hookSpecificOutput' in parsed, false);
+});
+
+test('codex: deny WITH userReason keeps permissionDecisionReason as the recipe', () => {
+  const codex = makeClaudeAdapter('codex');
+  const input = { event: 'PreToolUse' as const, host: 'codex' as const, cwd: '/tmp/p', raw: {} };
+  const parsed = JSON.parse(codex.serialize(deny('blocked', { userReason: 'Stay in this workspace.' }), input));
+  assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'blocked');
+  assert.notEqual(parsed.hookSpecificOutput.permissionDecisionReason, 'Stay in this workspace.');
+  assert.equal(
+    parsed.hookSpecificOutput.additionalContext,
+    '<!-- traffic-one-hook-context:v1 event=PreToolUse -->',
+  );
 });
 
 test('codex: deny context carries a PreToolUse provenance marker without changing the reason', () => {

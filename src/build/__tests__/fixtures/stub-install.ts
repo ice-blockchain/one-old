@@ -84,11 +84,11 @@ export function healthyAnswers(): Record<string, StubAnswers> {
   const denyReason = `${AUTH_DENY} — sign in first.`;
   return {
     'hook-runtime.cjs': {
-      on: { stdout: JSON.stringify({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: denyReason } }) },
+      on: { stdout: JSON.stringify({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'Setup needed — I will share the link.', additionalContext: denyReason } }) },
       off: { stdout: JSON.stringify({ hookSpecificOutput: { permissionDecision: 'allow' } }) },
     },
     'cursor-hook-runtime.cjs': {
-      on: { stdout: JSON.stringify({ permission: 'deny', user_message: denyReason }) },
+      on: { stdout: JSON.stringify({ permission: 'deny', user_message: 'Setup needed — I will share the link.', agent_message: denyReason }) },
       off: { stdout: JSON.stringify({ permission: 'allow' }) },
     },
     'windsurf-hook-runtime.cjs': {

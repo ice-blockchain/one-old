@@ -160,13 +160,25 @@ visual change, performance risk, or Lighthouse requirement exists. The block
 cannot lower impact or change paths, baseline, scanner limits, screenshots, or
 browser requirements.
 
-When OpenCode delegation is active on a paid non-OpenCode/Kilo host, the plan
-may contain the existing machine-readable OpenCode delegation queue. Keep units
-bounded and low risk; never delegate architecture, public contracts,
+On a new-project run, `PLAN_READY` requires the OpenCode queue only when
+OpenCode is enabled, `toolchain.opencode.installedVersion` is stamped, and the
+host is not OpenCode or Kilo. Then `.traffic-one/plan.md` must include
+`<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with at
+least 3 runnable units (3–6 is guidance; the gate is a minimum). Each unit is a
+row `- id: <stable-unit-id> | role: frontend|backend|tester|docs | files: … | task: …`:
+
+```text
+<!-- opencode-delegate:start -->
+- id: seed-demo-data | role: backend | files: supabase/seed.sql | task: Seed the demo rows the plan data section describes
+<!-- opencode-delegate:end -->
+```
+
+Windsurf does not deny a missing queue. On OpenCode or Kilo, omit the queue and
+every `opencode-delegate` marker — implementer work runs on the current host.
+Keep units bounded and low risk; never delegate architecture, public contracts,
 security/auth, data models, migrations, cross-file invariants, credentials, or
 `.traffic-one/` memory. Any proposed file allowlist remains subordinate to the
-runtime-compiled assignments and work-unit contract. Omit the queue entirely on
-OpenCode and Kilo.
+runtime-compiled assignments and work-unit contract.
 
 Do not delegate the `.traffic-one/` project-memory baseline to OpenCode. The
 architect writes and verifies that baseline directly.

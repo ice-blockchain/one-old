@@ -6,7 +6,7 @@ import { AGENT_ROLES } from '../../config/performance';
 import { detectHost } from '../../shared/host';
 import { detectHostPlan } from '../../shared/host/plan';
 import { hostSpawnType } from '../../shared/host/spawn-types';
-import { buildCursorSpawnModelMap } from '../../shared/materialize/cursor-spawn-map';
+import { buildCursorSpawnModelMap, CURSOR_SPAWN_ENUM_CHECK } from '../../shared/materialize/cursor-spawn-map';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-command';
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
@@ -87,11 +87,8 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
       const spawnValue = hasExactCaptured
         ? spawnMap[role]
         : `(after step 2 — exact captured picker id for tier \`${fam}\`; never guess an uncaptured id)`;
-      // Emitted at SETUP_COMPLETE, i.e. in the very session that materialized
-      // `.cursor/agents/**` — recommend the built-in worker so the first spawn
-      // is not a guaranteed "Couldn't start" (see formatCursorSpawnMapLines).
       const cursorSpawn = hostSpawnType('cursor', role);
-      rows.push(`   - ${role} → subagent_type: "${cursorSpawn.fallback || cursorSpawn.primary}", model: ${spawnValue}`);
+      rows.push(`   - ${role} → subagent_type: "${cursorSpawn.primary}", model: ${spawnValue}`);
       const acceptable = rolePolicy?.acceptableModels || currentAcceptableModels(fam, host, planCtx.plan);
       if (!tierFallback.has(fam)) tierFallback.set(fam, acceptable.slice(1)[0] || fam);
     }
@@ -110,7 +107,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
         `- Run \`${gateCmd}\` once. It validates availability against the frozen snapshot and prints the authoritative exact spawn map.`,
         '- Spawn each role with the `subagent_type` and exact captured Task `model` below (never an uncaptured family guess):',
         ...rows,
-        '- The built-in worker type above is deliberate: `.cursor/agents/<role>.md` is written during this session, so a role-named `subagent_type` is not in the type list this session captured and Cursor answers "Couldn\'t start". The role is carried by the `[t1-role: senior-<role>]` FIRST prompt line — always include it, and tell the child to read `.cursor/agents/<role>.md`. Never build the role inline.',
+        `- ${CURSOR_SPAWN_ENUM_CHECK} Keep \`[t1-role: senior-<role>]\` as the FIRST prompt line whichever type you pass. Never build the role inline.`,
         '- If the frozen snapshot requires an enable/fallback decision, `fallback` may continue this run on its frozen exact alternate. `enable` requires a new parent run after enabling and capturing the updated picker.',
       ].join('\n');
     }
@@ -123,7 +120,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
       '   If a picked model is NOT offered, STOP — show the user the unavailable-model table in chat and wait for them to reply **fallback** or **enable** before spawning. The model-gate command and spawn gate both fail closed until that reply is recorded. Re-run after they enable a model.',
       '3. Spawn using the **spawn map** printed by step 2. Project `.cursor/agents` files are model-agnostic; pass each EXACT slug from the map in the Task `model` parameter, together with the role\'s `subagent_type` (preview; step 2 is authoritative):',
       ...rows,
-      '   The built-in worker type above is deliberate: `.cursor/agents/<role>.md` is written during this session, so a role-named `subagent_type` is not in the type list this session captured and Cursor answers "Couldn\'t start". The role is carried by the `[t1-role: senior-<role>]` FIRST prompt line — always include it, and tell the child to read `.cursor/agents/<role>.md`. Never build the role inline.',
+      `   ${CURSOR_SPAWN_ENUM_CHECK} Keep \`[t1-role: senior-<role>]\` as the FIRST prompt line whichever type you pass. Never build the role inline.`,
       '   Use only ids present verbatim in the captured picker list. An exact id may equal its family anchor (for example `gpt-5.4-mini`); never invent a suffix or pass an uncaptured family guess.',
       '   Spawn the team only after steps 1–2. Passing the correct `model` per role on the FIRST spawn is what avoids the model-tier deny + retry.',
     ].join('\n');

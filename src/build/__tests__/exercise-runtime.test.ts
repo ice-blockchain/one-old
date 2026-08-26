@@ -185,6 +185,24 @@ const BREAKAGES: ReadonlyArray<{ leg: string; shim: string; answers: Record<stri
     expected: 'Claude deny did not come from the unauthenticated gate',
   },
   {
+    leg: 'claude denies with only the user-channel sentence',
+    shim: 'hook-runtime.cjs',
+    answers: {
+      on: { stdout: JSON.stringify({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'Setup needed — I will share the link.' } }) },
+      off: { stdout: '{}' },
+    },
+    expected: 'Claude deny did not come from the unauthenticated gate',
+  },
+  {
+    leg: 'cursor denies with only the user-channel sentence',
+    shim: 'cursor-hook-runtime.cjs',
+    answers: {
+      on: { stdout: JSON.stringify({ permission: 'deny', user_message: 'Setup needed — I will share the link.' }) },
+      off: { stdout: '{}' },
+    },
+    expected: 'Cursor deny did not come from the unauthenticated gate',
+  },
+  {
     leg: 'the deny survives auth being switched off',
     shim: 'hook-runtime.cjs',
     answers: {

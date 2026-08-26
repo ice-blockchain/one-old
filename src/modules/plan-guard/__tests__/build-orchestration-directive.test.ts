@@ -51,6 +51,9 @@ test('shouldEmitBuildOrchestration: kilo new-project subagents without plan', ()
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'cursor'), true);
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'claude'), true);
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'codex'), true);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'copilot'), true);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'windsurf'), true);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'not-a-host'), false);
   });
 });
 
@@ -77,9 +80,13 @@ test('build-start architect directive is never emitted for a maintenance project
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'kilo'), false);
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'opencode'), false);
     assert.equal(shouldEmitBuildOrchestration(dir, state, 'cursor'), false);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'copilot'), false);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'windsurf'), false);
     assert.equal(shouldEmitArchitectCompletionReminder(dir, state, 'kilo'), false);
     assert.equal(buildOrchestrationDirective(dir, 'kilo', state), '');
     assert.equal(buildOrchestrationDirective(dir, 'cursor', state), '');
+    assert.equal(buildOrchestrationDirective(dir, 'copilot', state), '');
+    assert.equal(buildOrchestrationDirective(dir, 'windsurf', state), '');
   });
 });
 
@@ -161,7 +168,7 @@ test('buildOrchestrationDirective: names the project-scoped global architect, no
   });
 });
 
-test('buildOrchestrationDirective: unpaid/unsupported hosts stay side-effect free', () => {
+test('buildOrchestrationDirective: garbage/unknown hosts stay side-effect free', () => {
   withProject((dir) => {
     const state = subagentsState();
     const t1 = path.join(dir, '.traffic-one');
@@ -169,8 +176,11 @@ test('buildOrchestrationDirective: unpaid/unsupported hosts stay side-effect fre
     fs.mkdirSync(t1, { recursive: true });
     fs.writeFileSync(onePath, JSON.stringify(state), 'utf8');
 
-    assert.equal(buildOrchestrationDirective(dir, 'windsurf', subagentsState()), '');
-    assert.equal(buildOrchestrationDirective(dir, 'copilot', subagentsState()), '');
+    // canonicalHost maps unknown strings to claude — garbage must not inherit
+    // the Claude architect-first playbook or mint a run id.
+    assert.equal(buildOrchestrationDirective(dir, 'not-a-host', subagentsState()), '');
+    assert.equal(buildOrchestrationDirective(dir, 'unknown', subagentsState()), '');
+    assert.equal(buildOrchestrationDirective(dir, 'gemini', subagentsState()), '');
 
     const persisted = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     assert.equal(persisted.currentRunId, undefined);
@@ -195,19 +205,83 @@ test('buildOrchestrationDirective: paid hosts emit architect-first when new-proj
   });
 });
 
-test('buildOrchestrationDirective: Cursor always uses generalPurpose and forbids background', () => {
+test('buildOrchestrationDirective: Cursor prefers role-named type in the Task enum, else generalPurpose', () => {
   withProject((dir) => {
     const state = subagentsState();
     const t1 = path.join(dir, '.traffic-one');
     fs.mkdirSync(t1, { recursive: true });
     fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
     const d = buildOrchestrationDirective(dir, 'cursor', state);
+    assert.match(d, /subagent_type: "senior-architect"/);
+    assert.match(d, /if that type is in this session's Task enum/);
     assert.match(d, /generalPurpose/);
     assert.match(d, /\[t1-role: senior-architect\]/);
     assert.match(d, /Run ID:/);
     assert.match(d, /do NOT set `run_in_background`/);
     assert.doesNotMatch(d, /run_in_background:\s*true/);
     assert.match(d, /NEVER the picker label/);
+    assert.doesNotMatch(d, /generalPurpose` ALWAYS/);
+  });
+});
+
+function writeWindsurfArchitectContract(cwd: string): string {
+  const rel = hostSpawnType('windsurf', 'senior-architect', cwd).contractPath;
+  assert.ok(rel, 'windsurf declares no contract path for senior-architect');
+  const abs = path.join(cwd, rel as string);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, '# senior-architect role contract\n', 'utf8');
+  return rel as string;
+}
+
+test('buildOrchestrationDirective: Copilot and Windsurf emit architect-first when new-project subagents lack plan.md', () => {
+  withProject((dir) => {
+    const state = subagentsState();
+    const t1 = path.join(dir, '.traffic-one');
+    const onePath = path.join(t1, '.one.json');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(onePath, JSON.stringify(state), 'utf8');
+    writeWindsurfArchitectContract(dir);
+
+    const copilot = buildOrchestrationDirective(dir, 'copilot', subagentsState());
+    assert.ok(copilot.length > 0, 'copilot must emit architect-first');
+    assert.match(copilot, /PARENT\/orchestrator/);
+    assert.match(copilot, /via the host `task` tool/);
+    assert.match(copilot, /name: "senior-architect"/);
+    assert.match(copilot, /\[t1-role: senior-architect\]/);
+    assert.match(copilot, /\.github\/agents\/senior-architect\.agent\.md/);
+    assert.match(copilot, /Run ID:/);
+    assert.doesNotMatch(copilot, /do NOT set `run_in_background`/);
+    assert.doesNotMatch(copilot, /`model:/);
+
+    const windsurf = buildOrchestrationDirective(dir, 'windsurf', subagentsState());
+    assert.ok(windsurf.length > 0, 'windsurf must emit architect-first');
+    assert.match(windsurf, /PARENT\/orchestrator/);
+    assert.match(windsurf, /via the host `run_subagent` tool/);
+    assert.match(windsurf, /profile: "subagent_general"/);
+    assert.match(windsurf, /ALWAYS \(custom profiles are not registered until a new Devin session\)/);
+    assert.match(windsurf, /\[t1-role: senior-architect\]/);
+    assert.match(windsurf, /tell the child to read `\.devin\/agents\/senior-architect\/AGENT\.md`/);
+    assert.match(windsurf, /Run ID:/);
+    assert.doesNotMatch(windsurf, /do NOT set `run_in_background`/);
+    assert.doesNotMatch(windsurf, /`model:/);
+
+    const persisted = JSON.parse(fs.readFileSync(onePath, 'utf8')) as { currentRunId?: string };
+    assert.ok(typeof persisted.currentRunId === 'string' && persisted.currentRunId.length > 0,
+      'eligible Copilot/Windsurf may mint currentRunId');
+  });
+});
+
+test('buildOrchestrationDirective: Windsurf is told NOT to cite the contract when it is absent', () => {
+  withProject((dir) => {
+    const state = subagentsState();
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    const d = buildOrchestrationDirective(dir, 'windsurf', state);
+    assert.match(d, /Do NOT tell the child to read `\.devin\/agents\/senior-architect\/AGENT\.md`/);
+    assert.doesNotMatch(d, /^- tell the child to read `\.devin\/agents\/senior-architect\/AGENT\.md`$/m);
+    assert.match(d, /profile: "subagent_general"/);
+    assert.match(d, /\[t1-role: senior-architect\]/);
   });
 });
 
@@ -242,6 +316,8 @@ test('buildOrchestrationDirective: paid-host architect-incomplete reminder when 
     assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'cursor'), true);
     assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'claude'), true);
     assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'codex'), true);
+    assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'copilot'), true);
+    assert.equal(shouldEmitArchitectCompletionReminder(dir, { ...SUBAGENTS_STATE, currentRunId: 'R' }, 'windsurf'), true);
   });
 });
 

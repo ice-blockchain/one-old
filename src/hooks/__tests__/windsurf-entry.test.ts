@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { runWindsurfHook } from '../windsurf-entry';
+import { parseEnvelope, preDenyStderr, runWindsurfHook } from '../windsurf-entry';
 import { writeServerRecord } from '../../shared/onboarding-server/registry';
 import { recordPluginUseChoice } from '../../shared/state/plugin-use';
 
@@ -128,6 +128,37 @@ test('windsurf entry: genuine Cascade trajectory still runs Traffic One', async 
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /Traffic One/i);
   });
+});
+
+test('windsurf entry: parseEnvelope passes userReason through on deny', () => {
+  const parsed = parseEnvelope(JSON.stringify({
+    kind: 'deny',
+    reason: 'no rm -rf — wizard http://127.0.0.1:9/',
+    userReason: 'Stay in this workspace.',
+  }));
+  assert.equal(parsed.kind, 'deny');
+  if (parsed.kind !== 'deny') return;
+  assert.equal(parsed.reason, 'no rm -rf — wizard http://127.0.0.1:9/');
+  assert.equal(parsed.userReason, 'Stay in this workspace.');
+});
+
+test('windsurf entry: pre deny stderr is userReason then recipe when both are set (wizard URL stays on stderr)', () => {
+  assert.equal(
+    preDenyStderr({ kind: 'deny', reason: 'no rm -rf — wizard http://127.0.0.1:9/', userReason: 'Stay in this workspace.' }),
+    'Stay in this workspace.\n\nno rm -rf — wizard http://127.0.0.1:9/',
+  );
+});
+
+test('windsurf entry: unset userReason keeps joined recipe on stderr (wizard URLs stay visible)', () => {
+  assert.equal(
+    preDenyStderr({ kind: 'deny', reason: 'setup: http://127.0.0.1:9/wizard', context: 'ctx' }),
+    'setup: http://127.0.0.1:9/wizard\n\nctx',
+  );
+});
+
+test('windsurf entry: empty pre-deny fallback is the calm sentence', () => {
+  assert.equal(preDenyStderr({ kind: 'deny' }), 'This action cannot run here.');
+  assert.notEqual(preDenyStderr({ kind: 'deny' }), 'traffic-one blocked this action');
 });
 
 test('windsurf entry: the wait command itself surfaces the setup banner on stdout (show_output)', async () => {

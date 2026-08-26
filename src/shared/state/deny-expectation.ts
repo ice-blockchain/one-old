@@ -60,7 +60,7 @@
 //
 // The pipeline's fail-closed crash deny is excluded too, and separately: it is
 // not a gate prescribing a remedy, it is the pipeline failing to decide, and
-// its "resolve the Traffic One setup/plugin error" is repaired outside the run.
+// its retry-then-doctor remedy is repaired outside the run.
 //
 // ── WHAT "satisfied" means, and why the evidence is a PROOF ─────────────────
 // An expectation is satisfied when a PostToolUse arrives for the same subject.

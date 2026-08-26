@@ -26,6 +26,7 @@ test('generated wrapper carries the shared fail-closed prose verbatim', () => {
   // interpolated at generation time — this locks them to hooks/fail-closed.ts.
   assert.ok(body.includes(JSON.stringify(preToolFailureReason('Kilo'))));
   assert.ok(body.includes(PRE_TOOL_REMEDIATION));
+  assert.equal(body.includes('reinstall/update'), false);
 });
 
 function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
@@ -528,6 +529,9 @@ test('wrapper source uses host-stamped Kilo runtime hooks', () => {
   assert.match(source, /TRAFFIC_ONE_HOST: 'kilo'/);
   assert.match(source, /resolveTrafficOneEnv\(projectRoot, 'kilo'/);
   assert.match(source, /TRAFFIC_ONE_MANAGED_MCP_TOOLS/);
+  assert.match(source, /function userDenyLine/);
+  assert.match(source, /throw new Error\(userDenyLine\(result\)/);
+  assert.match(source, /function denyMessage/);
 });
 
 test('Kilo wrapper denies managed MCP tools even with no project root or runtime', async () => {
@@ -551,6 +555,62 @@ test('Kilo wrapper denies managed MCP tools even with no project root or runtime
       /Direct AI-agent calls/,
     );
     await assert.doesNotReject(() => hooks['tool.execute.before']({ tool: 'traffic-one-mcp-copy_get_config' }, {}));
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Kilo wrapper throw includes userReason and recipe when both are set; unset keeps the recipe; metadata stays denyMessage', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-user-reason-'));
+  const previousHome = process.env.HOME;
+  try {
+    const home = path.join(base, 'home');
+    const pluginRoot = path.join(base, 'plugin');
+    const project = path.join(base, 'project');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(base, 'package.json'), '{"type":"module"}\n', 'utf8');
+    fs.writeFileSync(path.join(pluginRoot, 'scripts', 'kilo-hook-runtime.cjs'), [
+      '#!/usr/bin/env node',
+      "const payload = JSON.parse(require('fs').readFileSync(0, 'utf8') || '{}');",
+      "const recipe = 'no rm -rf — wizard http://127.0.0.1:9/';",
+      "if (payload.tool_name === 'unset') {",
+      "  process.stdout.write(JSON.stringify({ kind: 'deny', reason: recipe }));",
+      '} else {',
+      "  process.stdout.write(JSON.stringify({ kind: 'deny', reason: recipe, context: 'ctx', userReason: 'Stay in this workspace.' }));",
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    const wrapperFile = path.join(base, 'traffic-one.js');
+    fs.writeFileSync(wrapperFile, wrapperSource(pluginRoot, '2026-01-01T00:00:00Z'), 'utf8');
+    process.env.HOME = home;
+    const mod = await import(pathToFileURL(wrapperFile).href);
+    const hooks = await mod.default.server({ directory: project });
+
+    await assert.rejects(
+      () => hooks['tool.execute.before']({ tool: 'bash', output: { args: { command: 'rm -rf x' } } }, {}),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /^Stay in this workspace\.\n\n/);
+        assert.match(err.message, /wizard http:\/\/127\.0\.0\.1:9\//);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => hooks['tool.execute.before']({ tool: 'unset', output: { args: { command: 'rm -rf x' } } }, {}),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal(err.message, 'no rm -rf — wizard http://127.0.0.1:9/');
+        return true;
+      },
+    );
+
+    const askOut: { metadata?: { trafficOneWarning?: string } } = {};
+    await hooks['permission.ask']({ permission: 'bash', metadata: { command: 'rm' } }, askOut);
+    assert.equal(askOut.metadata?.trafficOneWarning, 'no rm -rf — wizard http://127.0.0.1:9/\n\nctx');
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

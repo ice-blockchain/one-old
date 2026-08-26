@@ -91,6 +91,15 @@ export interface ResultMeta {
   // agent_message branch text. Inert on Claude/Codex (they serialize it as a plain deny).
   readonly askUser?: boolean;
   readonly agentMessage?: string;
+  // One calm sentence for the host USER channel. `reason` stays the agent
+  // recipe. stampDeny (core/pipeline.ts) appends deny-repeat + correlation
+  // ref to `reason` only — never to `userReason`. Adapters that can split
+  // channels put userReason on the user side: Cursor user_message vs
+  // agent_message; Claude permissionDecisionReason (Error chrome) vs
+  // additionalContext (and Copilot's same split). When unset, adapters
+  // keep today's behavior (same string both sides) so existing gates do
+  // not silently hide wizard URLs.
+  readonly userReason?: string;
   // Claude only: replace the tool call's input before it runs (PreToolUse
   // `hookSpecificOutput.updatedInput` — a FULL replacement of tool_input, so it
   // must carry every field, not a patch). Carried on an allow-path context

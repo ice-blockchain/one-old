@@ -35,6 +35,12 @@ export function compileIntegrationRequirements(
 ): string[] {
   const requirements: string[] = [];
   if (role === 'senior-frontend') {
+    requirements.push('Use named exports only except route files (`src/pages/`, Expo `app/` routes) — a default export elsewhere fails default-export.');
+    requirements.push('Avoid `any` in non-test TypeScript — it fails no-any.');
+    requirements.push('No static inline styles — they fail web-inline-style (web) or native-inline-style (native); DOM tags (`div`/`span`) in React Native fail native-dom-tags.');
+    requirements.push('Do not place `.service`/`.store`/`.hook` files under `src/pages/` or Expo `app/` — they fail pages-service-files (or expo-route-service-files).');
+    requirements.push('Construct WebSockets only in `packages/ws-client/` or `src/services/ws/` — a constructor elsewhere fails websocket-location.');
+    requirements.push('Do not put SVG/XML text in `.png`/`.jpg`/`.webp`/`.avif` paths — they fail asset-extension-mismatch.');
     const apiPackage = outputs.find((output) => /^packages\/[^/]*(?:api|client|sdk)[^/]*\//i.test(output));
     if (apiPackage || surfaces.includes('api')) {
       requirements.push('Every learner-facing page consumes the planned typed API package (live-or-demo with explicit loading/error/degraded states) — an app that renders only static fixtures fails STRUCT_API_CLIENT_UNUSED.');
@@ -50,6 +56,8 @@ export function compileIntegrationRequirements(
     }
   }
   if (role === 'senior-backend') {
+    requirements.push('Avoid `any` in non-test TypeScript — it fails no-any.');
+    requirements.push('Construct WebSockets only in `packages/ws-client/` or `src/services/ws/` — a constructor elsewhere fails websocket-location.');
     const apiPackage = outputs.find((output) => /^packages\/[^/]*(?:api|client|sdk)[^/]*\//i.test(output));
     if (apiPackage) {
       requirements.push(`The typed client package under \`${apiPackage.split('/').slice(0, 2).join('/')}\` is the frontend's ONLY data contract — export real functions for every planned flow and keep identifiers/slugs consistent with seed data.`);

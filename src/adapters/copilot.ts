@@ -14,6 +14,11 @@ import { activeWorkspaceRoot, workspaceScopedCwd } from './workspace-root';
 
 type CopilotWireSurface = 'cli' | 'vscode';
 
+/** PreToolUse userReason split: keep evidence and append the agent recipe. */
+function joinContextAndReason(context: string | undefined, reason: string): string {
+  return context ? `${context}\n\n${reason}` : reason;
+}
+
 const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: ToolClass }>> = {
   'session-start': { event: 'SessionStart' },
   'user-prompt-submit': { event: 'UserPromptSubmit' },
@@ -225,10 +230,20 @@ export function makeCopilotAdapter(surface?: CopilotWireSurface): HostAdapter {
             ...(result.agentMessage ? { agentMessage: result.agentMessage } : {}),
           });
         }
+        // Copilot paints permissionDecisionReason like Claude (user-visible).
+        // userReason → that chrome; the agent recipe joins additionalContext
+        // so the model still sees it. Unset keeps today's reason (wizard
+        // URLs in `reason` stay visible). POST has no permission chrome —
+        // leave its context channel alone.
+        const userFacing = (result.userReason ?? '').trim();
+        const permissionDecisionReason = userFacing || result.reason;
+        const additionalContext = isPre && userFacing
+          ? joinContextAndReason(result.context, result.reason)
+          : result.context;
         return JSON.stringify({
           ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
-          ...(isPre ? { permissionDecision: 'deny', permissionDecisionReason: result.reason } : {}),
-          ...(result.context ? { additionalContext: result.context } : {}),
+          ...(isPre ? { permissionDecision: 'deny', permissionDecisionReason } : {}),
+          ...(additionalContext ? { additionalContext } : {}),
         });
       }
 
@@ -240,14 +255,24 @@ export function makeCopilotAdapter(surface?: CopilotWireSurface): HostAdapter {
           hookSpecificOutput: { hookEventName: input.event, additionalContext: result.context },
         });
       }
+      // VS Code deny envelope is PreToolUse-shaped only (hardcoded
+      // hookEventName + permissionDecision). Do not change that wire —
+      // fixtures pin it. Still apply the isPre guard so a POST deny
+      // with userReason does not remix the recipe into additionalContext.
+      const isPre = input?.event === 'PreToolUse';
+      const userFacing = (result.userReason ?? '').trim();
+      const permissionDecisionReason = userFacing || result.reason;
+      const additionalContext = isPre && userFacing
+        ? joinContextAndReason(result.context, result.reason)
+        : result.context;
       return JSON.stringify({
         ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
         ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
-          permissionDecisionReason: result.reason,
-          ...(result.context ? { additionalContext: result.context } : {}),
+          permissionDecisionReason,
+          ...(additionalContext ? { additionalContext } : {}),
         },
       });
     },

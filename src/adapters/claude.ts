@@ -12,6 +12,11 @@ import { parseJson } from '../shared/fsjson';
 import { asRecord, asString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
 
+/** PreToolUse userReason split: keep evidence and append the agent recipe. */
+function joinContextAndReason(context: string | undefined, reason: string): string {
+  return context ? `${context}\n\n${reason}` : reason;
+}
+
 function normalizeEvent(value: unknown): CanonicalEvent {
   switch (asString(value)) {
     case 'SessionStart':
@@ -117,18 +122,32 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
             : {}),
         });
       }
+      // Claude paints permissionDecisionReason as user-visible Error chrome.
+      // When userReason is set, that chrome gets the calm sentence and the
+      // full agent recipe moves to additionalContext (joined with any
+      // existing evidence) so the model still sees how to recover. Unset
+      // keeps today's permissionDecisionReason = reason so wizard URLs in
+      // `reason` stay visible. Codex has no other model channel — it
+      // ALWAYS keeps permissionDecisionReason = reason; userReason is
+      // unused on that wire. Stop (above) is model-facing turn-continue,
+      // not Error chrome, so it stays on reason regardless.
+      const claudeUserFacing = id === 'claude' ? (result.userReason ?? '').trim() : '';
+      const permissionDecisionReason = claudeUserFacing || result.reason;
+      const claudeAdditional = claudeUserFacing
+        ? joinContextAndReason(result.context, result.reason)
+        : result.context;
       return JSON.stringify({
         ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
         ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
-          permissionDecisionReason: result.reason,
+          permissionDecisionReason,
           ...(id === 'codex'
             ? { additionalContext: result.context
               ? markCodexHookContext('PreToolUse', result.context)
               : codexHookEvidenceMarker('PreToolUse') }
-            : (result.context ? { additionalContext: result.context } : {})),
+            : (claudeAdditional ? { additionalContext: claudeAdditional } : {})),
         },
       });
     },

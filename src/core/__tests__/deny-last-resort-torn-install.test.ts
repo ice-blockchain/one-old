@@ -6,7 +6,7 @@
 // ── what it used to assert, and why that is now the weaker claim ─────────────
 // Before the generated table, a fallback-less call site rendered `''` on this
 // root and core/result.ts's `deny()` substituted `lastResortDenyReason` — so the
-// agent read "this Traffic One install is incomplete", correct but content-free:
+// agent read a last-resort "could not be loaded" notice, correct but content-free:
 // the REMEDY was gone, and on the gates whose reason IS the remedy that is the
 // whole value of the deny. This file asserted that substitution.
 //
@@ -133,7 +133,10 @@ test('a block that exists nowhere still refuses with the last-resort notice rath
   assert.equal(result.kind, 'deny');
   if (result.kind !== 'deny') return;
   assert.equal(result.reason, lastResortDenyReason('absolute-traffic-one-path'));
+  assert.equal(result.userReason, 'Retry the same action after setup finishes.');
   assert.match(result.reason, /`absolute-traffic-one-path`/, 'it names the gate that refused');
   assert.match(result.reason, /Traffic One doctor/, 'doctor is the first remedy');
+  assert.doesNotMatch(result.reason, /Report to the user/);
+  assert.doesNotMatch(result.reason, /install is incomplete/);
   assert.equal(/doctor\.cjs/.test(result.reason), false, 'doctor is named in prose, never as a command');
 });

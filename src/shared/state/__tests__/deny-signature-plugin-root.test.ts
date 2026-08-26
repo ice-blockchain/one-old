@@ -967,13 +967,9 @@ const VOLATILE_PRODUCER_SITES: Readonly<Record<string, string>> = {
   'shared/onboarding-server/claude-setup.ts': 'assembles the wizard text for the onboarding gate; link folded',
   'shared/onboarding-server/wizard-links.ts': 'builds the wizard URL and the local-fallback line; link folded',
   'shared/onboarding-server/ensure.ts': 'the wizard banner and the local fallback; link folded',
-  // Per-host spellings of the same setup prose. Only the Claude one reaches an
-  // ESCALATABLE id today (`claude-wait-background-denied`); the other three
-  // render never-escalated onboarding denies, and they are listed because they
-  // take the identical carriers and one ruling in config/deny-ids.ts would move
-  // them into the population without touching this file.
-  'shared/onboarding-server/codex-setup.ts': 'same carriers, currently non-escalatable ids; link folded',
-  'shared/onboarding-server/cursor-setup.ts': 'same carriers, currently non-escalatable ids; link folded',
+  // Per-host spelling of the same setup prose. Windsurf is still imported by
+  // the onboarding handler; Codex/Cursor setup helpers are not, so they are
+  // not a one-hop carrier from a declaring file.
   'shared/onboarding-server/windsurf-setup.ts': 'same carriers, currently non-escalatable ids; link folded',
   // Builds the install-rooted wait command the onboarding denies quote.
   'shared/onboarding-server/bootstrap.ts': 'the wait command, folded as the install location',

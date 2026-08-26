@@ -844,7 +844,10 @@ async function main(): Promise<void> {
         cwd: authTmp, command: 'pwd',
       }));
       if (cursorFallback.permission !== 'deny') fail('Cursor missing-modules fallback was not a deny');
-      assertReason('Cursor', cursorFallback.user_message);
+      assertReason('Cursor', cursorFallback.agent_message);
+      if (cursorFallback.user_message !== 'Retry the same action.') {
+        fail('Cursor missing-modules fallback user_message was not the short remediation');
+      }
 
       const copilotFallback = invokeJson('Copilot', 'copilot-hook-runtime.cjs', 'before-tool-use', JSON.stringify({
         hook_event_name: 'PreToolUse', tool_name: 'exec', tool_input: { command: 'pwd' }, cwd: authTmp,

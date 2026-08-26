@@ -11,11 +11,11 @@ import { initializeToolchainState } from '../../shared/state/toolchain';
 import { currentLocalPreferenceTarget } from '../../shared/onboarding/local-prefs';
 import { HOST_IDS } from '../../config/model-tiers';
 
-// Nine sites in these five runners used to compare `state.mode` raw while the
+// Eight sites in these five runners used to compare `state.mode` raw while the
 // gates beside them read it through the normalizing predicates. One state value
 // therefore armed one authority and stood another down — measured elsewhere as
 // 39 planned outputs silently leaving a compiled architecture with every deny
-// still armed. Two of the nine fence model tiers and pre-spawn behaviour, which
+// still armed. Two of the eight fence model tiers and pre-spawn behaviour, which
 // is the same authorization class as the write gates.
 //
 // The ROUTING is pinned statically by shared/state/__tests__/lifecycle.test.ts,
@@ -31,10 +31,9 @@ const EXISTING_SPELLINGS = [
   'existing-with-supabase ',
 ] as const;
 
-// The predicate each of the nine sites now reads through. Every raw comparison
+// The predicate each of the eight sites now reads through. Every raw comparison
 // they replaced answered `false` for three of the four spellings in its group.
 const SITES: readonly { site: string; predicate: (state: unknown) => boolean; newProject: boolean }[] = [
-  { site: 'model-gate/index.ts writeSpawnReady → cursor spawn-map block', predicate: isNewProjectMode, newProject: true },
   { site: 'model-gate/index.ts cursor model-capture stop', predicate: isNewProjectMode, newProject: true },
   { site: 'onboarding-toolchain/index.ts requireScan (existing side)', predicate: isExistingProjectMode, newProject: false },
   { site: 'onboarding-toolchain/index.ts requireScan (supabase spelling)', predicate: isExistingProjectMode, newProject: false },
@@ -45,7 +44,7 @@ const SITES: readonly { site: string; predicate: (state: unknown) => boolean; ne
   { site: 'opencode/index.ts ensureInitialCommit initIfNeeded', predicate: isNewProjectMode, newProject: true },
 ];
 
-test('every mode spelling reads identically at all nine routed sites', () => {
+test('every mode spelling reads identically at all eight routed sites', () => {
   for (const { site, predicate, newProject } of SITES) {
     const armed = NEW_SPELLINGS.map((mode) => predicate({ mode }));
     const stoodDown = EXISTING_SPELLINGS.map((mode) => predicate({ mode }));

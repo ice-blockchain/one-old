@@ -504,6 +504,16 @@ export function assertionSpecsForRun(
     ? 'consent-decline-fence'
     : 'consent-fence';
   if (!specs.some((spec) => spec.id === consentSpec)) specs.push({ id: consentSpec });
+  // First-attempt Briefing-class rate is the product KPI. Injected on every
+  // run-sim case for the same reason consent is: a per-case opt-in would let
+  // the next case author omit the assertion that names why a fully-briefed
+  // scripted run still paid a briefing deny.
+  if (
+    testCase.layer === 'run-sim'
+    && !specs.some((spec) => spec.id === 'run-sim-briefing-ratchet')
+  ) {
+    specs.push({ id: 'run-sim-briefing-ratchet' });
+  }
   return specs;
 }
 

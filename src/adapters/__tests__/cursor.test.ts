@@ -322,6 +322,32 @@ test('cursor: spawn-agent PreToolUse deny prefixes user/agent messages (not a ho
   assert.ok(out.user_message.startsWith(SPAWN_PRETOOLUSE_DENY_PREFIX));
 });
 
+test('cursor: deny userReason rides user_message; agent_message stays the recipe', async () => {
+  const handlers: Handler[] = [
+    { id: 'd', event: 'PreToolUse', tools: ['shell'], priority: 0, run: () => deny('nope', { userReason: 'Stay in this workspace.' }) },
+  ];
+  const parsed = JSON.parse(await dispatch(cursor, handlers, inv('before-shell-execution', { command: 'rm' })));
+  assert.equal(parsed.permission, 'deny');
+  assert.equal(parsed.user_message, 'Stay in this workspace.');
+  assert.equal(parsed.agent_message, 'nope');
+  assert.equal(parsed.user_message.startsWith(SPAWN_PRETOOLUSE_DENY_PREFIX), false);
+});
+
+test('cursor: spawn-agent PreToolUse deny with userReason keeps the prefix on agent_message only', async () => {
+  const spawnGate: Handler[] = [
+    { id: 'spawn', event: 'PreToolUse', tools: ['spawn-agent'], priority: 0, run: () => deny('architect first', { userReason: 'Stay in this workspace.' }) },
+  ];
+  const out = JSON.parse(await dispatch(cursor, spawnGate, inv('before-tool-use', {
+    tool_name: 'Task',
+    tool_input: { subagent_type: 'senior-frontend' },
+  })));
+  assert.equal(out.permission, 'deny');
+  assert.equal(out.user_message, 'Stay in this workspace.');
+  assert.ok(out.agent_message.startsWith(SPAWN_PRETOOLUSE_DENY_PREFIX));
+  assert.ok(out.agent_message.includes('architect first'));
+  assert.equal(out.user_message.startsWith(SPAWN_PRETOOLUSE_DENY_PREFIX), false);
+});
+
 test('cursor: file-write PreToolUse deny is NOT spawn-prefixed', async () => {
   const writeGate: Handler[] = [
     { id: 'w', event: 'PreToolUse', tools: ['file-write'], priority: 0, run: () => deny('write blocked') },

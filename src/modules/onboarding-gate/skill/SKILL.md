@@ -24,7 +24,7 @@ The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then ex
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. If it prints `TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED`, follow its printed classification instructions (inspect the repo, run the printed `--set-tech` command), then re-run. Building, installs, and subagent work remain blocked until completion.
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. If it prints `TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED`, follow its printed classification instructions (inspect the repo, run the printed `--set-tech` command), then re-run. Hold feature writes, installs, and subagent work until setup completes.
 <!-- T1BLOCK:END server-bootstrap-required -->
 
 <!-- T1BLOCK:BEGIN server-bootstrap-required-compact -->
@@ -35,7 +35,7 @@ Run with approval: {{BOOTSTRAP_CMD}}
 It prints the live setup link and exits. Show that link, then keep setup active with:
 {{WAIT_CMD}}
 
-Building remains blocked until the waiter reports completion.
+Hold feature writes until the waiter reports completion.
 <!-- T1BLOCK:END server-bootstrap-required-compact -->
 
 <!-- T1BLOCK:BEGIN server-deny-reason -->
@@ -60,7 +60,7 @@ All setup logic and saves stay on this machine; the dashboard is just the UI.
 
 CONTINUE AUTOMATICALLY — do NOT end your turn after showing the link. Immediately run
 this command in the FOREGROUND of this turn (never as a background task) and keep your
-turn open; it BLOCKS until the user finishes setup (run it with a long timeout,
+turn open; it waits until the user finishes setup (run it with a long timeout,
 ~9 minutes / 540000 ms):
 
 {{WAIT_CMD}}
@@ -73,7 +73,7 @@ finish setup and wait for their go-ahead. (If you genuinely cannot run a shell c
 fall back to: when the user says setup is done, continue the request.)
 
 Read-only orientation (pwd, ls, reading files, searching) and the wait command above
-are allowed now, but feature writes, installs, and subagent work stay blocked until
+are allowed now. Hold feature writes, installs, and subagent work until
 setup completes. Do NOT restart the host and do NOT answer these setup questions
 yourself in chat — setup happens in the browser.
 
@@ -85,8 +85,6 @@ files are added to it) and Traffic One stays silent here until they ask for it a
 <!-- T1BLOCK:END server-deny-reason -->
 
 <!-- T1BLOCK:BEGIN cursor-wait-link-first -->
-This notice is NOT visible to the user: Cursor renders a blocked command inside a collapsed "ran N commands" block, so the setup link has still never appeared in the conversation.
-
 Check your own last VISIBLE chat message. Tool output and collapsed command blocks do not count — if the link is not in a message you wrote, the user has not seen it.
 
 Post this to the user in your NEXT CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it:
@@ -103,8 +101,6 @@ When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
 <!-- T1BLOCK:END cursor-wait-link-first -->
 
 <!-- T1BLOCK:BEGIN claude-wait-link-first -->
-This notice is NOT visible to the user: Claude Code renders hook output and blocked commands inside a collapsed tool block, so the setup link has still never appeared in the conversation.
-
 Check your own last VISIBLE chat message. Tool output, hook banners, and collapsed command blocks do not count — if the link is not in a message you wrote, the user has not seen it.
 
 Post this to the user in your NEXT CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself with a browser tool or an `open`/`xdg-open`/`start` command; the user clicks it:
@@ -131,7 +127,7 @@ Post the setup link to the user in a CHAT MESSAGE — plain clickable text on it
 <!-- T1BLOCK:END claude-wait-background-denied -->
 
 <!-- T1BLOCK:BEGIN stop-setup-required -->
-You are ending your turn while Traffic One setup is still required, and the setup link has not been confirmed delivered — if the link is not in a message you wrote, the user has no way to continue setup.
+Setup reminder: Traffic One setup is still needed, and the setup link has not been confirmed delivered — if the link is not in a message you wrote, the user has no way to continue setup.
 
 Post this setup link to the user NOW, in a chat message, on its own line, as plain clickable text — not inside a code block. Do NOT open it yourself; the user clicks it:
 
@@ -145,7 +141,7 @@ Then run this wait command in the FOREGROUND (run_in_background: false, timeout 
 <!-- T1BLOCK:END stop-setup-required -->
 
 <!-- T1BLOCK:BEGIN stop-setup-link-posted -->
-You are ending your turn while Traffic One setup is still pending. The setup link is already posted in the conversation — do NOT post it again; a repeated link reads as noise.
+Setup reminder: Traffic One setup is still pending. The setup link is already posted in the conversation — do NOT post it again; a repeated link reads as noise.
 
 Run this wait command NOW in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. It returns immediately if setup is already complete; when it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
 
@@ -153,7 +149,7 @@ Run this wait command NOW in the FOREGROUND (run_in_background: false, timeout ~
 <!-- T1BLOCK:END stop-setup-link-posted -->
 
 <!-- T1BLOCK:BEGIN stop-setup-links-shown -->
-You are ending your turn while Traffic One setup is still in progress — the user has the setup wizard open in their browser right now (the setup server saw it load). Do NOT repost the link: a repeated link reads as "start over".
+Setup reminder: Traffic One setup is still in progress — the user has the setup wizard open in their browser right now (the setup server saw it load). Do NOT repost the link: a repeated link reads as "start over".
 
 Run this wait command NOW in the FOREGROUND (run_in_background: false, timeout ~9 minutes / 540000 ms) and keep the turn open. It returns immediately if setup is already complete; when it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request:
 
@@ -177,7 +173,7 @@ When it prints TRAFFIC_ONE_SETUP_COMPLETE, continue the original request.
 <!-- T1BLOCK:END codex-wait-link-first -->
 
 <!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
-Traffic One setup is still pending — building stays blocked until setup finishes.
+Setup reminder: Traffic One setup is still pending. Finish setup before feature work.
 Post this setup link to the user in a chat message — the user opens it, not you: {{URL}}
 {{LOCAL_FALLBACK}}
 Keep your turn open by running the wait command again (long timeout, ~9 minutes):
@@ -323,8 +319,7 @@ Implementer spawns are blocked until the digest carries `PLAN_READY` on disk.
 DO NOT write feature source, scaffold app files, or run package installs yourself in this thread.
 Your FIRST action: spawn `senior-architect` via the host `{{TASK_TOOL}}` tool:
 {{SPAWN_INSTRUCTIONS}}
-- include `Run ID: {{RUN_ID}}` and the user's original request
-- Foreground only: do NOT set `run_in_background`.
+- include `Run ID: {{RUN_ID}}` and the user's original request{{FOREGROUND_RULE}}
 
 Runtime capability contract: {{PROFILE_SUMMARY}}.
 Do not replace these detected surfaces, roots, framework conventions, skill buckets, or QA adapters with an unrelated default.
@@ -343,8 +338,7 @@ Missing architect deliverables: {{MISSING}}
 
 Respawn `senior-architect` via `{{TASK_TOOL}}` with:
 {{SPAWN_INSTRUCTIONS}}
-- `Run ID: {{RUN_ID}}`
-- Foreground only: do NOT set `run_in_background`.
+- `Run ID: {{RUN_ID}}`{{FOREGROUND_RULE}}
 - instruct the architect to finish project memory and semantic
   `.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json`, then write
   `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`; runtime

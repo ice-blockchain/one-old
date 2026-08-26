@@ -14,9 +14,9 @@ import * as fs from 'fs';
 
 import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
-import { context, deny, noop } from '../../core/result';
+import { context, deny, mergeResults, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
-import type { Ctx, HookResult } from '../../core/types';
+import type { Ctx, HookResult, ResultMeta } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode, detectStackFromCodebase } from '../../shared/detection';
 import {
@@ -37,10 +37,8 @@ import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstra
 import { claimLaunchTimeoutRetry } from '../../shared/onboarding-server/launch-timeout';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
-import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason } from '../../shared/onboarding-server/claude-setup';
+import { claudeWaitBackgroundDeniedReason } from '../../shared/onboarding-server/claude-setup';
 import { assistantPostedLink } from '../../shared/onboarding-server/link-evidence';
-import { codexWaitLinkFirstReason } from '../../shared/onboarding-server/codex-setup';
-import { cursorWaitLinkFirstReason } from '../../shared/onboarding-server/cursor-setup';
 import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { windsurfBackend } from '../../shared/windsurf-backend';
@@ -92,6 +90,18 @@ const READ_ONLY_INSPECTION_TOOL = /^(Read|Glob|Grep|LS|NotebookRead)$/i;
 const SPAWN_TOOL_NAME = /^(Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i;
 const SPAWN_AFTER_MATERIALIZE_MESSAGE =
   'Traffic One refreshed project-local rules/skills; this spawn may proceed';
+const AFTER_MATERIALIZE_MESSAGE =
+  'Traffic One refreshed project-local rules/skills; this tool may proceed';
+// User-channel chrome on the setup-pending mutating backstop. `reason` keeps
+// the agent recipe (URL + wait). Adapters that split channels put this on the
+// user side; hosts that cannot split keep `reason` visible so the URL is never
+// hidden. No "blocked", no "Traffic One gate".
+const SETUP_NEEDED_USER_REASON = 'Setup needed — I will share the link.';
+const TECH_CLASSIFY_USER_REASON = 'Inspect the repo and submit the stack.';
+
+function setupPendingDeny(reason: string, meta: { denyId: string } & ResultMeta): HookResult {
+  return deny(reason, { ...meta, denyId: meta.denyId, userReason: SETUP_NEEDED_USER_REASON });
+}
 
 function isSpawnAgentToolUse(ctx: Ctx, toolName: string): boolean {
   if (ctx.input.tool?.class === 'spawn-agent') return true;
@@ -136,14 +146,15 @@ function setupLinkNudge(
   token: string,
   localFallback: LocalFallback,
 ): HookResult {
-  // Only where an empty context is genuinely free and systemMessage is a
-  // user-visible channel: Claude/Cursor (systemMessage → user_message), Copilot
-  // (systemMessage rides both wire surfaces; the CLI omits an empty context), and
-  // Windsurf-Cascade (hook stdout renders under show_output: true). Codex stays
-  // excluded — it emits additionalContext unconditionally, so an empty context is
-  // not free and the deny reason is its only real surface. OpenCode/Kilo deliver
-  // through their wrapper's own prompt-part/idle surfaces instead.
-  if (host !== 'claude' && host !== 'cursor' && host !== 'copilot' && host !== 'windsurf') return noop();
+  // Ride systemMessage where it is a user-visible channel: Claude/Cursor
+  // (systemMessage → user_message), Copilot (both wire surfaces; the CLI omits
+  // an empty context), Windsurf-Cascade (hook stdout under show_output: true),
+  // and Codex (best-effort — PreToolUse additionalContext is rejected,
+  // openai/codex#19385). Codex is included so orientation matches Claude
+  // (context, not deny): SessionStart + UserPromptSubmit already carry the
+  // wizard URL, and a denied Read is a user-visible Error. OpenCode/Kilo
+  // deliver through their wrapper's own prompt-part/idle surfaces instead.
+  if (host !== 'claude' && host !== 'cursor' && host !== 'copilot' && host !== 'windsurf' && host !== 'codex') return noop();
   // Devin native merges systemMessage into agent-facing additionalContext — the
   // nudge would burn the shared TTL marker without ever reaching the user (the
   // exact invisible-producer failure this marker discipline exists to prevent).
@@ -348,7 +359,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
           SET_TECH_TEMPLATE: template,
           HINTS: hints,
         }, techClassifyRequiredReason(template, hints));
-      return deny(reason, { denyId: 'tech-classify-required' });
+      return deny(reason, { denyId: 'tech-classify-required', userReason: TECH_CLASSIFY_USER_REASON });
     }
     if (isOnboardingWaitCommand(toolName, toolInput)) {
       // Ask-first pending: the runner invocation IS the answer path (--use /
@@ -361,7 +372,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
         // cannot launch the wizard. Never deny that recovery command merely
         // because the same restricted hook cannot pre-create its URL.
         if (prepared.kind !== 'ready') return noop();
-        const { server, waitCommand } = prepared;
+        const { server } = prepared;
         // The user has the wizard open in a browser — the server watched it arrive.
         // Ordering another post now would race them finishing setup. This is the
         // ONLY thing that silences this branch: the old marker fired whenever some
@@ -383,32 +394,24 @@ export function onboardingGate(ctx: Ctx): HookResult {
           sessionId: id,
           cwd: root,
         })) return noop();
-        if (server.dashboardUrl
-          && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
+        // Do NOT deny the first wait to teach "post the link first". SessionStart
+        // + UserPromptSubmit already carry the wizard URL; a denied wait is a
+        // user-visible Error. If they run the waiter before posting, ALLOW it
+        // and inject the link as context/systemMessage so the user still sees it.
+        if (server.dashboardUrl) {
           const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
-          return deny(block('cursor-wait-link-first', {
-            URL: server.dashboardUrl,
-            LOCAL_FALLBACK: localFallback,
-            WAIT_CMD: waitCommand,
-          }, cursorWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)), { denyId: 'cursor-wait-link-first' });
+          return setupLinkNudge(root, ctx.host, server.dashboardUrl, server.token, localFallback);
         }
       }
-      // Claude mirrors the Cursor link-first deny: hook output and blocked
-      // commands render inside a collapsed tool block, so the nudge below is
-      // agent-invisible in practice and the recipe's "post the link" step is
-      // routinely skipped (observed live on 1.0.43 — the user never got a link).
-      // One deny per session orders the visible repost; the allowed retry then
-      // proceeds into the blocking wait. Never fired over an open wizard, and the
-      // recovery path (server not ready) is never trapped. A link the ASSISTANT
-      // already posted in the live transcript is delivery evidence too (observed
-      // 16cl/019fbca1 on 1.0.45: the compliant model posted right after
-      // bootstrap, and this deny — arrival-only back then — ordered a duplicate
-      // in the seconds before the user could click); the wait then runs with no
-      // deny AND no nudge ride.
-      if (ctx.host === 'claude') {
+      // Claude / Codex: same allow + inject. A denied wait used to order a
+      // visible repost (collapsed hook output hid the nudge). That briefing is
+      // no longer worth a user-visible Error — inject the link and let the
+      // waiter run. Stand down if the wizard is open or the assistant already
+      // posted the link (reposting duplicates; observed 16cl/019fbca1).
+      if (ctx.host === 'claude' || ctx.host === 'codex') {
         const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
         if (prepared.kind === 'ready') {
-          const { server, waitCommand } = prepared;
+          const { server } = prepared;
           if (server.dashboardUrl && !wizardOpened(root, server.token, process.env, ctx.host)) {
             if (assistantPostedLink({
               url: server.dashboardUrl,
@@ -416,43 +419,8 @@ export function onboardingGate(ctx: Ctx): HookResult {
               raw,
               sessionId: hookSessionIdentity(raw).sessionId,
             })) return noop();
-            if (firstEmitThisSession(root, 'claude-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
-              const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
-              return deny(block('claude-wait-link-first', {
-                URL: server.dashboardUrl,
-                LOCAL_FALLBACK: localFallback,
-                WAIT_CMD: waitCommand,
-              }, claudeWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)), { denyId: 'claude-wait-link-first' });
-            }
-          }
-        }
-      }
-      // Codex: the deny reason is the ONLY channel that reaches the model (see
-      // the walkthrough comment below), so the wait command gets its own
-      // self-contained link-first deny. DEDICATED marker — deliberately not
-      // 'onboarding-deny-tool': an orientation call may have burned the
-      // walkthrough without the link ever being posted, and this deny must not
-      // consume the walkthrough for later mutating calls either. Same
-      // assistant-posted stand-down as Claude (the rollout is the transcript).
-      if (ctx.host === 'codex') {
-        const prepared = prepareOnboardingServer(root, ctx.host, { syncSession });
-        if (prepared.kind === 'ready') {
-          const { server, waitCommand } = prepared;
-          if (server.dashboardUrl && !wizardOpened(root, server.token, process.env, ctx.host)) {
-            if (assistantPostedLink({
-              url: server.dashboardUrl,
-              host: ctx.host,
-              raw,
-              sessionId: hookSessionIdentity(raw).sessionId,
-            })) return noop();
-            if (firstEmitThisSession(root, 'codex-onboarding-wait-link', hookSessionIdentity(raw).sessionId)) {
-              const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
-              return deny(block('codex-wait-link-first', {
-                URL: server.dashboardUrl,
-                LOCAL_FALLBACK: localFallback,
-                WAIT_CMD: waitCommand,
-              }, codexWaitLinkFirstReason(server.dashboardUrl, localFallback, waitCommand)), { denyId: 'codex-wait-link-first' });
-            }
+            const localFallback = localFallbackSection(root, server.localWizardUrl, process.env, ctx.host);
+            return setupLinkNudge(root, ctx.host, server.dashboardUrl, server.token, localFallback);
           }
         }
       }
@@ -462,9 +430,8 @@ export function onboardingGate(ctx: Ctx): HookResult {
       // of them: after this there are no more PreToolUse events to ride on.
       // Observed live: "Ran 2 commands → Waiting for setup completion", 4 minutes,
       // no link anywhere the user could see it.
-      // Not on Cursor: its branch above owns a purpose-built link deny, and reaching
-      // here means it deliberately stayed quiet (wizard already open, or the link
-      // was delivered this session). A second surface would just double-post.
+      // Cursor's branch above already injected (or stood down). A second surface
+      // would just double-post.
       const waitLink = ctx.host === 'cursor' ? null : liveWizardLink(root, ctx.host);
       if (waitLink) {
         return setupLinkNudge(root, ctx.host, waitLink.dashboardUrl, waitLink.token, waitLink.localFallback);
@@ -536,6 +503,17 @@ export function onboardingGate(ctx: Ctx): HookResult {
       WAIT_CMD: waitCommand,
       DECLINE_CMD: declineCmd,
     };
+    // Read-only orientation (ls, Read, Grep, Glob) is allowed on EVERY host,
+    // including Codex. SessionStart + UserPromptSubmit already carry the
+    // wizard URL; a denied Read is a user-visible Error. Codex used to spend
+    // its first PreToolUse deny on orientation so the recipe landed in
+    // permissionDecisionReason (additionalContext is rejected there,
+    // openai/codex#19385). That briefing is no longer the first-contact
+    // channel — match Claude: setupLinkNudge / context, not deny. OpenCode/
+    // Kilo get a silent allow (their wrapper owns prompt-part/idle delivery).
+    if (isReadOnlyOrientationToolUse(toolName, toolInput)) {
+      return setupLinkNudge(root, ctx.host, server.dashboardUrl, server.token, localFallback);
+    }
     // OpenCode/Kilo: the full multi-host deny block (URLs + shell commands +
     // JavaScript code blocks + "do NOT…" behavioral overrides) triggers the
     // model's prompt-injection safety training — it reads as a third-party hijack
@@ -551,7 +529,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
         ? 'If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, '
           + 'then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.\n\n'
         : '';
-      return deny(
+      return setupPendingDeny(
         'Traffic One project setup is required before building. '
         + `Show this setup link to the user: ${vars.URL}\n\n`
         + (wrapperFallback ? `${wrapperFallback}\n\n` : '')
@@ -562,34 +540,14 @@ export function onboardingGate(ctx: Ctx): HookResult {
       );
     }
     if (ctx.host === 'windsurf') {
-      // Windsurf renders an exit-2 pre-hook as a failed tool card. Never spend
-      // that blocking surface on harmless orientation (`ls`, reads, grep): let
-      // the agent inspect while the user completes the already-open wizard.
-      // The host entry turns the first mutation deny into an inline setup wait,
-      // then releases that SAME tool after onboarding completes.
-      if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+      // Windsurf renders an exit-2 pre-hook as a failed tool card. Orientation
+      // is already released above. Cascade's only deny channel is stderr, so
+      // the recipe (URL + wait) must ride preDenyStderr with userReason — there
+      // is no inline setup wait that later releases the same tool.
       const first = firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId);
       return first
-        ? deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, localFallback, vars.WAIT_CMD)), { denyId: 'windsurf-server-deny-reason' })
-        : deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, localFallback, vars.WAIT_CMD)), { denyId: 'windsurf-server-deny-reason-repeat' });
-    }
-    // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
-    // session — INCLUDING a read-only orientation call. On Codex the PreToolUse
-    // DENY REASON is the ONLY output surfaced to the model: PreToolUse
-    // additionalContext is rejected outright (openai/codex#19385) and
-    // UserPromptSubmit.additionalContext is version-flaky (#16486/#16933). A
-    // DEDICATED marker (not the UserPromptSubmit 'onboarding-deny' one) guarantees
-    // this fires regardless of whether the prompt hook's context landed — otherwise
-    // an orientation-only opening turn leaves the agent hunting for the wizard
-    // (observed on Codex). One denied orientation call is the cost; the deny prose
-    // itself says orientation is allowed and to open the wizard, so the agent
-    // pivots immediately.
-    // Claude Code is the exception among these hosts: its prompt-hook context is
-    // reliable (the ask-first question already landed through it) and a denied
-    // read renders as a red failed-tool card, so orientation flows like on
-    // Windsurf and the walkthrough lands on the first mutating call instead.
-    if (ctx.host === 'claude' && isReadOnlyOrientationToolUse(toolName, toolInput)) {
-      return setupLinkNudge(root, ctx.host, server.dashboardUrl, server.token, localFallback);
+        ? setupPendingDeny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, localFallback, vars.WAIT_CMD)), { denyId: 'windsurf-server-deny-reason' })
+        : setupPendingDeny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, localFallback, vars.WAIT_CMD)), { denyId: 'windsurf-server-deny-reason-repeat' });
     }
     // The user has the wizard open in a browser — the server watched it arrive, so
     // re-posting the link now would read as "start over" while they are mid-setup.
@@ -609,18 +567,15 @@ export function onboardingGate(ctx: Ctx): HookResult {
       return { systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, localFallback, 'traffic-one [setup required]') };
     };
     if (firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId)) {
-      return deny(wizardIsOpen
+      return setupPendingDeny(wizardIsOpen
         ? block('server-deny-reason-links-shown', vars)
         : block('server-deny-reason', vars), { ...copilotDenyBanner(), denyId: wizardIsOpen ? 'onboarding-server-deny-links-shown' : 'onboarding-server-deny-first' });
     }
-    // Recipe already delivered this session → orientation flows; every further
-    // non-orientation / mutating attempt repeats only the URL + wait-command. The
-    // URL rides EVERY repeat until the wizard is open: the full walkthrough is what
-    // must not repeat, not the link itself.
-    if (isReadOnlyOrientationToolUse(toolName, toolInput)) {
-      return setupLinkNudge(root, ctx.host, server.dashboardUrl, server.token, localFallback);
-    }
-    return deny(wizardIsOpen
+    // Recipe already delivered this session → every further mutating attempt
+    // repeats only the URL + wait-command. The URL rides EVERY repeat until the
+    // wizard is open: the full walkthrough is what must not repeat, not the
+    // link itself. Orientation already returned above.
+    return setupPendingDeny(wizardIsOpen
       ? block('server-deny-reason-links-shown', vars)
       : block('server-deny-reason-repeat', vars), { ...copilotDenyBanner(), denyId: wizardIsOpen ? 'onboarding-server-deny-links-shown' : 'onboarding-server-deny-repeat' });
   }
@@ -752,19 +707,21 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // returns an outcome for seven statuses (shared/materialize/converge.ts) and
     // only two of them mean the project is now current: 'materialized' (content
     // was rewritten) and 'current' (convergence ran, found nothing to change,
-    // and re-stamped the state).
+    // and re-stamped the state). Those two FALL THROUGH to run-id announce /
+    // triage / noop — returning context here skipped that tail, so the first
+    // Write after a heal heard rematerialize prose instead of `build run-id:`.
+    // Status `current` attaches nothing extra (same as a null return). Status
+    // `materialized` may merge the one-line refresh onto the eventual result.
     //
     // SPAWN NEVER takes the repair deny. A spawn is not a file-changing tool,
     // and even if someone later classifies it as mutating, `isSpawnAgentToolUse`
     // keeps `repaired-materialization` off this path — the child must be able
     // to start against the tree this call just wrote. Status materialized/
-    // current returns context so the spawn may proceed; any other status
-    // attaches the diagnosis the same way a read-only tool already did.
+    // current falls through; any other status attaches the diagnosis the same
+    // way a read-only tool already did.
     //
-    // MUTATING NON-SPAWN keeps today's deny-for-retry. For materialized/current
-    // the repair paragraph is true and its remedy works — the next call
-    // short-circuits and the tool runs. The others did not converge: 'skipped'
-    // (five plugin-root/consent causes), 'incomplete' (an invalid `.one.json`),
+    // MUTATING NON-SPAWN: the others did not converge — 'skipped' (five
+    // plugin-root/consent causes), 'incomplete' (an invalid `.one.json`),
     // 'failed' (the writer threw, or the stamp was refused). Denying stays
     // correct for every one of them — proceeding is what deletes
     // `.traffic-one/rules` and `.traffic-one/skills`, the project's only copy
@@ -781,23 +738,19 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // whole rendered reason, and this one repeats byte-identically by
     // construction, so a prescribed retry would drive the agent into the
     // escalation at DENY_REPEAT_ESCALATE_AT for doing what it was told.
-    if (isSpawnAgentToolUse(ctx, toolName)) {
-      return (materialized.status === 'materialized' || materialized.status === 'current')
-        ? context(materialized.context, { systemMessage: SPAWN_AFTER_MATERIALIZE_MESSAGE })
-        : context(materialized.context, { systemMessage: materialized.systemMessage });
+    const converged = materialized.status === 'materialized' || materialized.status === 'current';
+    if (!converged) {
+      if (isSpawnAgentToolUse(ctx, toolName) || !isMutatingPreToolUse(toolName, toolInput)) {
+        return context(materialized.context, { systemMessage: materialized.systemMessage });
+      }
+      return deny(
+        block('materialization-not-converged', { DIAGNOSIS: materialized.context },
+          'traffic-one — this tool use was denied because Traffic One could not finish bringing this project\'s materialized rules and skills up to date, and a file-changing tool must not run against a half-converged project: `.traffic-one/rules` and `.traffic-one/skills` are the project\'s only copy of content a broken plugin root cannot resupply.\n'
+          + `${materialized.context}\n`
+          + 'Re-issuing this tool call draws this same refusal. The cause above is a fact about the installation or about `.traffic-one/.one.json`, not about the tool you tried, so nothing about running it again changes it. Repair that cause if it is yours to repair; if it is not, report it to the user in the terms above and carry on with work that changes no files, which is not affected.'),
+        { denyId: 'materialization-not-converged' },
+      );
     }
-    if (isMutatingPreToolUse(toolName, toolInput)) {
-      return (materialized.status === 'materialized' || materialized.status === 'current')
-        ? deny(block('repaired-materialization'), { denyId: 'repaired-materialization' })
-        : deny(
-          block('materialization-not-converged', { DIAGNOSIS: materialized.context },
-            'traffic-one — this tool use was denied because Traffic One could not finish bringing this project\'s materialized rules and skills up to date, and a file-changing tool must not run against a half-converged project: `.traffic-one/rules` and `.traffic-one/skills` are the project\'s only copy of content a broken plugin root cannot resupply.\n'
-            + `${materialized.context}\n`
-            + 'Re-issuing this tool call draws this same refusal. The cause above is a fact about the installation or about `.traffic-one/.one.json`, not about the tool you tried, so nothing about running it again changes it. Repair that cause if it is yours to repair; if it is not, report it to the user in the terms above and carry on with work that changes no files, which is not affected.'),
-          { denyId: 'materialization-not-converged' },
-        );
-    }
-    return context(materialized.context, { systemMessage: materialized.systemMessage });
   }
   // Headless sessions never fire UserPromptSubmit, so the prompt-boundary
   // maintenance triage directive is never delivered there. An unburned
@@ -816,16 +769,32 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // Announce the run-id ONCE, before the first spawn prompt is built, so the literal
   // value is salient (where the host surfaces PreToolUse context). The plan gate's
   // run-id write-guard enforces it regardless of whether this context lands.
-  if (buildRunId && firstEmitThisSession(root, 'run-id-announce', hookSessionIdentity(raw).sessionId)) {
-    const orchestration = buildOrchestrationDirective(root, ctx.host, effectiveState);
-    const runIdLines = [
-      `traffic-one — build run-id: ${buildRunId}. This is \`currentRunId\` in .traffic-one/.one.json.`,
-      `Use this EXACT value wherever a run-id is needed — \`.traffic-one/runs/${buildRunId}/\` and`,
-      `\`.traffic-one/digests/${buildRunId}/\` paths, and "Run ID:" lines in spawn prompts. Do NOT run`,
-      '`date` to mint one; the plan gate denies writing under any other run-id.',
-    ].join(' ');
-    return context([runIdLines, orchestration, triageFallback].filter(Boolean).join('\n\n'));
+  const announced = (buildRunId && firstEmitThisSession(root, 'run-id-announce', hookSessionIdentity(raw).sessionId))
+    ? context([
+      [
+        `traffic-one — build run-id: ${buildRunId}. This is \`currentRunId\` in .traffic-one/.one.json.`,
+        `Use this EXACT value wherever a run-id is needed — \`.traffic-one/runs/${buildRunId}/\` and`,
+        `\`.traffic-one/digests/${buildRunId}/\` paths, and "Run ID:" lines in spawn prompts. Do NOT run`,
+        '`date` to mint one; the plan gate denies writing under any other run-id.',
+      ].join(' '),
+      buildOrchestrationDirective(root, ctx.host, effectiveState),
+      triageFallback,
+    ].filter(Boolean).join('\n\n'))
+    : triageFallback
+      ? context(triageFallback)
+      : noop();
+  // Content was actually rewritten: keep the one-line refresh on the allow
+  // path. `current` (and a null return) attach nothing. A noop fall-through
+  // still returns the rematerialize context so the agent hears the refresh.
+  if (materialized?.status === 'materialized') {
+    return mergeResults([
+      context(materialized.context, {
+        systemMessage: isSpawnAgentToolUse(ctx, toolName)
+          ? SPAWN_AFTER_MATERIALIZE_MESSAGE
+          : AFTER_MATERIALIZE_MESSAGE,
+      }),
+      announced,
+    ]);
   }
-  if (triageFallback) return context(triageFallback);
-  return noop();
+  return announced;
 }

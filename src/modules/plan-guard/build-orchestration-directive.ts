@@ -3,7 +3,11 @@
 // via the host task tool BEFORE any feature-source or monorepo scaffold writes.
 // OpenCode/Kilo use named/global agents (`kiloOpenCodeSubagentsBuild`).
 // Cursor/Claude/Codex use a parallel paid-host playbook (`paidHostSubagentsBuild`)
-// with host-exact spawn instructions (Cursor: always generalPurpose + captured slug).
+// with host-exact spawn instructions (Cursor: prefer role-named Task type when
+// in this session's enum, else generalPurpose + [t1-role:] + captured slug).
+// Copilot/Windsurf share the same architect-first T1BLOCKs via
+// `unpaidHostSubagentsBuild` — they are NOT in PAID_HOST_IDS (canonicalHost
+// maps unknown strings to claude).
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -28,6 +32,18 @@ type PaidHostId = (typeof PAID_HOST_IDS)[number];
 
 function isPaidHostId(host: string): host is PaidHostId {
   return (PAID_HOST_IDS as readonly string[]).includes(host);
+}
+
+const UNPAID_SUBAGENT_HOST_IDS = ['copilot', 'windsurf'] as const;
+type UnpaidSubagentHostId = (typeof UNPAID_SUBAGENT_HOST_IDS)[number];
+type ArchitectFirstHostId = PaidHostId | UnpaidSubagentHostId;
+
+function isUnpaidSubagentHostId(host: string): host is UnpaidSubagentHostId {
+  return (UNPAID_SUBAGENT_HOST_IDS as readonly string[]).includes(host);
+}
+
+function isArchitectFirstHostId(host: string): host is ArchitectFirstHostId {
+  return isPaidHostId(host) || isUnpaidSubagentHostId(host);
 }
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (
@@ -80,8 +96,7 @@ const PAID_HOST_SPAWN_FIRST_FALLBACK = `[traffic-one] {{HOST}} build start — \
 DO NOT write feature source, scaffold app files, or run package installs yourself in this thread.
 Your FIRST action: spawn \`senior-architect\` via the host \`{{TASK_TOOL}}\` tool:
 {{SPAWN_INSTRUCTIONS}}
-- include \`Run ID: {{RUN_ID}}\` and the user's original request
-- Foreground only: do NOT set \`run_in_background\`.
+- include \`Run ID: {{RUN_ID}}\` and the user's original request{{FOREGROUND_RULE}}
 
 Runtime capability contract: {{PROFILE_SUMMARY}}.
 Do not replace these detected surfaces, roots, framework conventions, skill buckets, or QA adapters with an unrelated default.
@@ -98,8 +113,7 @@ Missing architect deliverables: {{MISSING}}
 
 Respawn \`senior-architect\` via \`{{TASK_TOOL}}\` with:
 {{SPAWN_INSTRUCTIONS}}
-- \`Run ID: {{RUN_ID}}\`
-- Foreground only: do NOT set \`run_in_background\`.
+- \`Run ID: {{RUN_ID}}\`{{FOREGROUND_RULE}}
 - instruct the architect to finish project memory and semantic
   \`.traffic-one/runs/{{RUN_ID}}/architecture-input-v1.json\`, then write
   \`.traffic-one/digests/{{RUN_ID}}/architect.md\` with \`PLAN_READY\`; runtime
@@ -184,21 +198,35 @@ function paidHostSubagentsBuild(state: Rec, host: string): boolean {
   return subagentsTeamEligible(state);
 }
 
+function unpaidHostSubagentsBuild(state: Rec, host: string): boolean {
+  if (!isNewProjectMode(state)) return false;
+  if (isMaintenancePhase(state, state.mode)) return false;
+  const raw = typeof host === 'string' ? host.trim().toLowerCase() : '';
+  // Same new-project + subagents + not-maintenance predicates as paid hosts.
+  // Explicit host match — do not fold these into PAID_HOST_IDS (canonicalHost
+  // maps unknown strings to claude).
+  if (!isUnpaidSubagentHostId(raw)) return false;
+  if (hostFlags(canonicalHost(host)).opencodeSelfHosted) return false;
+  return subagentsTeamEligible(state);
+}
+
 function eligibleSubagentsBuild(state: Rec, host: string): boolean {
-  return kiloOpenCodeSubagentsBuild(state, host) || paidHostSubagentsBuild(state, host);
+  return kiloOpenCodeSubagentsBuild(state, host)
+    || paidHostSubagentsBuild(state, host)
+    || unpaidHostSubagentsBuild(state, host);
 }
 
 function paidHostSpawnInstructions(host: PaidHostId, cwd: string, state: Rec, runId: string): string {
   if (host === 'cursor') {
+    const spawn = hostSpawnType('cursor', 'senior-architect', cwd);
     const map = buildCursorSpawnModelMap(cwd, { ...state, currentRunId: runId });
     const slug = typeof map['senior-architect'] === 'string' ? map['senior-architect'].trim() : '';
     const modelLine = slug
       ? `- \`model: "${slug}"\` — exact captured Task slug from model-gate / model-policy.json`
       : '- pass the exact captured Task slug from model-gate / model-policy.json — NEVER the picker label (e.g. Claude Opus 5 High)';
     return [
-      '- `subagent_type: "generalPurpose"` ALWAYS (role files may be missing from this session\'s enum)',
-      '- prompt line 1 MUST be: `[t1-role: senior-architect]`',
-      '- tell the child to read `.cursor/agents/senior-architect.md` if it exists',
+      `- \`${spawn.parameter}: "${spawn.primary}"\` if that type is in this session's Task enum; otherwise \`${spawn.parameter}: "${spawn.fallback}"\` plus \`[t1-role: senior-architect]\` as prompt line 1`,
+      `- tell the child to read \`${spawn.contractPath}\` if it exists`,
       modelLine,
     ].join('\n');
   }
@@ -228,6 +256,71 @@ function paidHostSpawnInstructions(host: PaidHostId, cwd: string, state: Rec, ru
   ].join('\n');
 }
 
+function unpaidHostSpawnInstructions(host: UnpaidSubagentHostId, cwd: string): string {
+  const spawn = hostSpawnType(host, 'senior-architect', cwd);
+  const primary = spawn.primary || (host === 'windsurf' ? 'subagent_general' : 'senior-architect');
+  const contract = spawn.contractPath
+    || (host === 'copilot'
+      ? '.github/agents/senior-architect.agent.md'
+      : '.devin/agents/senior-architect/AGENT.md');
+  if (host === 'copilot') {
+    return [
+      `- \`${spawn.parameter}: "${primary}"\``,
+      '- prompt line 1 MUST be: `[t1-role: senior-architect]`',
+      `- tell the child to read \`${contract}\` if it exists`,
+    ].join('\n');
+  }
+  // Windsurf: custom profiles are not registered until a new Devin session —
+  // `subagent_general` is the only type this session can start. The contract
+  // is the role payload; do not name a file that is not on disk (same check
+  // as the Kilo arm and preSpawnArchitectDirective).
+  const present = fs.existsSync(path.join(cwd, contract));
+  const contractLine = present
+    ? `- tell the child to read \`${contract}\``
+    : `- Do NOT tell the child to read \`${contract}\` — Traffic One could not write it, so that file is not there. State the role's task and scope inline instead; the \`[t1-role: …]\` marker is what binds the role.`;
+  return [
+    `- \`${spawn.parameter}: "${primary}"\` ALWAYS (custom profiles are not registered until a new Devin session)`,
+    '- prompt line 1 MUST be: `[t1-role: senior-architect]`',
+    contractLine,
+  ].join('\n');
+}
+
+function architectFirstSpawnInstructions(
+  host: ArchitectFirstHostId,
+  cwd: string,
+  state: Rec,
+  runId: string,
+): string {
+  return isPaidHostId(host)
+    ? paidHostSpawnInstructions(host, cwd, state, runId)
+    : unpaidHostSpawnInstructions(host, cwd);
+}
+
+function architectFirstHostLabel(host: ArchitectFirstHostId): string {
+  switch (host) {
+    case 'cursor': return 'Cursor';
+    case 'claude': return 'Claude';
+    case 'codex': return 'Codex';
+    case 'copilot': return 'Copilot';
+    case 'windsurf': return 'Windsurf';
+  }
+}
+
+function architectFirstTaskTool(host: ArchitectFirstHostId): string {
+  if (host === 'codex') return 'spawn_agent';
+  if (host === 'copilot') return 'task';
+  if (host === 'windsurf') return 'run_subagent';
+  return 'Task';
+}
+
+function architectFirstForegroundRule(host: ArchitectFirstHostId): string {
+  // Copilot's `task` is a background task by nature. Windsurf `run_subagent`
+  // collects results with `read_subagent` — forbidding `run_in_background`
+  // would contradict the host contract (that flag is a Claude/Cursor Task param).
+  if (host === 'copilot' || host === 'windsurf') return '';
+  return '\n- Foreground only: do NOT set `run_in_background`.';
+}
+
 export function shouldEmitBuildOrchestration(cwd: string, state: Rec, host: string): boolean {
   if (!eligibleSubagentsBuild(state, host)) return false;
   try {
@@ -250,7 +343,8 @@ export function shouldEmitArchitectCompletionReminder(cwd: string, state: Rec, h
 export function buildOrchestrationDirective(cwd: string, host: string, stateIn?: Rec): string {
   const loadedState = stateIn ?? readEffectiveState(cwd);
   const state = obj(loadedState) ? (loadedState as Rec) : {};
-  if (paidHostSubagentsBuild(state, host) && !kiloOpenCodeSubagentsBuild(state, host)) {
+  if ((paidHostSubagentsBuild(state, host) || unpaidHostSubagentsBuild(state, host))
+    && !kiloOpenCodeSubagentsBuild(state, host)) {
     return paidHostOrchestrationDirective(cwd, state, host);
   }
   if (!kiloOpenCodeSubagentsBuild(state, host)) return '';
@@ -317,14 +411,14 @@ export function buildOrchestrationDirective(cwd: string, host: string, stateIn?:
 }
 
 function paidHostOrchestrationDirective(cwd: string, state: Rec, host: string): string {
-  const canonical = canonicalHost(host);
-  if (!isPaidHostId(canonical)) return '';
-  const hostLabel = canonical === 'cursor' ? 'Cursor' : canonical === 'claude' ? 'Claude' : 'Codex';
-  const taskTool = canonical === 'codex' ? 'spawn_agent' : 'Task';
+  const raw = typeof host === 'string' ? host.trim().toLowerCase() : '';
+  if (!isArchitectFirstHostId(raw)) return '';
+  const hostLabel = architectFirstHostLabel(raw);
   const profile = capabilityProfileForRun(cwd, state);
   const varsBase = {
     HOST: hostLabel,
-    TASK_TOOL: taskTool,
+    TASK_TOOL: architectFirstTaskTool(raw),
+    FOREGROUND_RULE: architectFirstForegroundRule(raw),
     PROFILE_SUMMARY: profileSummary(profile),
     IMPLEMENTER_DIRECTIVE: implementerDirective(profile, hostLabel),
     QA_DIRECTIVE: qaDirective(profile),
@@ -335,7 +429,7 @@ function paidHostOrchestrationDirective(cwd: string, state: Rec, host: string): 
     return block('paid-host-spawn-first', {
       ...varsBase,
       RUN_ID: runId,
-      SPAWN_INSTRUCTIONS: paidHostSpawnInstructions(canonical, cwd, state, runId),
+      SPAWN_INSTRUCTIONS: architectFirstSpawnInstructions(raw, cwd, state, runId),
     }, PAID_HOST_SPAWN_FIRST_FALLBACK);
   }
 
@@ -345,7 +439,7 @@ function paidHostOrchestrationDirective(cwd: string, state: Rec, host: string): 
     return block('paid-host-architect-incomplete', {
       ...varsBase,
       RUN_ID: runId,
-      SPAWN_INSTRUCTIONS: paidHostSpawnInstructions(canonical, cwd, state, runId),
+      SPAWN_INSTRUCTIONS: architectFirstSpawnInstructions(raw, cwd, state, runId),
       MISSING: missing,
     }, PAID_HOST_ARCHITECT_INCOMPLETE_FALLBACK);
   }

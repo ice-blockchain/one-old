@@ -1,6 +1,6 @@
 ---
 name: senior-eng-orchestrator
-description: "PROACTIVELY orchestrate the Traffic One senior-engineer team for multi-layer builds spanning UI, API, database, mobile, tests, or deployment. Trigger on build/make/create/scaffold/ship/end-to-end app/site/SaaS/dashboard requests or any UI+API+DB request. Before implementation, require missing local preferences in order (OpenCode, Performance, Team for Balanced/High, Code Graph) and wait for each answer; skip single-component or single-skill work."
+description: "PROACTIVELY orchestrate the Traffic One senior-engineer team for multi-layer builds spanning UI, API, database, mobile, tests, or deployment. Trigger on build/make/create/scaffold/ship/end-to-end app/site/SaaS/dashboard requests or any UI+API+DB request. Setup questions belong to the wizard — follow `rules/common/onboarding.md` and `rules/common/setup-gate.md`; do not ask onboarding or team-approve questions in chat. Skip single-component or single-skill work."
 metadata:
   source: everything-claude-code
   source_path: skills/senior-eng-orchestrator/SKILL.md
@@ -10,16 +10,19 @@ metadata:
 
 # Senior Engineering Orchestrator
 
-You are the conductor. The Traffic One workflow is identical across runtimes: same phase order, same parallelism, same verdict tokens, same loop caps, same deploy gate, same final summary. Only the host-specific subagent adapter and consent step change.
+You are the conductor. The Traffic One workflow is identical across runtimes: same phase order, same parallelism, same verdict tokens, same loop caps, same deploy gate, same final summary. Only the host-specific subagent adapter changes.
 
 ## Before you orchestrate — the setup gate is blocking
 
 Do not spawn, scaffold, or edit until the Traffic One setup gate is clear for the
-resolved target root. Follow `rules/common/setup-gate.md` (when work is blocked
-plus the preference order) and `rules/common/onboarding.md` (how to ask each
-prompt and write `.traffic-one/.one.json`). If a local preference is missing, ask
-only the next unresolved prompt and stop. Explicit web/mobile/stack/"no
-subagents" wording is an implementation preference, not an onboarding answer.
+resolved target root. The setup wizard owns every onboarding question and the
+state writes — do not ask onboarding or team-approve questions in chat. Follow
+`rules/common/setup-gate.md` (when work is blocked plus the preference order)
+and `rules/common/onboarding.md` (wizard ownership and gate-clear conditions).
+`team.approved` is set by the wizard performance step; do not re-ask. If the
+gate is incomplete, surface the wizard URL and stop. Explicit
+web/mobile/stack/"no subagents" wording is an implementation preference, not an
+onboarding answer.
 
 Two resolved preferences drive orchestration:
 
@@ -28,8 +31,8 @@ Two resolved preferences drive orchestration:
   (run the phases manually in this thread as a role roadmap).
 - **Team Confirmation** (only for `high`/`balanced`): the PreToolUse spawn gate
   denies every subagent-spawn call until local preferences contain
-  `team.approved: true`. Auto-approving is forbidden — wait for the user's
-  explicit Approve, then spawn.
+  `team.approved: true`. That flag is written by the wizard's performance/team
+  step — do not pop a chat Approve and do not hand-edit it.
 
 ### Low/main-agent branch (exclusive)
 
@@ -74,7 +77,7 @@ work already started, pause at the next safe point, resolve it, then continue.
 - **In subagents mode, a spawn that is DENIED or "Couldn't start" is a Traffic One gate, not a host crash — do NOT build the role inline.** Cursor paints every PreToolUse Task deny as "New subagent — Couldn't start". Retry the SAME spawn unchanged ONLY for `spawn-claim-unavailable` (a claims/ledger lock that clears in ~2s). Do NOT retry unchanged for `architect-phase-incomplete`, `opencode-plan-batch-required`, `opencode-role-delegate`, `agent-reuse-*`, or model/type mismatches (`cursor-exact-model-required`, `performance-model-param`, `cursor-agent-type-required`) — follow the named next action in the deny text instead. Treating a gate deny as terminal and implementing the role yourself silently breaks subagents mode (the parent must not write feature source). The spawn tool is genuinely broken only when a `spawn-claim-unavailable` retry also fails, or the host exposes no callable spawn tool.
 - **A REJECTED `subagent_type` is a different failure — re-issuing the same value can never work.** When the spawn tool refuses the value itself (invalid enum, unknown subagent type/profile, "Available: …"), the role name is simply absent from the accepted-type set this session captured — Traffic One materializes `.cursor/agents/senior-<role>.md` (and the Kilo/Windsurf/Copilot equivalents) during onboarding, which can be AFTER the host built that set. This is NOT "the spawn tool genuinely errors" and NOT a licence to simulate the role. Retry that one spawn with the host's built-in generic worker — Cursor `generalPurpose`, Claude `general-purpose`, Windsurf profile `subagent_general`, Kilo `general` — keeping `[t1-role: senior-<role>]` as the FIRST prompt line and immediately telling the child to read its materialized role contract (`.cursor/agents/senior-<role>.md`, `.kilo/agents/senior-<role>.md`, `.devin/agents/<role>/AGENT.md`). Keep the exact per-role `model` from the spawn map. The role marker — not the type — is what binds the child to its role, its work unit, and its frozen model, so a marked generic child is a full team member. Traffic One prints the authoritative `role → subagent_type` map before the first spawn (model-gate on Cursor; the setup-completion spawn map on Claude, with `traffic-one:senior-<role>` types plus the exact per-role `model`); use it instead of guessing from the role name, and pass its `model` on the very first spawn — a model-less spawn is denied by the Performance gate and the host renders that deny as "failed to run agent". On OpenCode there is no fallback: built-in `general` inherits the parent model, so ensure materialization ran and have the user restart OpenCode.
 - **Spawn dies instantly with a `git … origin/HEAD` error (remote-less repo).** Some hosts inject startup git context into subagents that assumes an `origin` remote; a fresh Traffic One scaffold has none, so the subagent (observed: the reviewer) aborts before producing a transcript. Recovery recipe: create a temporary local ref — `git update-ref refs/remotes/origin/HEAD "$(git rev-parse HEAD)"` — re-issue the SAME spawn (it now resolves), and delete the ref during settlement cleanup with `git update-ref -d refs/remotes/origin/HEAD` so the user's repo stays pristine. Never add a real remote and never treat the dead spawn's claim as active (a superseding spawn releases it).
-- If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Simulate the same roles manually (same dependency order, mirrored `00-agent-senior-*` role contexts) ONLY when Low is chosen (`team.mode: "main-agent"`) or the spawn tool genuinely errors at runtime AFTER a `spawn-claim-unavailable` retry (per the bullet above) — all supported hosts expose a callable subagent tool, so never simulate merely because a `subagent_type` was rejected (use the built-in generic worker plus the role marker, per the bullet above), because the project-scoped global OpenCode agent is temporarily missing (restart OpenCode so `~/.config/opencode/agents/` reloads), or because Kilo custom agent files are not Task types (use `general` and the materialized role contract).
+- If the setup gate is not clear, surface the wizard first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Simulate the same roles manually (same dependency order, mirrored `00-agent-senior-*` role contexts) ONLY when Low is chosen (`team.mode: "main-agent"`) or the spawn tool genuinely errors at runtime AFTER a `spawn-claim-unavailable` retry (per the bullet above) — all supported hosts expose a callable subagent tool, so never simulate merely because a `subagent_type` was rejected (use the built-in generic worker plus the role marker, per the bullet above), because the project-scoped global OpenCode agent is temporarily missing (restart OpenCode so `~/.config/opencode/agents/` reloads), or because Kilo custom agent files are not Task types (use `general` and the materialized role contract).
 - Role → write-scope mapping (use a writer-capable agent for implementers, scoped to its compiled work unit; a read-only agent for the reviewer). Runtime atomically generates `.traffic-one/runs/<runId>/assignments.json` from `CompiledArchitectureV1` and `VerificationContractV2`, then publishes each eligible role's `WorkUnitContractV1` and bootstrap. No agent or parent creates, edits, widens, or replaces those artifacts. The lines below are the human summary:
   - `senior-architect` — writes only `.traffic-one/plan.md`, `.traffic-one/` project memory/ADRs, semantic `architecture-input-v1.json`, and its digest. It never creates packages, workspace/config files, Tailwind assets, barrels, assignments, tests, or feature source.
   - `senior-frontend` — owns only the UI/native outputs and allowlist in its runtime-compiled work unit.
@@ -192,7 +195,7 @@ How it works:
 
 Auto-trigger keywords: "build me", "make me", "create me", "scaffold a", "ship a", "end to end", "I want an app", "I need a site for", "turn this into", "habit tracker", "dashboard", "SaaS", "mobile app", "MVP", "landing page that does X".
 
-On all hosts these triggers mean: clear the setup gate (per `rules/common/setup-gate.md` + `rules/common/onboarding.md`), then run the Traffic One workflow at the approved performance level. The onboarding prompts are blocking — do not implement, write final `.traffic-one/.one.json`, or spawn while an answer is pending. A custom frontend/backend stack choice does not itself force subagents: Low/main-agent mode and genuinely small solo builds remain valid when the team/performance decision or maintenance triage chooses solo, but the QA/report/digest state must still be coherent.
+On all hosts these triggers mean: the setup wizard must be clear (per `rules/common/setup-gate.md` + `rules/common/onboarding.md`), then run the Traffic One workflow at the approved performance level. Do not ask onboarding or team-approve questions in chat, write `.traffic-one/.one.json`, or spawn while setup is incomplete. A custom frontend/backend stack choice does not itself force subagents: Low/main-agent mode and genuinely small solo builds remain valid when the team/performance decision or maintenance triage chooses solo, but the QA/report/digest state must still be coherent.
 
 Skip if:
 - The request is for a single component, page, or service ("add a logout button"). Route to the matching specialist skill (`create-component`, `create-page`, `create-service`) directly and do not ask for subagents.
@@ -254,7 +257,7 @@ project AGENTS.md for what exists, and open an individual rule file only when
 adjudicating a specific gate, dispute, or decision that names it (role agents
 receive their rule set through their own bootstrap).
 
-- If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan. **Do NOT spawn ANY subagent (architect included) until onboarding is COMPLETE** (`.one.json` has `stack` + `onboardingComplete: true` and materialization has run). Onboarding runs in THIS main thread — you drive the setup wizard here; a subagent cannot (it can't show the wizard, and would get trapped on the "wait for setup" command). Spawning before onboarding is a protocol violation: finish setup in the main thread, THEN spawn the team.
+- If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan. **Do NOT spawn ANY subagent (architect included) until onboarding is COMPLETE** (`.one.json` has `stack` + `onboardingComplete: true` and materialization has run). Onboarding runs in THIS main thread — surface the wizard URL here; a subagent cannot (it can't show the wizard, and would get trapped on the "wait for setup" command). Spawning before onboarding is a protocol violation: finish setup in the main thread, THEN spawn the team.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
 
 **Do NOT generate a run-id.** The run-id is `currentRunId` — a plain epoch-**millisecond
@@ -862,7 +865,7 @@ User decision required:
 ## Hard rules
 
 - The architect runs first on any new project (`mode === "new-project"`) or whenever `.traffic-one/plan.md` is missing.
-- On every host, do not silently skip the Traffic One team for matching end-to-end tasks when `team.mode="subagents"` is approved. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. Where the host requires explicit user intent before spawning, always ask for subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined, the user chose Low/main-agent mode, or subagents are unavailable, simulate the same phases manually and state why.
+- On every host, do not silently skip the Traffic One team for matching end-to-end tasks when `team.mode="subagents"` is approved. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. `team.approved` is set by the wizard performance step — do not re-ask in chat. If the user chose Low/main-agent mode, or subagents are unavailable, simulate the same phases manually and state why.
 - Run all capability-eligible, independent implementers in parallel; when only one implementation role is eligible, issue only that spawn.
 - Reviewer ∥ tester in parallel — single message, two subagent calls.
 - ONE agent per role per run: after a role's first spawn, its later tasks are host-specific continuations of that agent (the spawn gate denies duplicates). Never spawn `senior-frontend` twice for parts/fixes — same agent, next message.

@@ -8,6 +8,7 @@ import * as path from 'path';
 import { context,  noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { hasMaterializedProjectAssets } from '../../shared/materialize';
+import { hostCapability } from '../../shared/host/capability-schema';
 import { hostSpawnType } from '../../shared/host/spawn-types';
 import { resolveProjectRoot } from '../../shared/hook/paths';
 import {  packFixCycleHeader, packRuleIndex } from '../../shared/packing';
@@ -113,14 +114,54 @@ export function sessionProjectRoot(ctx: Ctx): string {
 }
 
 // The active envelope, tolerated as absent: header decoration must never fail
-// the SessionStart hook, and a null envelope simply omits the kernel and
-// requirements sections (the deterministic gates still enforce both).
+// the SessionStart hook. A null envelope omits integration requirements (they
+// live only on the envelope). The compact role kernel still rides a fallback
+// host (`typedSubagents === false`) so write-gate predicates are not dropped.
 function safeActiveEnvelope(cwd: string, runId: string, role: string): RunBootstrapEnvelopeV2 | null {
   try {
     return readActiveRunBootstrap(cwd, runId, role);
   } catch {
     return null;
   }
+}
+
+// Hosts with `typedSubagents: false` never deliver the agent doc natively
+// (Codex, Kilo, Copilot, Windsurf — HOST_CAPABILITIES). Bootstrap roleSource
+// is `plugin-injected-fallback` when `hostAgentType` is null, which is how
+// those hosts publish. When the envelope is missing, `typedSubagents === false`
+// is the equivalent signal — do not wait for roleSource, and do not treat a
+// host-native envelope on a fallback host as missing (envelope wins).
+function hostLacksNativeAgentDoc(host: string): boolean {
+  return hostCapability(host)?.typedSubagents === false;
+}
+
+function shouldInjectRoleKernel(
+  host: string,
+  envelope: RunBootstrapEnvelopeV2 | null,
+  role: string,
+): boolean {
+  if (!role) return false;
+  if (envelope) return envelope.roleSource === 'plugin-injected-fallback';
+  return hostLacksNativeAgentDoc(host);
+}
+
+function roleContractNotice(
+  host: string,
+  cwd: string,
+  role: string,
+  kernel: string | null,
+): string {
+  if (!role) return '';
+  const contractRel = hostSpawnType(host, role, cwd).contractPath;
+  if (!contractRel || !fs.existsSync(path.join(cwd, contractRel))) return '';
+  return `\nYour FULL role contract is \`${contractRel}\` — Read it once before your first write. `
+    + (kernel ? 'The kernel above summarizes it; it does not replace it.\n' : '');
+}
+
+function integrationRequirementsSection(envelope: RunBootstrapEnvelopeV2 | null): string {
+  if (!envelope?.integrationRequirements?.length) return '';
+  return '\n## Integration requirements (deterministic gates verify these)\n'
+    + `${envelope.integrationRequirements.map((line) => `- ${line}`).join('\n')}\n`;
 }
 
 // Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
@@ -135,8 +176,16 @@ export function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgent
 
   if (role && spawnIndex > 1) {
     // Fix-cycle: same role re-spawned in the same run → tiny pointer header.
+    // Fallback children (envelope roleSource, or typedSubagents === false when
+    // the envelope is missing) still receive the write-gate kernel and any
+    // stored integration requirements. Do not append a second T1KERNEL checklist.
     const { body } = packFixCycleHeader(cwd, role, runId, spawnIndex);
-    return context(body);
+    const envelope = runId ? safeActiveEnvelope(cwd, runId, role) : null;
+    const inject = shouldInjectRoleKernel(ctx.host, envelope, role);
+    const kernel = inject ? roleKernel(role) : null;
+    const contract = roleContractNotice(ctx.host, cwd, role, kernel);
+    const requirements = inject ? integrationRequirementsSection(envelope) : '';
+    return context(`${body}${kernel ? `${kernel}\n` : ''}${contract}${requirements}`);
   }
 
   const ruleSet = role ? roleScopedRules(role, capabilityState) : null;
@@ -153,31 +202,32 @@ export function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgent
   // The envelope is the delivery surface for per-run contract extras since the
   // per-run context-pack snapshot was removed: integration requirements ride
   // the header (they exist nowhere else readable), and the compact role kernel
-  // rides it only when the host did not deliver the agent doc natively
-  // (roleSource 'plugin-injected-fallback' — e.g. Codex spawn_agent children).
+  // rides it when the host did not deliver the agent doc natively
+  // (roleSource 'plugin-injected-fallback', or typedSubagents === false when
+  // the envelope is missing — e.g. Codex spawn_agent children).
   const envelope = role && runId ? safeActiveEnvelope(cwd, runId, role) : null;
-  const fallbackRole = envelope?.roleSource === 'plugin-injected-fallback' && role ? role : null;
-  const kernel = fallbackRole ? roleKernel(fallbackRole) : null;
-  // The kernel is a SUMMARY. Where the host materializes the full role contract
-  // (every fallback host except Claude, which delivers the agent doc natively),
-  // name the file too — a child that only ever saw ~7 bullets cannot honour the
-  // invariants living in the other ~200 lines, and the deny it eventually hits
-  // never told it the contract existed. Observed 15co on Codex, whose contract
-  // path was null and whose role text has been kernel-only since 9cc08b53.
-  const contractRel = fallbackRole ? hostSpawnType(ctx.host, fallbackRole, cwd).contractPath : null;
-  const contract = contractRel && fs.existsSync(path.join(cwd, contractRel))
-    ? `\nYour FULL role contract is \`${contractRel}\` — Read it once before your first write. `
-      + 'The kernel above summarizes it; it does not replace it.\n'
-    : '';
-  const requirements = envelope?.integrationRequirements?.length
-    ? '\n## Integration requirements (deterministic gates verify these)\n'
-      + `${envelope.integrationRequirements.map((line) => `- ${line}`).join('\n')}\n`
-    : '';
+  // Write-gate predicates (named exports, no-any, inline style, pages/Expo
+  // service placement) live in the implementer T1KERNEL. roleKernel() is the
+  // injection — do not append a second checklist. Frontend/backend/quick-fix
+  // kernels carry those bullets so a fallback child is bound without Reading
+  // the full contract file first.
+  const kernel = shouldInjectRoleKernel(ctx.host, envelope, role) ? roleKernel(role) : null;
+  // The kernel is a SUMMARY (write-gates excepted — those are already binding).
+  // Where the host materializes the full role contract, name the file too —
+  // a child that only ever saw the kernel cannot honour the invariants living
+  // in the other ~200 lines, and the deny it eventually hits never told it the
+  // contract existed. Observed 15co on Codex, whose contract path was null and
+  // whose role text has been kernel-only since 9cc08b53.
+  const contract = roleContractNotice(ctx.host, cwd, role, kernel);
+  const requirements = integrationRequirementsSection(envelope);
   const roleLabel = role || 'subagent';
+  const kernelBinding = kernel
+    ? 'Read on demand — except write-gate predicates in your kernel, which are already binding. '
+    : 'Read on demand. ';
   const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
-    + '[subagent] Full rules already loaded by parent session and materialized to '
-    + '.traffic-one/rules/. This index lists role-scoped rules; Read them on demand — '
-    + 'ONE file per Read/shell command, never several concatenated (host exec output '
+    + `[subagent] Rules are materialized under \`.traffic-one/rules/\`. ${kernelBinding}`
+    + 'This index lists role-scoped rules; Read them ONE file per Read/shell command, '
+    + 'never several concatenated (host exec output '
     + 'truncates middle-out and the middle files vanish silently).\n';
   return context(`${header}${kernel ? `${kernel}\n` : ''}${contract}${requirements}${skillDirective}${graphPreview}\n${body}`);
 }

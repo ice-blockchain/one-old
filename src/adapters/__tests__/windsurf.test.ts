@@ -80,6 +80,31 @@ test('windsurf: deny serializes as runtime envelope', async () => {
   // as the write itself (stampDeny / projectWritesPermitted) — this fixture
   // project never answered the use-plugin question.
   assert.equal(out.reason, 'blocked');
+  assert.equal(out.userReason, undefined);
+});
+
+test('windsurf: deny serializes trimmed userReason when set; recipe stays on reason (entry joins both onto stderr)', async () => {
+  const handlers: Handler[] = [
+    {
+      id: 'g',
+      event: 'PreToolUse',
+      tools: ['shell'],
+      priority: 0,
+      run: () => deny('no rm -rf — wizard http://127.0.0.1:9/', { userReason: '  Stay in this workspace.  ' }),
+    },
+  ];
+  const out = JSON.parse(await dispatch(windsurf, handlers, inv('pre_run_command', { command_line: 'rm -rf x' })));
+  assert.equal(out.kind, 'deny');
+  assert.equal(out.reason, 'no rm -rf — wizard http://127.0.0.1:9/');
+  assert.equal(out.userReason, 'Stay in this workspace.');
+});
+
+test('windsurf: deny omits whitespace-only userReason so wizard URLs in reason stay visible', () => {
+  const input = windsurf.parse(inv('pre_run_command', { command_line: 'rm' }));
+  const parsed = JSON.parse(windsurf.serialize(deny('blocked', { userReason: '   ' }), input));
+  assert.equal(parsed.kind, 'deny');
+  assert.equal(parsed.reason, 'blocked');
+  assert.equal(parsed.userReason, undefined);
 });
 
 test('windsurf: context serializes as runtime envelope', async () => {

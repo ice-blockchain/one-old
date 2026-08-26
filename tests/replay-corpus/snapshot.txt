@@ -74,6 +74,7 @@ model-choice.stop-repeat-cursor	deny	model-choice-gate.pre-tool	model-choice-sto
 onboarding.browser-open-denied	deny	onboarding-gate	browser-open-denied	-
 onboarding.claude-orientation-allowed-after-consent	allow			-
 onboarding.claude-wait-background-denied	deny	onboarding-gate	claude-wait-background-denied	-
+onboarding.codex-orientation-allowed-after-consent	allow			-
 onboarding.cursor-models-required	deny	onboarding-gate	onboarding-cursor-models-required	run-id
 onboarding.declined-project-standsdown	allow			-
 onboarding.doctor-command-allowed-pre-consent	allow			-
@@ -81,7 +82,7 @@ onboarding.doctor-command-with-bundle-flag-allowed	allow			-
 onboarding.kilo-setup-required	deny	onboarding-gate	onboarding-setup-required-opencode	-
 onboarding.opencode-setup-required	deny	onboarding-gate	onboarding-setup-required-opencode	-
 onboarding.read-only-pre-consent-still-denied	deny	onboarding-gate	onboarding-use-plugin-question	-
-onboarding.repaired-materialization	deny	onboarding-gate	repaired-materialization	-
+onboarding.repaired-materialization	context			-
 onboarding.role-contracts-healthy-write-not-denied	deny	plan-guard.write	plan-gate	project-path:apps/web/src/components/Widget.tsx
 onboarding.role-contracts-unwritable-read-allowed	context			-
 onboarding.role-contracts-unwritable-write	deny	onboarding-gate	host-role-contracts-unwritable	project-path:.cursor/agents

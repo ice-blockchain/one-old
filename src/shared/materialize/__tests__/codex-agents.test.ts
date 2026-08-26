@@ -20,6 +20,7 @@ import {
   writeCodexAgentFiles,
 } from '../codex-agents';
 import { roleContractsWritten } from '../role-contracts';
+import { recordPluginUseChoice, resetPluginUseCache } from '../../state/plugin-use';
 
 const FULL_STATE = {
   stack: 'default',
@@ -28,9 +29,41 @@ const FULL_STATE = {
   mobile: { framework: 'none' },
 };
 
-test('writeCodexAgentFiles materializes the full role contract, not the kernel excerpt', () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codex-agents-'));
+// Codex contracts live under `.traffic-one/agents/`, so the consent fence must
+// be open. Prefs stay inside the fixture home — never `~/.traffic-one`.
+function withConsentedProject(prefix: string, fn: (cwd: string) => void): void {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const home = path.join(cwd, '_home');
+  fs.mkdirSync(home, { recursive: true });
+  const saved = {
+    HOME: process.env.HOME,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    TRAFFIC_ONE_PROJECT_PREFS_PATH: process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
+  };
+  process.env.HOME = home;
+  delete process.env.XDG_STATE_HOME;
+  delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  resetPluginUseCache();
   try {
+    recordPluginUseChoice(cwd, true, 'test');
+    fn(cwd);
+  } finally {
+    if (saved.HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = saved.HOME;
+    if (saved.XDG_STATE_HOME === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = saved.XDG_STATE_HOME;
+    if (saved.TRAFFIC_ONE_PROJECT_PREFS_PATH === undefined) {
+      delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    } else {
+      process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = saved.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    }
+    resetPluginUseCache();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
+test('writeCodexAgentFiles materializes the full role contract, not the kernel excerpt', () => {
+  withConsentedProject('t1-codex-agents-', (cwd) => {
     assert.ok(roleContractsWritten(writeCodexAgentFiles(cwd, FULL_STATE)) > 0);
     const frontend = path.join(cwd, CODEX_AGENTS_REL, 'senior-frontend.md');
     const text = fs.readFileSync(frontend, 'utf8');
@@ -42,29 +75,23 @@ test('writeCodexAgentFiles materializes the full role contract, not the kernel e
     // And the path the child is told to read must be the path we wrote.
     assert.equal(codexAgentRelPath('senior-frontend'), '.traffic-one/agents/senior-frontend.md');
     assert.ok(fs.existsSync(path.join(cwd, codexAgentRelPath('senior-frontend'))));
-  } finally {
-    fs.rmSync(cwd, { recursive: true, force: true });
-  }
+  });
 });
 
 test('writeCodexAgentFiles never overwrites a user-authored contract', () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codex-agents-user-'));
-  const dir = path.join(cwd, CODEX_AGENTS_REL);
-  fs.mkdirSync(dir, { recursive: true });
-  const userFile = path.join(dir, 'senior-architect.md');
-  fs.writeFileSync(userFile, '# my own architect contract\n', 'utf8');
-  try {
+  withConsentedProject('t1-codex-agents-user-', (cwd) => {
+    const dir = path.join(cwd, CODEX_AGENTS_REL);
+    fs.mkdirSync(dir, { recursive: true });
+    const userFile = path.join(dir, 'senior-architect.md');
+    fs.writeFileSync(userFile, '# my own architect contract\n', 'utf8');
     writeCodexAgentFiles(cwd, FULL_STATE);
     assert.equal(fs.readFileSync(userFile, 'utf8'), '# my own architect contract\n');
     assert.equal(isGeneratedCodexAgent(userFile), false);
-  } finally {
-    fs.rmSync(cwd, { recursive: true, force: true });
-  }
+  });
 });
 
 test('writeCodexAgentFiles sweeps a generated contract whose role fell out of eligibility', () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-codex-agents-sweep-'));
-  try {
+  withConsentedProject('t1-codex-agents-sweep-', (cwd) => {
     writeCodexAgentFiles(cwd, FULL_STATE);
     const frontend = path.join(cwd, CODEX_AGENTS_REL, 'senior-frontend.md');
     assert.ok(fs.existsSync(frontend), 'a web profile must have a frontend contract');
@@ -78,7 +105,5 @@ test('writeCodexAgentFiles sweeps a generated contract whose role fell out of el
     });
     assert.equal(fs.existsSync(frontend), false);
     assert.ok(fs.existsSync(path.join(cwd, CODEX_AGENTS_REL, 'senior-backend.md')));
-  } finally {
-    fs.rmSync(cwd, { recursive: true, force: true });
-  }
+  });
 });

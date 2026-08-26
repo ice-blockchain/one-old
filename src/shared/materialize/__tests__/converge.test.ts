@@ -415,9 +415,10 @@ test('materializeProjectIfNeeded: a project truncated by an earlier torn root re
 // materialization happened, and `isMaterialized()` reads them to decide whether
 // to converge again. Without them every later hook re-converges and keeps
 // returning a NON-NULL outcome — which onboarding-gate/handler.ts reads on a
-// mutating PreToolUse as `deny('repaired-materialization')`, "we just repaired it,
-// retry". So a refused stamp turned a self-healing condition into a permanent deny
-// loop over assets that were already on disk, and reported `materialized`.
+// mutating PreToolUse as allow+context after a successful heal, or
+// `deny('materialization-not-converged')` when the stamp was refused. A refused
+// stamp reported as `materialized` would now allow writes against an unstamped
+// tree on every later hook. So the refused stamp must not report `materialized`.
 //
 // MOVE-ASIDE rather than a dangling link: writeState re-reads `.one.json` (for
 // preserveCurrentRunId) and readEffectiveState reads it first, so a dangling link

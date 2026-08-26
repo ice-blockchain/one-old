@@ -384,13 +384,12 @@ test('modelGate runner prints the local spawn map while project agent contracts 
     const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));
     assert.equal(approved.code, 0);
     assert.match(approved.out, /spawn map/i);
-    // new-project: the `.cursor/agents/**` contracts were written by this same
-    // build, so the map recommends Cursor's built-in worker (a role-named type
-    // is not in the session's captured type set → "Couldn't start" on 1cu/3cu).
-    assert.ok(approved.out.includes(`senior-architect → subagent_type: "generalPurpose", model: ${CURSOR_HIGHEST_SLUG}`));
-    // The rejected-enum recovery must travel with the map, not only in the gate.
-    assert.match(approved.out, /Couldn't start/);
+    // Map lines recommend the role-named type. generalPurpose is the accepted
+    // fallback in the enum-check note, not the preview type.
+    assert.ok(approved.out.includes(`senior-architect → subagent_type: "senior-architect", model: ${CURSOR_HIGHEST_SLUG}`));
+    assert.match(approved.out, /if that type is in this session's Task enum/);
     assert.match(approved.out, /\[t1-role: senior-<role>\]/);
+    assert.doesNotMatch(approved.out, /→ subagent_type: "generalPurpose"/);
     const architect = fs.readFileSync(path.join(cwd, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
     assert.doesNotMatch(architect, /^model:/m);
     assert.match(architect, /senior-architect/);

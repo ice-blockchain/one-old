@@ -190,6 +190,19 @@ function authDenyProblem(host: string, reason: unknown): string | null {
   return `${host} deny did not come from the unauthenticated gate (reason: ${String(reason || '(empty)').slice(0, 160)})`;
 }
 
+/** Claude Error chrome is userReason; the recipe (AUTH_DENY) rides additionalContext. */
+function claudeAuthDenyProblem(out: { hookSpecificOutput?: { permissionDecisionReason?: unknown; additionalContext?: unknown } }): string | null {
+  const recipe = out.hookSpecificOutput?.additionalContext;
+  if (String(recipe || '').includes(AUTH_DENY)) return null;
+  return authDenyProblem('Claude', out.hookSpecificOutput?.permissionDecisionReason);
+}
+
+/** Cursor user_message is userReason; the recipe rides agent_message. */
+function cursorAuthDenyProblem(out: { user_message?: unknown; agent_message?: unknown }): string | null {
+  if (String(out.agent_message || '').includes(AUTH_DENY)) return null;
+  return authDenyProblem('Cursor', out.user_message);
+}
+
 /**
  * Run the exercise. Returns the legs that ran and the first problem, rather
  * than throwing: the smoke turns a problem into its own fail() line (so the
@@ -226,7 +239,7 @@ export function exerciseRuntime({ scripts, pins, projects }: RuntimeExercise): R
   if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') {
     return done('hook-runtime.cjs shim did not deny an unauthed write');
   }
-  const claudeDeny = authDenyProblem('Claude', claudeOut.hookSpecificOutput?.permissionDecisionReason);
+  const claudeDeny = claudeAuthDenyProblem(claudeOut);
   if (claudeDeny) return done(claudeDeny);
   if (String(claudeOut.hookSpecificOutput?.additionalContext || '').includes('traffic-one-hook-context:v1')) {
     return done('Claude hook context incorrectly carried the Codex-only provenance marker');
@@ -256,21 +269,19 @@ export function exerciseRuntime({ scripts, pins, projects }: RuntimeExercise): R
   exercised.push('cursor');
   const cursorRun = runShimAllowingBlock(
     scripts, 'cursor-hook-runtime.cjs', 'before-shell-execution',
-    JSON.stringify({ cwd: projects.cursor, command: 'npm run build' }), env,
+    JSON.stringify({ cwd: projects.cursor, command: 'git push --force' }), env,
   );
   const cursorExit = exitProblem('cursor-hook-runtime.cjs', 'before-shell-execution', cursorRun);
   if (cursorExit) return done(cursorExit);
   const cursorOut = JSON.parse(cursorRun.stdout || '{}');
   if (cursorOut.permission !== 'deny') return done('cursor-hook-runtime.cjs shim did not deny an unauthed shell');
   if (!cursorOut.user_message) return done('cursor deny had no user_message');
-  const cursorDeny = authDenyProblem('Cursor', cursorOut.user_message);
+  const cursorDeny = cursorAuthDenyProblem(cursorOut);
   if (cursorDeny) return done(cursorDeny);
 
-  // A MUTATING command, unlike Claude's and Cursor's calls above. Windsurf and
-  // Devin are the hosts whose gate releases read-only orientation while setup
-  // is pending (their recipe rides the native prompt-submit context instead),
-  // and `npm run build` classifies as orientation — so these two legs pass only
-  // on a command the gate cannot release.
+  // Mutating on every remaining host. Orientation (including `npm run build`)
+  // is released while setup is pending; the recipe rides SessionStart /
+  // prompt-submit. These legs pass only on a command the gate cannot release.
   exercised.push('windsurf');
   const windsurfOut = runShimAllowingBlock(
     scripts, 'windsurf-hook-runtime.cjs', 'pre_run_command',

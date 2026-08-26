@@ -53,7 +53,7 @@ test.after(cleanupReplayTempTrees);
 //     the real handler set on purpose, so it has none.
 //
 // Everything else is fair game and the number below is the floor, not the goal.
-// Reach today: 69 of 206 declared ids (33%), which is 69 of the ~140 that are
+// Reach today: 68 of 206 declared ids (33%), which is 68 of the ~140 that are
 // reachable at all by the definition above (~49%). Every remaining group is
 // named in the printed report's `unreached:` lines and pinned by
 // UNREACHED_DENY_IDS below.
@@ -79,7 +79,7 @@ test.after(cleanupReplayTempTrees);
 //   project states -2  two fixture builders can legitimately collapse into one
 //                      parameterized builder (greenfieldMainAgent and
 //                      materializedGreenfield are already one call apart).
-const MIN_DENY_IDS_REACHED = 66; // 69 today
+const MIN_DENY_IDS_REACHED = 66; // 68 today
 const MIN_DENYING_GATES = 12; // 13 today
 const MIN_PROJECT_STATES = 34; // 36 today
 
@@ -151,7 +151,6 @@ const REACHED_DENY_IDS: readonly string[] = [
   'plan-write-model-choice-pending',
   'plan-write-struct-scan-incomplete',
   'registry-probe-gate',
-  'repaired-materialization',
   'reset-record-owner-gate',
   'run-id-mismatch',
   'runtime-assignments-owner-gate',
@@ -229,6 +228,8 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'architecture-input-shell-unverified',
   'bootstrap-publication-gate',
   'capability-no-implementer-gate',
+  // Retired: first wait is allowed + link injected (setupLinkNudge). A denied
+  // wait was a user-visible Error used to teach "post the link first".
   'claude-wait-link-first',
   'codex-child-model-bootstrap-mismatch',
   'codex-child-model-capability-record-failed',
@@ -245,6 +246,7 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'codex-child-model-run-missing',
   'codex-child-model-status-conflict',
   'codex-child-model-status-unverified',
+  // Same retirement as claude-wait-link-first — Codex wait is allowed + injected.
   'codex-wait-link-first',
   'contract-self-conflict',
   'cursor-api-limit-composer-choice',
@@ -257,6 +259,7 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'cursor-failure-policy-missing',
   'cursor-failure-retry-model-mismatch',
   'cursor-models-capture',
+  // Same retirement as claude-wait-link-first — Cursor wait is allowed + injected.
   'cursor-wait-link-first',
   'deploy-gate-fingerprint-error',
   'finding-allowlist-gap',
@@ -280,11 +283,10 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'implementer-verification-skipped-gate',
   'lighthouse-claim-reconciliation-gate',
   'materialization-gate',
-  // Strictly behind `repaired-materialization` further down, which the corpus
-  // does not reach either: both need a mutating PreToolUse on a project whose
-  // convergence returned a NON-NULL outcome, and every fixture here is either
-  // already materialized (the guard short-circuits to null) or refused before
-  // the branch. Driven instead through the real assembler in the render-space
+  // Needs a mutating PreToolUse whose convergence returned incomplete/failed/
+  // skipped — every onboarded fixture here is either already materialized
+  // (the guard short-circuits to null) or rematerializes successfully and
+  // proceeds. Driven instead through the real assembler in the render-space
   // measurement taken with this id.
   'materialization-not-converged',
   'model-choice-enable-required',
@@ -319,6 +321,11 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'plan-opencode-queue-policy-gate',
   'plan-opencode-self-delegation-gate',
   'plan-write-violation-unattributed',
+  // Converted from deny-for-retry to allow+context after a successful
+  // rematerialize (status materialized/current). Catalog id kept; the
+  // T1BLOCK remains. The corpus still exercises the heal path via
+  // onboarding.repaired-materialization, but the verdict is no longer a deny.
+  'repaired-materialization',
   'reviewer-structure-gate',
   'run-artifact-work-unit-gate',
   'run-team-fallback-taken',

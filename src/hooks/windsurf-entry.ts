@@ -18,10 +18,10 @@ import { isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/o
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
 
-type WindResult =
+export type WindResult =
   | { kind: 'noop' }
   | { kind: 'context'; context?: string; systemMessage?: string }
-  | { kind: 'deny'; reason?: string; context?: string; systemMessage?: string };
+  | { kind: 'deny'; reason?: string; context?: string; systemMessage?: string; userReason?: string };
 
 const PRE_HOOKS = new Set(['pre_user_prompt', 'pre_read_code', 'pre_write_code', 'pre_run_command', 'pre_mcp_tool_use']);
 
@@ -71,16 +71,40 @@ function isSyntheticDevinCascadeDuplicate(stdin: string): boolean {
     && data.trajectory_id.trim() === '';
 }
 
-function parseEnvelope(stdout: string): WindResult {
+export function parseEnvelope(stdout: string): WindResult {
   try {
     const parsed = JSON.parse(stdout || '{"kind":"noop"}') as unknown;
     if (parsed && typeof parsed === 'object' && typeof (parsed as { kind?: unknown }).kind === 'string') {
-      return parsed as WindResult;
+      const rec = parsed as WindResult;
+      // userReason rides the deny envelope as-is so the pre-deny stderr
+      // mapper below can split the USER channel from the agent recipe.
+      if (rec.kind === 'deny') {
+        return {
+          kind: 'deny',
+          ...(typeof rec.reason === 'string' ? { reason: rec.reason } : {}),
+          ...(typeof rec.context === 'string' ? { context: rec.context } : {}),
+          ...(typeof rec.systemMessage === 'string' ? { systemMessage: rec.systemMessage } : {}),
+          ...(typeof rec.userReason === 'string' ? { userReason: rec.userReason } : {}),
+        };
+      }
+      return rec;
     }
   } catch {
     // fall through
   }
   return { kind: 'noop' };
+}
+
+export function preDenyStderr(result: Extract<WindResult, { kind: 'deny' }>): string {
+  // Cascade's only deny channel is stderr. When userReason is set, emit
+  // the calm sentence AND the recipe (URL + wait) — userReason must not
+  // replace the recipe on this single channel.
+  const userFacing = (result.userReason ?? '').trim();
+  const recipe = [result.reason, result.context, result.systemMessage]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n');
+  if (userFacing && recipe) return `${userFacing}\n\n${recipe}`;
+  return userFacing || recipe || 'This action cannot run here.';
 }
 
 function contextText(result: Extract<WindResult, { kind: 'context' }>): string {
@@ -125,12 +149,13 @@ export async function runWindsurfHook(
     const isPre = PRE_HOOKS.has(action);
 
     if (result.kind === 'deny') {
-      const message = [result.reason, result.context, result.systemMessage]
+      const recipe = [result.reason, result.context, result.systemMessage]
         .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
         .join('\n\n');
-      return isPre
-        ? { stdout: '', stderr: message || 'traffic-one blocked this action', exitCode: 2 }
-        : { stdout: message, stderr: '', exitCode: 0 };
+      if (!isPre) {
+        return { stdout: recipe, stderr: '', exitCode: 0 };
+      }
+      return { stdout: '', stderr: preDenyStderr(result), exitCode: 2 };
     }
 
     if (result.kind === 'context') {

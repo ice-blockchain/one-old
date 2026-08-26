@@ -67,6 +67,11 @@ test('packFixCycleHeader points at the fix-cycle + digest files', () => {
   assert.ok(r.body.includes('No fix-cycle context file exists on disk'));
   // No consolidated quality-findings file on disk → no pointer to a missing path.
   assert.ok(!r.body.includes('quality-findings'));
+  assert.ok(r.body.includes('Do not re-explore'));
+  assert.ok(r.body.includes('If you did not receive the contract kernel this spawn'));
+  assert.ok(!r.body.includes('If you only received a contract kernel this spawn'));
+  assert.ok(r.body.includes('Do not skip write-gate rules'));
+  assert.ok(!r.body.includes('Active rules are already loaded'));
 });
 
 test('packFixCycleHeader falls back to the legacy short-name fix file (12co)', () => {

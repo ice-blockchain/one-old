@@ -43,6 +43,10 @@ import { liveWizardLink } from './handler';
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
+// Claude/Codex Stop serialize uses `reason` as decision.reason (turn-continue
+// chrome). Split the user side to this calm reminder; `reason` keeps the
+// recipe (URL + wait). No "blocked", no "Traffic One gate".
+const SETUP_NEEDED_USER_REASON = 'Setup needed — I will share the link.';
 
 export function onboardingStopGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
@@ -105,7 +109,9 @@ export function onboardingStopGate(ctx: Ctx): HookResult {
         WAIT_CMD: waitCommand,
       }, stopSetupRequiredReason(link.dashboardUrl, link.localFallback, waitCommand)));
 
-  if (ctx.host === 'claude' || ctx.host === 'codex') return deny(text, { denyId });
+  if (ctx.host === 'claude' || ctx.host === 'codex') {
+    return deny(text, { denyId, userReason: SETUP_NEEDED_USER_REASON });
+  }
   // Cursor consumes followup_message from its stop lifecycle events (bounded by
   // the host-side loop_limit: 8): enqueue the same prose as the next turn's
   // instruction. Runs at priority 10 — ahead of agent-model.cursor-stop (40),

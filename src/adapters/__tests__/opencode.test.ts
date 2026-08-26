@@ -98,6 +98,23 @@ test('opencode: before-tool deny serializes as deny for wrapper throw', async ()
   // as the write itself (stampDeny / projectWritesPermitted) — this fixture
   // project never answered the use-plugin question.
   assert.equal(out.reason, 'blocked');
+  assert.equal(out.userReason, undefined);
+});
+
+test('opencode: deny serializes trimmed userReason when set; recipe stays on reason', async () => {
+  const handlers: Handler[] = [
+    {
+      id: 'd',
+      event: 'PreToolUse',
+      tools: ['shell'],
+      priority: 0,
+      run: () => deny('no rm -rf — wizard http://127.0.0.1:9/', { userReason: '  Stay in this workspace.  ' }),
+    },
+  ];
+  const out = JSON.parse(await dispatch(opencode, handlers, inv('before-tool-use', { tool_name: 'bash', tool_input: { command: 'rm -rf x' } })));
+  assert.equal(out.kind, 'deny');
+  assert.equal(out.reason, 'no rm -rf — wizard http://127.0.0.1:9/');
+  assert.equal(out.userReason, 'Stay in this workspace.');
 });
 
 test('opencode: after-tool deny downgrades to context warning', async () => {

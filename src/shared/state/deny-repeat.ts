@@ -115,23 +115,23 @@ function repeatsPath(cwd: string, runId: string): string {
  * it.
  *
  *     escalatable ids with shipped prose = 115
- *     of those, ids the corpus fires = 42
- *     of those, ids the corpus never fires = 73
- *     fired ids whose target is empty on every row = 9
+ *     of those, ids the corpus fires = 41
+ *     of those, ids the corpus never fires = 74
+ *     fired ids whose target is empty on every row = 8
  *     fired ids whose prose renders no placeholder at all = 20
  *     fired ids with a populated target AND placeholders = 13
  *     of those, ids whose target covers everything the prose renders = 0
  *     of those, ids whose every placeholder is frozen for the run = 0
  *     of those, ids whose prose can move WITHIN one run = 13
- *     escalatable deny rows in the corpus = 65
- *     escalatable deny rows carrying an empty target = 12
- *     ids the corpus fires with an empty target, prose or not = 11
- *     replay-corpus cases = 139
- *     distinct (denyId, target) pairs among the escalatable deny rows = 61
+ *     escalatable deny rows in the corpus = 64
+ *     escalatable deny rows carrying an empty target = 11
+ *     ids the corpus fires with an empty target, prose or not = 10
+ *     replay-corpus cases = 140
+ *     distinct (denyId, target) pairs among the escalatable deny rows = 60
  *
- * The 73 that never fire are unprovable in either direction; the eleven with an
- * empty target are the nine above plus two that ship no prose at all. The last
- * row is over the 65 escalatable deny ROWS, not over the 139 cases above it.
+ * The 74 that never fire are unprovable in either direction; the ten with an
+ * empty target are the eight above plus two that ship no prose at all. The last
+ * row is over the 64 escalatable deny ROWS, not over the 140 cases above it.
  *
  * THIRTEEN AND NOT NINE — a narrowing this docblock made and has now WITHDRAWN,
  * because its premise was false against the code it named. The narrowing was the

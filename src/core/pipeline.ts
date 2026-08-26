@@ -94,7 +94,18 @@ export function selectHandlers(handlers: readonly Handler[], ctx: Ctx): Handler[
 // log pointer inside a yes/no dialog — and `agentMessage`, which the adapter
 // emits alongside it, is never stamped, so the two fields disagreed about
 // whether a ref exists at all. It also already declares its own id, so the
-// fallback below never applies to it.
+// fallback below never applies to it. askUser withholds ALL suffixes from
+// reason because reason IS the modal question.
+//
+// Ordinary denies stamp reason and leave userReason alone. Suffixes
+// (deny-repeat + correlation ref) land on `reason` and are never appended
+// to `userReason`. stampDeny does not touch `userReason` — `...result`
+// already preserves whatever the handler set (including unset), so a calm
+// user-facing sentence stays calm and an omitted one stays omitted.
+// Adapters that can split channels put `userReason` on the user side; when
+// unset they keep today's behavior (same string both sides). Claude paints
+// the deny reason as a user-visible Error, which is why the user channel
+// must stay suffix-free.
 //
 // `overrideSuffix` is kept as a stampDeny parameter so a future caller can
 // attach a hatch, but the pipeline currently always passes ''. An approve/reject
@@ -120,6 +131,9 @@ function stampDeny(
   repeatSuffix = '',
 ): HookResult {
   const suffix = result.askUser ? '' : `${repeatSuffix}${overrideSuffix}${correlationSuffix}`;
+  // askUser withholds ALL suffixes from reason because reason IS the modal
+  // question. Ordinary denies stamp reason and leave userReason alone
+  // (`userReason` is spread from `...result` and is never written here).
   return {
     ...result,
     gateId: handlerId,
@@ -308,14 +322,17 @@ export async function runPipeline(handlers: readonly Handler[], ctx: Ctx): Promi
         const code = error && typeof error === 'object' && typeof (error as NodeJS.ErrnoException).code === 'string'
           ? ` (${String((error as NodeJS.ErrnoException).code)})`
           : '';
-        const crashDeny = deny(`Traffic One ${handler.id} gate failed${code}; this tool call is blocked fail-closed. Retry after resolving the Traffic One setup/plugin error.`, { denyId: 'pipeline-handler-crashed' });
+        const crashDeny = deny(
+          `Traffic One ${handler.id} gate failed${code}; this tool call is blocked fail-closed. Retry the same action. If it keeps happening, run Traffic One doctor.`,
+          { denyId: 'pipeline-handler-crashed', userReason: 'Retry the same action.' },
+        );
         // Counted like any other refusal, and it is the loop that was most
         // invisible: a gate that threw three times will throw the fourth, and
-        // the message names a remedy ("resolve the Traffic One setup/plugin
-        // error") the agent cannot apply from inside the run — so "report
-        // BLOCKED" is the honest exit and nothing else was ever going to say
-        // so. Nothing may LIFT this deny either, which is the plainest evidence
-        // that never-overridable and never-escalated are different sets.
+        // the message names a retry-then-doctor remedy the agent cannot apply
+        // from inside the run — so "report BLOCKED" is the honest exit and
+        // nothing else was ever going to say so. Nothing may LIFT this deny
+        // either, which is the plainest evidence that never-overridable and
+        // never-escalated are different sets.
         const crashResult = crashDeny as Extract<HookResult, { kind: 'deny' }>;
         const crashRepeat = denyRepeat(ctx.cwd, runIdOnce(), { ...crashResult, denyId: resolvedDenyId(crashResult, handler.id) });
         const stamped = stampDeny(crashResult, handler.id, correlationSuffix, '', crashRepeat.suffix);

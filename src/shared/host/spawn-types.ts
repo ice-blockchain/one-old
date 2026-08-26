@@ -54,8 +54,10 @@ export function hostSpawnType(host: HostId | string, role: string, cwd = ''): Ho
       // type — but only for a session that already knew about the file. A build
       // that just onboarded wrote those files mid-session, so the role-named type
       // spawn can hit a type set that predates them. Both values stay
-      // acceptable; which one a directive RECOMMENDS depends on whether the
-      // files were just materialized (see `formatCursorSpawnMapLines`).
+      // acceptable. Directives recommend `primary` if that type is in this
+      // session's Task enum; otherwise `fallback` plus the `[t1-role:]` marker
+      // (see `formatCursorSpawnMapLines`). Do not treat new-project as a
+      // stand-in for "enum is stale".
       return {
         primary: role,
         fallback: 'generalPurpose',

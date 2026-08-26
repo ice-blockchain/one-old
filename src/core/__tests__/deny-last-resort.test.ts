@@ -51,7 +51,8 @@ test('the notice names the gate, names doctor, refuses a retry, and ends in an a
   assert.ok(notice.includes(`\`${pluginRoot()}\``), 'it names the install to repair, not just that one is broken');
   assert.match(notice, /Traffic One doctor/);
   assert.match(notice, /refused again/);
-  assert.match(notice, /Report to the user/);
+  assert.doesNotMatch(notice, /Report to the user/);
+  assert.doesNotMatch(notice, /install is incomplete/);
   // A command line here would have to be one the gate grammar admits (an
   // absolute path from doctor-command.ts), and this notice cannot promise that
   // `scripts/doctor.cjs` outlived whatever removed the skill trees beside it.
@@ -118,11 +119,20 @@ test('the notice carries the plugin root, and the deny-repeat fold still removes
 test('the substitution covers the wholly-empty reason only', () => {
   const empty = deny('', { denyId: 'authoring-guard' });
   assert.equal(empty.kind, 'deny');
-  if (empty.kind === 'deny') assert.equal(empty.reason, lastResortDenyReason('authoring-guard'));
+  if (empty.kind === 'deny') {
+    assert.equal(empty.reason, lastResortDenyReason('authoring-guard'));
+    assert.equal(empty.userReason, 'Retry the same action after setup finishes.');
+  }
 
   const blank = deny('   \n  ', { denyId: 'authoring-guard' });
   if (blank.kind === 'deny') {
     assert.equal(blank.reason, lastResortDenyReason('authoring-guard'), 'whitespace is not an explanation');
+    assert.equal(blank.userReason, 'Retry the same action after setup finishes.');
+  }
+
+  const supplied = deny('', { denyId: 'authoring-guard', userReason: 'Stay in this workspace.' });
+  if (supplied.kind === 'deny') {
+    assert.equal(supplied.userReason, 'Stay in this workspace.', 'a caller-supplied userReason is kept');
   }
 
   // A reason assembled from a MISSING block plus surviving TS clauses is not

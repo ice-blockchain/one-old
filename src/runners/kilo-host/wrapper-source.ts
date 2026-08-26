@@ -440,6 +440,17 @@ function denyMessage(result) {
   return firstString(reason, ctx) || 'Traffic One denied this Kilo tool call.';
 }
 
+function userDenyLine(result) {
+  // Throw is the only deny channel on this host. userReason is the calm
+  // sentence; denyMessage is the compact recipe (URL + wait). Never let
+  // userReason replace the recipe — the wizard URL must still reach the human.
+  // denyMessage / resultText stay recipe-only for append/metadata.
+  const userFacing = firstString(result && result.userReason).trim();
+  const recipe = denyMessage(result);
+  if (userFacing && firstString(result && result.reason)) return userFacing + '\\n\\n' + recipe;
+  return userFacing || recipe;
+}
+
 function resultText(result) {
   if (!result || result.kind === 'noop') return;
   if (result.kind === 'deny') return denyMessage(result);
@@ -490,7 +501,7 @@ async function beforeTool(input, output, pluginCtx) {
   }
   const result = runTrafficOne('before-tool-use', payload);
   if (result && result.kind === 'deny') {
-    throw new Error(denyMessage(result) || 'Traffic One denied this Kilo tool call.');
+    throw new Error(userDenyLine(result) || 'Traffic One denied this Kilo tool call.');
   }
 }
 
@@ -514,13 +525,13 @@ async function afterTool(input, output, pluginCtx) {
 
 async function systemTransform(input, output, pluginCtx) {
   const result = runTrafficOne('session-start', normalizePromptPayload(${jsString(KILO_HOOK_SYSTEM_TRANSFORM)}, input, output, pluginCtx));
-  if (result && result.kind === 'deny') throw new Error(denyMessage(result) || 'Traffic One denied this Kilo request.');
+  if (result && result.kind === 'deny') throw new Error(userDenyLine(result) || 'Traffic One denied this Kilo request.');
   appendSystem(output, result);
 }
 
 async function chatMessage(input, output, pluginCtx) {
   const result = runTrafficOne('user-prompt-submit', normalizePromptPayload(${jsString(KILO_HOOK_CHAT_MESSAGE)}, input, output, pluginCtx));
-  if (result && result.kind === 'deny') throw new Error(denyMessage(result) || 'Traffic One denied this Kilo message.');
+  if (result && result.kind === 'deny') throw new Error(userDenyLine(result) || 'Traffic One denied this Kilo message.');
   appendPromptContext(output, result);
 }
 

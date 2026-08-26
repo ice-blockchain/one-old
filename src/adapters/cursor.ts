@@ -243,11 +243,17 @@ export function makeCursorAdapter(): HostAdapter {
           agent_message: result.agentMessage || message,
         });
       }
+      // Spawn prefix stays AGENT-only: Cursor paints Task denies as "Couldn't
+      // start", so the model needs the gate banner, the user does not. When
+      // userReason is set it rides user_message unprefixed; when unset both
+      // sides keep today's denyMessage (prefix included) so wizard URLs in
+      // `reason` stay visible. POST warnings use the same split.
       const denyMessage = prefixSpawnDenyMessage(message, input);
+      const userMessage = (result.userReason ?? '').trim() || denyMessage;
       return JSON.stringify({
         ...(result.context && result.context.trim() ? { additional_context: result.context } : {}),
         ...(isPre ? { permission: 'deny' } : {}),
-        ...(denyMessage ? { user_message: denyMessage, agent_message: denyMessage } : {}),
+        ...(denyMessage ? { user_message: userMessage, agent_message: denyMessage } : {}),
       });
     },
   };

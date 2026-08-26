@@ -823,6 +823,16 @@ const ORPHAN_BLOCKS: readonly string[] = [
   // Kept in SKILL.md / the fallback table; unused on the success path after
   // first-spawn materialization falls through instead of teaching via deny.
   'agent-model :: agent-materialization-deny',
+  // Converted from deny-for-retry to allow+context after a successful
+  // rematerialize; catalog id and T1BLOCK kept, call site removed.
+  'onboarding-gate :: repaired-materialization',
+  // First wait is allowed + the link is injected via setupLinkNudge. The
+  // deny-to-teach-post-first path (and these T1BLOCKs) retired: SessionStart
+  // + UserPromptSubmit already carry the wizard URL; a denied wait is a
+  // user-visible Error. Catalog ids stay in deny-ids.ts as UNREACHED.
+  'onboarding-gate :: claude-wait-link-first',
+  'onboarding-gate :: codex-wait-link-first',
+  'onboarding-gate :: cursor-wait-link-first',
   'plan-guard :: architecture-assignment-gate',
   'plan-guard :: run-team-unexpected',
 ];
@@ -953,9 +963,6 @@ const FALLBACK_NOT_A_LITERAL: readonly string[] = [
   'materialize :: digest-size',
   'onboarding-gate :: browser-open-denied',
   'onboarding-gate :: claude-wait-background-denied',
-  'onboarding-gate :: claude-wait-link-first',
-  'onboarding-gate :: codex-wait-link-first',
-  'onboarding-gate :: cursor-wait-link-first',
   'onboarding-gate :: server-bootstrap-required',
   'onboarding-gate :: server-bootstrap-required-compact',
   'onboarding-gate :: stop-setup-link-posted',
@@ -978,7 +985,7 @@ const MODULE_SITE_FLOORS: Readonly<Record<string, number>> = {
   'agent-model': 30,
   materialize: 1,
   'model-choice-gate': 2,
-  'onboarding-gate': 25,
+  'onboarding-gate': 21,
   'plan-guard': 80,
   session: 1,
 };

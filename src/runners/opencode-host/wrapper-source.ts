@@ -292,6 +292,16 @@ function runTrafficOne(subcommand, payload) {
   }
 }
 
+function userDenyLine(result) {
+  // Throw is the only deny channel on this host. userReason is the calm
+  // sentence; reason is the compact recipe (URL + wait). Never let
+  // userReason replace the recipe — the wizard URL must still reach the human.
+  const userFacing = firstString(result && result.userReason).trim();
+  const recipe = firstString(result && result.reason, result && result.context);
+  if (userFacing && recipe) return userFacing + '\\n\\n' + recipe;
+  return userFacing || recipe;
+}
+
 function resultText(result) {
   if (!result || result.kind === 'noop') return;
   return firstString(result.context, result.systemMessage, result.reason);
@@ -349,7 +359,7 @@ async function beforeTool(input, output, pluginCtx) {
   }
   const result = runTrafficOne('before-tool-use', payload);
   if (result && result.kind === 'deny') {
-    throw new Error(firstString(result.reason, result.context) || 'Traffic One denied this OpenCode tool call.');
+    throw new Error(userDenyLine(result) || 'Traffic One denied this OpenCode tool call.');
   }
 }
 
@@ -360,13 +370,13 @@ async function afterTool(input, output, pluginCtx) {
 
 async function systemTransform(input, output, pluginCtx) {
   const result = runTrafficOne('session-start', normalizePromptPayload(${jsString(OPENCODE_HOOK_SYSTEM_TRANSFORM)}, input, output, pluginCtx));
-  if (result && result.kind === 'deny') throw new Error(firstString(result.reason, result.context) || 'Traffic One denied this OpenCode request.');
+  if (result && result.kind === 'deny') throw new Error(userDenyLine(result) || 'Traffic One denied this OpenCode request.');
   appendSystem(output, result);
 }
 
 async function chatMessage(input, output, pluginCtx) {
   const result = runTrafficOne('user-prompt-submit', normalizePromptPayload(${jsString(OPENCODE_HOOK_CHAT_MESSAGE)}, input, output, pluginCtx));
-  if (result && result.kind === 'deny') throw new Error(firstString(result.reason, result.context) || 'Traffic One denied this OpenCode message.');
+  if (result && result.kind === 'deny') throw new Error(userDenyLine(result) || 'Traffic One denied this OpenCode message.');
   appendPromptContext(output, result);
 }
 

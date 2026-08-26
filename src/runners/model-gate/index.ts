@@ -43,11 +43,11 @@ function writeSpawnReady(cwd: string, state: Record<string, unknown>, headline: 
   if (AGENT_ROLES.some((role) => !map[role])) return false;
   const contracts = syncCursorSpawnAgentFiles(cwd, state);
   process.stdout.write(`${headline}\n`);
-  // This map is the authoritative one the orchestrator spawns from, and for a
-  // new project the `.cursor/agents/**` contracts were written by the same
-  // build — so the role-named type is not in the session's captured type set
-  // and recommending it guarantees a "Couldn't start" on the first spawn.
-  const block = formatCursorSpawnMapBlock(map, isNewProjectMode(state));
+  // Authoritative spawn map. Recommend the role-named type if it is in this
+  // session's Task enum; otherwise generalPurpose + [t1-role:] + the contract.
+  // Do not pass new-project as "enum is stale" — that probe taught
+  // ALWAYS-generalPurpose while SessionStart already preferred the role.
+  const block = formatCursorSpawnMapBlock(map);
   if (block) process.stdout.write(`${block}\n`);
   // The map's closing instruction is "tell the child to read
   // `.cursor/agents/<role>.md`". When that file could not be written, saying so

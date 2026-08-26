@@ -6,9 +6,10 @@
 // prepareOnboardingServer hands back an inert PLACEHOLDER (port 0, empty token —
 // see ensure.ts) instead of binding a real port and spawning a real process.
 // That placeholder is itself `kind: 'ready'`, which is what makes the
-// server-deny ladder below reachable deterministically; the link-first branches
-// (claude/cursor/codex-wait-link-first) additionally need a LIVE server record
-// plus transcript evidence, and are the deliberate remaining gap.
+// server-deny ladder below reachable deterministically. The former
+// wait-link-first deny ids (claude/cursor/codex-wait-link-first) are retired
+// product-side: first wait is allowed and the link is injected via
+// setupLinkNudge. They stay in UNREACHED_DENY_IDS with that reason.
 
 import type { CaseSpec } from '../run-case';
 import {
@@ -165,6 +166,15 @@ export const ONBOARDING_CASES: CaseSpec[] = [
     tool: { class: 'file-read', rawName: 'Read', filePath: 'package.json' },
   },
   {
+    id: 'onboarding.codex-orientation-allowed-after-consent',
+    notes: 'Codex matches Claude: SessionStart + UserPromptSubmit already carry the wizard URL, so a first Read is allowed (setupLinkNudge / context, not deny). A denied Read is a user-visible Error. onboarding-server-deny-first still fires on the first MUTATING tool (see server-deny-first-claude)',
+    host: 'codex',
+    event: 'PreToolUse',
+    project: freshProject,
+    expectGate: null,
+    tool: { class: 'file-read', rawName: 'Read', filePath: 'package.json' },
+  },
+  {
     id: 'onboarding.windsurf-server-deny-first',
     notes: 'Windsurf gets its own first-mutation deny variant (windsurf-server-deny-reason): its host entry turns that deny into an inline setup wait, so the prose differs from every other host\'s',
     host: 'windsurf',
@@ -223,12 +233,12 @@ export const ONBOARDING_CASES: CaseSpec[] = [
   },
   {
     id: 'onboarding.repaired-materialization',
-    notes: 'Onboarding complete but `.traffic-one/**` was never materialized: the gate converges it inline and then denies the triggering mutating call so the agent re-issues it against the repaired tree. Every other onboarded fixture in this corpus materializes deliberately to get PAST this deny — nine of the original ten plan-guard cases were landing here by accident, which is why the fixtures materialize and this one case owns the verdict',
+    notes: 'Onboarding complete but `.traffic-one/**` was never materialized: the gate converges it inline and FALLS THROUGH to run-id announce / triage (the tool is allowed; refresh prose may ride along). The write is README.md so later gates do not steal the row — a feature-source write on this new-project fixture would continue into plan-main-agent-gate. Catalog id `repaired-materialization` is unused; incomplete/failed/skipped still deny materialization-not-converged',
     host: 'claude',
     event: 'PreToolUse',
     project: onboardedNotMaterialized,
-    expectGate: 'onboarding-gate',
-    tool: { class: 'file-write', rawName: 'Write', filePath: 'apps/web/src/components/Widget.tsx', content: 'export const Widget = () => null;\n' },
+    expectGate: null,
+    tool: { class: 'file-write', rawName: 'Write', filePath: 'README.md', content: '# Fixture\n' },
   },
   {
     id: 'onboarding.team-mode-marker-guard',

@@ -185,6 +185,10 @@ test('every senior role doc carries a compact T1KERNEL contract kernel', () => {
     assert.ok(kernel!.includes('ONE file per Read/shell command'), `${role} kernel keeps the anti-truncation discipline`);
   }
   assert.equal(roleKernel('definitely-not-a-shipped-role'), null);
+  const quickFix = roleKernel('quick-fix');
+  assert.ok(quickFix, 'quick-fix has a T1KERNEL section');
+  assert.match(quickFix, /collapsed code/, 'quick-fix kernel carries the collapse write-gate');
+  assert.match(quickFix, /src\/pages\//, 'quick-fix kernel carries the pages/Expo placement write-gate');
 });
 
 // ── roleAgentDocCandidates ordering (defect regression) ─────────────────────

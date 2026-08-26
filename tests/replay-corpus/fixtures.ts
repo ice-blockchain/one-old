@@ -297,10 +297,11 @@ export function preConsentWritesThenDeclined(_host: HostId): string {
  * inline `materializeProjectIfNeeded` convergence runs unconditionally for
  * ANY reaching PreToolUse once onboarding is complete (handler.ts's
  * `materialized` branch, priority 10 — before every module gate this fixture
- * feeds), so an unmaterialized fixture's first MUTATING call is swallowed by
- * a generic `repaired-materialization` deny before the case's own target gate
- * ever runs. Real projects are in this same already-materialized state by the
- * time an agent's first tool call lands (SessionStart materializes too). */
+ * feeds). A successful heal now allows the triggering call with context; an
+ * incomplete/failed/skipped converge still denies
+ * `materialization-not-converged` before the case's own target gate. Real
+ * projects are in this same already-materialized state by the time an agent's
+ * first tool call lands (SessionStart materializes too). */
 export function greenfieldNoPlan(host: HostId): string {
   const dir = newProjectDir('greenfield-no-plan');
   recordPluginUseChoice(dir, true, 'replay-corpus-fixture');
@@ -515,11 +516,10 @@ export function nativeGreenfield(host: HostId): string {
 }
 
 /** Onboarding complete, but `.traffic-one/**` was never materialized — the state
- * onboarding-gate's own priority-10 convergence repairs, then denies the
- * triggering mutating call (`repaired-materialization`) so the agent re-issues
- * it against the converged tree. Every other onboarded fixture here
- * materializes deliberately to get PAST this deny; this one exists to
- * characterize it. */
+ * onboarding-gate's own priority-10 convergence repairs, then allows the
+ * triggering mutating call with agent context. Every other onboarded fixture
+ * here materializes deliberately so later gates see a settled tree; this one
+ * exists to characterize the heal. */
 export function onboardedNotMaterialized(host: HostId): string {
   const dir = newProjectDir('onboarded-not-materialized');
   recordPluginUseChoice(dir, true, 'replay-corpus-fixture');

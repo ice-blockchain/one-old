@@ -305,8 +305,8 @@ test('a repeatedly crashing gate escalates — never-overridable does not mean n
   const crasher = gate('plan-guard.write', () => { throw new Error('boom'); });
   const reasons = await refuse(cwd, crasher, DENY_REPEAT_ESCALATE_AT);
   // The fail-closed crash deny is the most invisible loop of all: it prescribes
-  // a remedy ("resolve the Traffic One setup/plugin error") that nobody inside
-  // the run can apply, so without this the agent retries until the run dies.
+  // a retry-then-doctor remedy that nobody inside the run can apply, so without
+  // this the agent retries until the run dies.
   assert.match(reasons[0] || '', /blocked fail-closed/, 'still fail-closed, unchanged');
   assert.doesNotMatch(reasons[0] || '', /STOP RETRYING/);
   assert.match(reasons[2] || '', /STOP RETRYING/);

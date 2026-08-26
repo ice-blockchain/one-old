@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   PRE_TOOL_REMEDIATION,
+  PRE_TOOL_USER_REMEDIATION,
   copilotPreToolDeny,
   cursorPreToolDeny,
   devinPreToolDeny,
@@ -82,7 +83,14 @@ test('last-resort payloads deny in every host wire format', () => {
 
   const cursor = JSON.parse(cursorPreToolDeny());
   assert.equal(cursor.permission, 'deny');
-  assert.match(cursor.user_message, /fail-closed/);
+  assert.equal(cursor.user_message, PRE_TOOL_USER_REMEDIATION);
+  assert.equal(cursor.agent_message, preToolFailureReason('Cursor'));
+  assert.match(cursor.agent_message, /blocked fail-closed/);
+  assert.doesNotMatch(cursor.user_message, /reinstall/i);
+
+  const cursorCustom = JSON.parse(cursorPreToolDeny('custom reason'));
+  assert.equal(cursorCustom.user_message, 'custom reason');
+  assert.equal(cursorCustom.agent_message, 'custom reason');
 
   const copilotCli = JSON.parse(copilotPreToolDeny('cli'));
   assert.equal(copilotCli.permissionDecision, 'deny');
@@ -101,6 +109,9 @@ test('last-resort payloads deny in every host wire format', () => {
 test('every fail-closed reason ends with the shared remediation sentence', () => {
   assert.ok(preToolFailureReason('Kilo').endsWith(PRE_TOOL_REMEDIATION));
   assert.ok(preToolFailureReason('Cursor').includes('blocked fail-closed'));
+  assert.match(preToolFailureReason('Cursor'), /host payload or runtime/);
+  assert.doesNotMatch(PRE_TOOL_REMEDIATION, /reinstall/i);
+  assert.doesNotMatch(preToolFailureReason('Cursor'), /reinstall/i);
 });
 
 // ── isFailClosedRecoveryExemption: the diagnostic must survive its own failure ──

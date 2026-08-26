@@ -132,7 +132,9 @@ test('consent-phase EPERM maps to a clean escalation recipe that keeps the recor
   // non-permission failures stay terminal diagnostics, not retry loops
   const broken = consentPhaseFailureOutput('/proj', 'codex', argv, new Error('unexpected token in prefs.json'));
   assert.match(broken, /^TRAFFIC_ONE_SETUP_START_FAILED\n/);
-  assert.match(broken, /plugin\/runtime failure/);
+  assert.match(broken, /START_FAILED: unexpected token in prefs.json/);
+  assert.match(broken, /doctor/);
+  assert.doesNotMatch(broken, /plugin\/runtime failure|Reinstall\/update/);
 });
 
 test('openCodeRestartWarning tells the user to restart before continuing development', () => {
@@ -746,8 +748,11 @@ test('preSpawnOrchestrationDirective: kilo subagents new-project emits spawn-fir
     assert.match(d, /senior-architect/i);
     assert.match(d, /subagent_type/i);
     const cursor = preSpawnOrchestrationDirective(dir, 'cursor');
+    assert.match(cursor, /subagent_type: "senior-architect"/);
+    assert.match(cursor, /if that type is in this session's Task enum/);
     assert.match(cursor, /generalPurpose/);
     assert.match(cursor, /\[t1-role: senior-architect\]/);
+    assert.doesNotMatch(cursor, /generalPurpose` ALWAYS/);
     assert.match(cursor, /do NOT set `run_in_background`/);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
@@ -927,16 +932,14 @@ test('preSpawnModelDirective: with capture, lists exact picker ids including fam
     }), 'utf8');
 
     const d = preSpawnModelDirective(dir, 'cursor');
-    // This directive is emitted in the session that just materialized
-    // `.cursor/agents/**`, so it recommends Cursor's built-in worker: the
-    // role-named type is not in the type list this session captured and the
-    // spawn comes back "Couldn't start" (1cu, 3cu). The role binds via the
-    // `[t1-role: …]` prompt marker either way.
-    assert.ok(d.includes(`senior-architect → subagent_type: "generalPurpose", model: ${CURSOR_HIGHEST_SLUG}`), 'exact slug in preview');
-    assert.ok(d.includes('senior-shipper → subagent_type: "generalPurpose", model: gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
-    assert.ok(d.includes('senior-tester → subagent_type: "generalPurpose", model: gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
+    // Preview rows recommend the role-named type. Fallback to generalPurpose
+    // is the enum-check note, not the map type — the gate still ACCEPTS it.
+    assert.ok(d.includes(`senior-architect → subagent_type: "senior-architect", model: ${CURSOR_HIGHEST_SLUG}`), 'exact slug in preview');
+    assert.ok(d.includes('senior-shipper → subagent_type: "senior-shipper", model: gpt-5.6-terra'), 'captured balanced id equal to its family anchor is preserved');
+    assert.ok(d.includes('senior-tester → subagent_type: "senior-tester", model: gpt-5.4-mini'), 'captured cheapest id equal to its family anchor is preserved');
     assert.ok(!d.includes('model: (after step 2'), 'captured family-anchor id is not replaced by a placeholder');
-    assert.ok(d.includes('Couldn\'t start'), 'the map explains why the built-in type is the recommended one');
+    assert.ok(d.includes('if that type is in this session\'s Task enum'), 'enum-check, not ALWAYS-generalPurpose');
+    assert.doesNotMatch(d, /→ subagent_type: "generalPurpose"/);
     assert.ok(d.includes('[t1-role: senior-<role>]'), 'the role marker stays mandatory');
     assert.ok(d.includes('Never build the role inline.'));
   } finally {

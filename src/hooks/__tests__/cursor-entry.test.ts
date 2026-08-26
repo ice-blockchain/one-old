@@ -121,7 +121,9 @@ test('unknown / missing subcommand → cursor noop "{}"', async () => {
 
 test('beforeShellExecution UNAUTHED denies (auth gate, flat permission shape)', async () => {
   await withEnv({ authed: false }, async (cwd) => {
-    const stdin = JSON.stringify({ cwd, command: 'npm run build' });
+    // `npm run build` classifies as orientation and is released while setup is
+    // pending. Auth still has to refuse a mutating shell.
+    const stdin = JSON.stringify({ cwd, command: 'git push --force' });
     const r = await runCursorHook('before-shell-execution', stdin);
     assert.equal(r.exitCode, 0);
     const out = JSON.parse(r.stdout);
@@ -147,12 +149,13 @@ test('beforeShellExecution AUTHED on a fresh new-project dir → onboarding gate
   await withEnv({ authed: true }, async (cwd) => {
     // Seed a live server record so the gate (NO_SPAWN) surfaces a real dashboard link.
     writeServerRecord(cwd, { pid: process.pid, port: 55555, token: 'tok', url: 'http://127.0.0.1:55555/?t=tok', startedAt: 'x' }, process.env, 'cursor');
-    const stdin = JSON.stringify({ cwd, command: 'npm run build' });
+    const stdin = JSON.stringify({ cwd, command: 'git push --force' });
     const r = await runCursorHook('before-shell-execution', stdin);
     const out = JSON.parse(r.stdout);
     assert.equal(out.permission, 'deny');
-    assert.ok(out.user_message.includes('/onboarding/agent'), 'deny carries the dashboard setup URL');
-    assert.ok(/setup/i.test(out.user_message));
+    assert.equal(out.user_message, 'Setup needed — I will share the link.');
+    assert.ok(String(out.agent_message || '').includes('/onboarding/agent'), 'recipe carries the dashboard setup URL');
+    assert.ok(/setup/i.test(String(out.agent_message || '')));
   });
 });
 

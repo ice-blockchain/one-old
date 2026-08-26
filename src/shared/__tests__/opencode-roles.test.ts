@@ -608,6 +608,16 @@ test('senior-architect agent.md enforces Phase order with OpenCode Step 0 before
   assert.match(doc, /backend \+ frontend in parallel/);
 });
 
+test('senior-architect agent.md names start/end OpenCode queue markers, not a bare HTML comment', () => {
+  const doc = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'modules', 'senior-architect', 'agent.md'),
+    'utf8',
+  );
+  assert.match(doc, /opencode-delegate:start/);
+  assert.match(doc, /opencode-delegate:end/);
+  assert.doesNotMatch(doc, /<!-- opencode-delegate -->/);
+});
+
 test('senior-architect agent.md enforces the full .traffic-one memory baseline before PLAN_READY', () => {
   const doc = fs.readFileSync(
     path.join(__dirname, '..', '..', 'modules', 'senior-architect', 'agent.md'),

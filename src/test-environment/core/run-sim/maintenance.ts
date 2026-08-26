@@ -49,8 +49,8 @@ import { buildDirFor, writeBuildOutput } from './build-output';
 import { digestBody } from './content';
 import { runBrowserEvidence, runStackEvidence } from './qa';
 import { sourceFor } from './sources';
-import type { MaintenanceLegFact, RunSimTranscript, ScriptedWrite } from './types';
-import { applyAll, applyScriptedWrite, bindRole } from './write';
+import type { MaintenanceLegFact, RunSimTranscript, ScriptedWrite, SpawnOutcome } from './types';
+import { applyAll, applyScriptedWrite, bindRole, nextRoleSpawnIndex } from './write';
 
 // The parent session id every leg's prompt rides in on. Deliberately NOT a
 // subagent shape: routing must see the main thread.
@@ -69,6 +69,21 @@ function spawnGateCtx(cwd: string, toolInput: Record<string, unknown>): Ctx {
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function recordSpawn(
+  transcript: RunSimTranscript,
+  outcome: Omit<SpawnOutcome, 'ordinal'>,
+): void {
+  if (!transcript.spawns) transcript.spawns = [];
+  transcript.spawns.push({
+    ordinal: transcript.spawns.length + 1,
+    ...outcome,
+  });
+}
+
+function spawnGateDenyId(result: { kind: string; denyId?: string }): string | undefined {
+  return typeof result.denyId === 'string' && result.denyId ? result.denyId : undefined;
+}
+
 // The spawn-gate composition the write-only path used to skip: unscoped must
 // deny, then the `[t1-bounded-scope]` marker must publish and allow.
 function assertSpawnGateComposition(
@@ -77,11 +92,27 @@ function assertSpawnGateComposition(
   role: string,
   preferredModel: string,
   files: string[],
+  transcript: RunSimTranscript,
 ): string | null {
+  const spawnIndex = nextRoleSpawnIndex(cwd, role);
+  const host = 'claude';
   const unscoped = agentModelGate(spawnGateCtx(cwd, {
     subagent_type: role,
     model: preferredModel,
   }));
+  const unscopedDenyId = spawnGateDenyId(unscoped);
+  recordSpawn(transcript, {
+    phase: `${label}:unscoped`,
+    role,
+    denied: unscoped.kind === 'deny',
+    host,
+    // The unscoped deny is the composition itself (spawn-bounded-scope-missing
+    // is briefing-class). Mark expected so the ratchet does not treat it as a
+    // first-attempt briefing failure.
+    ...(unscoped.kind === 'deny' ? { expected: true, reason: unscoped.reason } : {}),
+    ...(unscopedDenyId ? { denyId: unscopedDenyId } : {}),
+    ...(spawnIndex !== undefined ? { spawnIndex } : {}),
+  });
   if (unscoped.kind !== 'deny') {
     return `${label} unscoped ${role} spawn must be deny spawn-bounded-scope-missing (got ${unscoped.kind})`;
   }
@@ -94,6 +125,16 @@ function assertSpawnGateComposition(
     model: preferredModel,
     prompt: `[t1-bounded-scope: {"outputs":[${outputs}]}]`,
   }));
+  const scopedDenyId = spawnGateDenyId(scoped);
+  recordSpawn(transcript, {
+    phase: `${label}:scoped`,
+    role,
+    denied: scoped.kind === 'deny',
+    host,
+    ...(scoped.kind === 'deny' ? { reason: scoped.reason } : {}),
+    ...(scopedDenyId ? { denyId: scopedDenyId } : {}),
+    ...(spawnIndex !== undefined ? { spawnIndex } : {}),
+  });
   if (scoped.kind === 'deny') {
     return `${label} scoped ${role} spawn denied: ${scoped.reason}`;
   }
@@ -319,7 +360,7 @@ function runQuickFixLeg(
   const preferredModel = policy.roles['quick-fix']?.preferredModel;
   if (!preferredModel) return `${label} frozen policy has no preferredModel for quick-fix`;
   const gateFail = assertSpawnGateComposition(
-    cwd, label, 'quick-fix', preferredModel, quickFix.files.map((file) => file.path),
+    cwd, label, 'quick-fix', preferredModel, quickFix.files.map((file) => file.path), transcript,
   );
   if (gateFail) return gateFail;
 
@@ -383,7 +424,7 @@ function runBoundedRoleLeg(
   const preferredModel = policy.roles[bounded.role]?.preferredModel;
   if (!preferredModel) return `${label} frozen policy has no preferredModel for ${bounded.role}`;
   const gateFail = assertSpawnGateComposition(
-    cwd, label, bounded.role, preferredModel, bounded.files.map((file) => file.path),
+    cwd, label, bounded.role, preferredModel, bounded.files.map((file) => file.path), transcript,
   );
   if (gateFail) return gateFail;
 

@@ -48,6 +48,11 @@ You ship UI that looks intentionally designed, not machine-generated. You implem
 - Verdict vocabulary: `IMPLEMENTED` or `BLOCKED <one-line reason>` — never PLAN_READY, APPROVED, CHANGES_REQUESTED, or TESTS_GREEN. Emit `IMPLEMENTED` only with your required checks GREEN; never report a red gate as green.
 - Fix-cycle continuations finish in ONE turn: apply ALL findings, rerun verification, RE-EMIT the digest, then end the reply with `FIXES_APPLIED` or `FIXES_FAILING <numbered list>` (reply tokens, never digest verdicts).
 - Write formatted, multi-line source: one statement per line, multi-line JSX. A line packing a whole function/component is collapsed code — the write gate denies it and the completion gate denies `IMPLEMENTED`.
+- Named exports only, except route files (`src/pages/`, Expo `app/` routes).
+- No `any` in non-test TypeScript.
+- No static inline `style={{}}`. No DOM tags (`div`/`span`) in React Native.
+- No `.service`/`.store`/`.hook` files under `src/pages/` or Expo `app/`.
+- Install owned prettier/eslint/tsc/test runner (scripts in the package you own) before `IMPLEMENTED`. Every compiled output file must exist.
 <!-- T1KERNEL:END -->
 
 

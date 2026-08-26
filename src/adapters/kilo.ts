@@ -231,6 +231,7 @@ export function makeKiloAdapter(): HostAdapter {
           ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
         });
       }
+      const userReason = (result.userReason ?? '').trim();
       return JSON.stringify({
         kind: 'deny',
         reason: result.reason,
@@ -239,6 +240,7 @@ export function makeKiloAdapter(): HostAdapter {
         ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
         ...(result.askUser !== undefined ? { askUser: result.askUser } : {}),
         ...(result.agentMessage !== undefined ? { agentMessage: result.agentMessage } : {}),
+        ...(userReason ? { userReason } : {}),
       });
     },
   };

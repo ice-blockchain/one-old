@@ -20,6 +20,7 @@ import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
 import { planWriteGate } from '../../../modules/plan-guard/plan-write';
 import { readEffectiveState } from '../../../shared/state';
 import { claimThreadRole } from '../../../shared/state/run-agent';
+import { listClaimedAgents, nextSpawnIndex } from '../../../shared/state/run-agent/claims-store';
 
 import type { RunSimTranscript, ScriptedWrite, WriteOutcome } from './types';
 
@@ -69,6 +70,46 @@ export function bindRole(cwd: string, role: string): string | null {
   return claimed ? sessionIdFor(role) : null;
 }
 
+function currentRunId(cwd: string): string {
+  const state = readEffectiveState(cwd);
+  return typeof state.currentRunId === 'string' ? state.currentRunId : '';
+}
+
+function resultDenyId(result: { kind: string; denyId?: string }): string | undefined {
+  return typeof result.denyId === 'string' && result.denyId ? result.denyId : undefined;
+}
+
+// The bound role's current spawn index, read the same way index.ts
+// `claimSnapshot` does (listClaimedAgents + nextSpawnIndex).
+//
+// Runtime spawnIndex is 1-based (`nextSpawnIndex` uses Math.max(..., 1)). The
+// plan's "spawnIndex 0" means first spawn / first attempt = `spawnIndex === 1`
+// or the first write of this role. Parent writes (no role) omit the field.
+export function roleSpawnIndex(cwd: string, role: string | null): number | undefined {
+  if (!role) return undefined;
+  const runId = currentRunId(cwd);
+  if (!runId) return undefined;
+  const state = readEffectiveState(cwd);
+  const session = sessionIdFor(role);
+  const claims = listClaimedAgents(cwd, runId).filter((claim) => claim.role === role);
+  const claim = claims.find((entry) => entry.sessionId === session) ?? claims[claims.length - 1];
+  if (claim && typeof claim.spawnIndex === 'number' && Number.isInteger(claim.spawnIndex) && claim.spawnIndex > 0) {
+    return claim.spawnIndex;
+  }
+  // After bind, nextSpawnIndex is the NEXT slot (disk count + 1). Before any
+  // claim exists it is 1 — the first attempt.
+  const next = nextSpawnIndex(cwd, state, runId, role);
+  return claims.length > 0 ? Math.max(1, next - 1) : next;
+}
+
+// The slot a NEW spawn of `role` would receive. Spawn-gate recording uses this
+// rather than the already-bound claim: a maintenance re-spawn is not attempt 1.
+export function nextRoleSpawnIndex(cwd: string, role: string): number | undefined {
+  const runId = currentRunId(cwd);
+  if (!runId) return undefined;
+  return nextSpawnIndex(cwd, readEffectiveState(cwd), runId, role);
+}
+
 export function applyScriptedWrite(
   cwd: string,
   phase: string,
@@ -88,6 +129,8 @@ export function applyScriptedWrite(
 
   const result = planWriteGate(writeCtx(cwd, toolName, toolClass, toolInput, rawExtra, host));
   const denied = result.kind === 'deny';
+  const denyId = resultDenyId(result);
+  const spawnIndex = roleSpawnIndex(cwd, role);
   const outcome: WriteOutcome = {
     ordinal: transcript.writes.length + 1,
     phase,
@@ -95,9 +138,12 @@ export function applyScriptedWrite(
     path: write.path,
     bytes: Buffer.byteLength(write.content, 'utf8'),
     denied,
+    host,
     ...(denied ? { reason: (result as { reason: string }).reason } : {}),
     ...(write.expectDeny ? { expected: true } : {}),
     ...(write.denyMatch ? { denyMatch: write.denyMatch } : {}),
+    ...(denyId ? { denyId } : {}),
+    ...(spawnIndex !== undefined ? { spawnIndex } : {}),
   };
   transcript.writes.push(outcome);
 

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import type { CompiledArchitectureV1 } from '../../../shared/architecture-contract';
 import { buildImplementContext } from './assignments';
 import { sourceFor } from './sources';
+import { roleSpawnIndex } from './write';
 
 function architecture(): CompiledArchitectureV1 {
   return {
@@ -178,4 +179,10 @@ test('the root manifest declares every tool its scripts name', () => {
   for (const dep of ['prettier', 'typescript', 'vitest', '@playwright/test', 'lighthouse']) {
     assert.ok(manifest.devDependencies[dep], `${dep} must be declared`);
   }
+});
+
+test('roleSpawnIndex omits parent writes (no role)', () => {
+  // Runtime spawnIndex is 1-based; parent writes without a role omit the field
+  // so the tally can apply the first-of-(host, denyId) rule instead.
+  assert.equal(roleSpawnIndex('/nonexistent-sim-root', null), undefined);
 });

@@ -117,7 +117,7 @@ export function packFixCycleHeader(_cwd: string, role: string, runId: string, sp
     '2. Recall your prior work from your previous digest:',
     `   ${digestFile}`,
     '',
-    '3. Apply ONLY the listed fixes. Do not re-explore the codebase, do not re-read source files except those the fix-cycle context names. Active rules are already loaded; do not re-import them.',
+    '3. Apply ONLY the listed fixes. Do not re-explore the codebase, do not re-read source files except those the fix-cycle context names. Do not skip write-gate rules. If you did not receive the contract kernel this spawn, Read the full role contract file once before the first write.',
     '',
     `4. Re-emit your digest at ${digestFile} when done.`,
     '',

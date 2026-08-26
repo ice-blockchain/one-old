@@ -77,10 +77,11 @@ export function followup(message: string): HookResult {
 // inconsistency, the two components fail differently.
 //
 // The root is what makes the notice actionable by the human who has to repair
-// the install: "incomplete" without a location sends them looking through as
-// many plugin caches as they have hosts, and the version-keyed cache dir this
-// most often fires from is not a path anyone can guess. It is interpolated as
-// `pluginRoot()` VERBATIM, with nothing appended inside the string, because
+// the install: a missing skill block without a location sends them looking
+// through as many plugin caches as they have hosts, and the version-keyed
+// cache dir this most often fires from is not a path anyone can guess. It is
+// interpolated as `pluginRoot()` VERBATIM, with nothing appended inside the
+// string, because
 // shared/state/deny-repeat.ts's withoutInstallLocation folds a refusal's signing
 // key by splitting on exactly that value — a derived spelling (posix-normalised,
 // trailing separator, relative) would slip through the fold and re-open the
@@ -101,8 +102,10 @@ export function followup(message: string): HookResult {
 // restart …".
 export function lastResortDenyReason(denyId?: string): string {
   const gate = denyId ? `\`${denyId}\`` : 'the gate that refused it';
-  return `Traffic One refused this action, and the explanation for it could not be loaded: ${gate} reads its wording from a \`skill/SKILL.md\` block that is missing from the Traffic One install at \`${pluginRoot()}\`, so the reason rendered empty. The refusal itself is unaffected — the gate decided on its own evidence, so re-issuing the same action will be refused again with this same message. Do not retry it and do not work around it. Report to the user that this Traffic One install is incomplete: ask them to run Traffic One doctor and then reinstall or repair the plugin. The gate will state its real reason once that file is readable.`;
+  return `Traffic One refused this action, and the explanation for it could not be loaded: ${gate} reads its wording from a \`skill/SKILL.md\` block that is missing from the Traffic One install at \`${pluginRoot()}\`, so the reason rendered empty. The refusal itself is unaffected — the gate decided on its own evidence, so re-issuing the same action will be refused again with this same message. Do not retry it and do not work around it. Run Traffic One doctor. The gate will state its real reason once that file is readable.`;
 }
+
+const LAST_RESORT_USER_REASON = 'Retry the same action after setup finishes.';
 
 // `opts.denyId` should be a literal from config/deny-ids.ts (see DenyId) — pass
 // it as a declared constant, never build it from `reason`. Omitting it is not
@@ -119,9 +122,14 @@ export function lastResortDenyReason(denyId?: string): string {
 // the fallback argument the assembler already takes.
 export function deny(reason: string, opts: { context?: string } & ResultMeta = {}): HookResult {
   const { context: extraContext, ...meta } = opts;
+  const emptyReason = !(reason && reason.trim());
   return {
     kind: 'deny',
-    reason: reason && reason.trim() ? reason : lastResortDenyReason(meta.denyId),
+    reason: emptyReason ? lastResortDenyReason(meta.denyId) : reason,
+    // Last-resort substitution is agent-facing. When the caller did not
+    // already split channels, the user side gets a calm retry — not the
+    // torn-block essay.
+    ...(emptyReason && meta.userReason === undefined ? { userReason: LAST_RESORT_USER_REASON } : {}),
     ...(extraContext && extraContext.trim() ? { context: extraContext } : {}),
     ...meta,
   };

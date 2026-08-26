@@ -6,7 +6,9 @@ import * as path from 'path';
 
 import {
   buildCursorSpawnModelMap,
+  CURSOR_SPAWN_ENUM_CHECK,
   formatCursorSpawnMapBlock,
+  formatCursorSpawnMapLines,
   resolveCursorTierSlug,
   syncCursorSpawnAgentFiles,
 } from '../cursor-spawn-map';
@@ -91,7 +93,15 @@ test('buildCursorSpawnModelMap resolves exact slugs without persisting them in a
     const state = readEffectiveState(dir) as Record<string, unknown>;
     const map = buildCursorSpawnModelMap(dir, state);
     assert.equal(map['senior-architect'], CURSOR_HIGHEST_SLUG);
-    assert.ok(formatCursorSpawnMapBlock(map).includes(`senior-architect → subagent_type: "senior-architect", model: ${CURSOR_HIGHEST_SLUG}`));
+    const block = formatCursorSpawnMapBlock(map);
+    assert.ok(block.includes(`senior-architect → subagent_type: "senior-architect", model: ${CURSOR_HIGHEST_SLUG}`));
+    assert.ok(block.includes(CURSOR_SPAWN_ENUM_CHECK));
+    assert.ok(block.includes('Keep `[t1-role: senior-<role>]` as the FIRST prompt line whichever type you pass'));
+    assert.doesNotMatch(block, /→ subagent_type: "generalPurpose"/);
+    assert.doesNotMatch(block, /built-in worker type above is deliberate/);
+    assert.equal(formatCursorSpawnMapLines.length, 1, 'no freshlyMaterialized / enum-stale probe');
+    assert.equal(formatCursorSpawnMapBlock.length, 1, 'no freshlyMaterialized / enum-stale probe');
+    assert.ok(formatCursorSpawnMapLines(map).every((line) => !line.includes('generalPurpose')));
 
     syncCursorSpawnAgentFiles(dir, state);
     const architect = fs.readFileSync(path.join(dir, '.cursor', 'agents', 'senior-architect.md'), 'utf8');

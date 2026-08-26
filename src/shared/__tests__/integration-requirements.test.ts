@@ -14,13 +14,23 @@ test('integration requirements compile per role from surfaces and outputs', () =
   ]);
   assert.ok(frontend.some((line) => line.includes('STRUCT_API_CLIENT_UNUSED')));
   assert.ok(frontend.some((line) => line.includes('STRUCT_ORPHAN_MODULE')));
+  assert.ok(frontend.some((line) => line.includes('STRUCT_TAILWIND_NO_TOOLCHAIN')));
   assert.ok(frontend.some((line) => line.includes('<Trans>')));
   assert.ok(frontend.some((line) => line.includes('VITE_SITE_URL')));
+  assert.ok(frontend.some((line) => line.includes('default-export')));
+  assert.ok(frontend.some((line) => line.includes('no-any')));
+  assert.ok(frontend.some((line) => line.includes('web-inline-style')));
+  assert.ok(frontend.some((line) => line.includes('pages-service-files')));
+  assert.ok(frontend.some((line) => line.includes('websocket-location')));
+  assert.ok(frontend.some((line) => line.includes('asset-extension-mismatch')));
 
   const backend = compileIntegrationRequirements('senior-backend', ['api'], [
     'packages/api-client/src/index.ts',
   ]);
   assert.ok(backend.some((line) => line.includes('packages/api-client')));
+  assert.ok(backend.some((line) => line.includes('no-any')));
+  assert.ok(backend.some((line) => line.includes('websocket-location')));
+  assert.ok(!backend.some((line) => line.includes('asset-extension-mismatch')));
 
   assert.deepEqual(compileIntegrationRequirements('senior-reviewer', ['web-ui'], []), []);
 });

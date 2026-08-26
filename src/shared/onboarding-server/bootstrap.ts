@@ -83,21 +83,35 @@ export function isOnboardingTimeoutError(error: unknown): boolean {
 // missing runner, a crashed child or a malformed state root; do not prescribe
 // the same bootstrap again and trap the agent in a retry loop.
 //
-// A readiness TIMEOUT used to be lumped in here, and it does not belong: it is
-// the one member of the set that is routinely transient (ensure.ts documents
-// concurrent hooks both racing to launch as NORMAL), so this text told a user
-// hitting ordinary contention that their plugin was broken and to reinstall it,
-// and then denied every tool. It has its own pair of messages below. The fear
-// this comment was written with is still right, which is why the retryable one
-// is bounded by the runtime rather than by its own prose.
+// Reinstall is only the remedy when the runner binary itself is gone. Every
+// other launch error names the code/detail and sends the operator to doctor —
+// it does not claim the plugin is broken. A readiness TIMEOUT used to be lumped
+// in here, and it does not belong: it is the one member of the set that is
+// routinely transient (ensure.ts documents concurrent hooks both racing to
+// launch as NORMAL), so this text told a user hitting ordinary contention that
+// their plugin was broken and to reinstall it, and then denied every tool. It
+// has its own pair of messages below. The fear this comment was written with is
+// still right, which is why the retryable one is bounded by the runtime rather
+// than by its own prose.
+function isMissingOnboardingRunner(code: string, detail: string): boolean {
+  return code === 'ENOENT' || /runner is missing/i.test(detail);
+}
+
 export function onboardingStartFailureReason(error: unknown, host?: HostId): string {
   const code = errorCode(error);
   const detail = errorMessage(error);
   const doctor = doctorCommand();
-  if (host === 'opencode' || host === 'kilo' || host === 'windsurf') {
-    return `Traffic One setup launcher failed (${code}: ${detail}). Setup is paused because this is a plugin/runtime failure rather than a sandbox permission request. Stop and report this error. Run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed, then retry setup.`;
+  const compact = host === 'opencode' || host === 'kilo' || host === 'windsurf';
+  if (isMissingOnboardingRunner(code, detail)) {
+    if (compact) {
+      return `Traffic One setup launcher failed (${code}: ${detail}). Setup is paused because the onboarding runner is missing rather than a sandbox permission request. Stop and report this error. Run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed, then retry setup.`;
+    }
+    return `Traffic One setup launcher failed (${code}: ${detail}). The onboarding runner is missing — this is not a sandbox approval request. Do NOT rerun \`--bootstrap-only\` and do not create private state inside the project. Stop and report this error, then run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed before retrying.`;
   }
-  return `Traffic One setup launcher failed (${code}: ${detail}). This is a plugin/runtime failure, not a sandbox approval request. Do NOT rerun \`--bootstrap-only\` and do not create private state inside the project. Stop and report this error, then run the read-only Traffic One doctor: ${doctor}. Reinstall/update the Traffic One plugin if needed before retrying.`;
+  if (compact) {
+    return `Traffic One setup launcher failed (${code}: ${detail}). Setup is paused. Stop and report this error. Run the read-only Traffic One doctor: ${doctor}.`;
+  }
+  return `Traffic One setup launcher failed (${code}: ${detail}). This is not a sandbox approval request. Do NOT rerun \`--bootstrap-only\` and do not create private state inside the project. Stop and report this error, then run the read-only Traffic One doctor: ${doctor}.`;
 }
 
 // The RETRYABLE half. Prescribes exactly ONE retry and says what the next
@@ -158,7 +172,7 @@ function bootstrapFallback(bootstrapCommand: string, waitCommand: string, hostSt
     + `${hostStep}\n\n`
     + 'The bootstrap prints `TRAFFIC_ONE_SETUP_READY` and a live `Setup link:`, then exits. Post that URL to the user as a standalone clickable link in a chat message — do not open it yourself with a browser tool. Immediately afterward run this normal waiter and keep the turn active:\n\n'
     + `${waitCommand}\n\n`
-    + 'When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. If it prints `TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED`, follow its printed classification instructions (inspect the repo, run the printed `--set-tech` command), then re-run. Building, installs, and subagent work remain blocked until completion.';
+    + 'When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request. If it prints `TRAFFIC_ONE_SETUP_PENDING`, run the exact same waiter again. If it prints `TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED`, follow its printed classification instructions (inspect the repo, run the printed `--set-tech` command), then re-run. Hold feature writes, installs, and subagent work until setup completes.';
 }
 
 function compactBootstrapFallback(bootstrapCommand: string, waitCommand: string, code: string): string {
@@ -166,7 +180,7 @@ function compactBootstrapFallback(bootstrapCommand: string, waitCommand: string,
     + `Run with approval: ${bootstrapCommand}\n\n`
     + 'It prints the live setup link and exits. Show that link, then keep setup active with:\n'
     + `${waitCommand}\n\n`
-    + 'Building remains blocked until the waiter reports completion.';
+    + 'Hold feature writes until the waiter reports completion.';
 }
 
 export function onboardingBootstrapReason(

@@ -975,6 +975,22 @@ test('child SessionStart header renders requirements always, kernel only for plu
       'the fallback header must name the materialized role contract',
     );
 
+    // Fix-cycle on a fallback envelope must keep the kernel + requirements +
+    // contract pointer. The spawnIndex > 1 path used to return packFixCycleHeader
+    // alone, so the child received neither kernel nor the write-gate briefing.
+    const fixRes = subagentRoleContext(
+      ctx,
+      STATE as never,
+      { role: 'senior-frontend', runId: 'R', spawnIndex: 2 } as never,
+      pluginRoot(),
+    ) as { kind: string; context?: string };
+    const fixBody = fixRes.context || '';
+    assert.ok(fixBody.includes('FIX-CYCLE'));
+    assert.ok(fixBody.includes('## Contract kernel'), 'fix-cycle fallback children still receive the kernel');
+    assert.ok(fixBody.includes('Integration requirements (deterministic gates verify these)'));
+    assert.ok(fixBody.includes('.traffic-one/agents/senior-frontend.md'));
+    assert.ok(!fixBody.includes('If you only received a contract kernel this spawn'));
+
     // Host-native role delivery (hostAgentType set) drops the kernel but keeps
     // the requirements — the agent doc reaches the child via the host's own
     // agent file, and duplicating it would double the header for nothing.
@@ -988,5 +1004,18 @@ test('child SessionStart header renders requirements always, kernel only for plu
     const nativeBody = nativeRes.context || '';
     assert.ok(!nativeBody.includes('## Contract kernel'), 'no kernel duplication on host-native delivery');
     assert.ok(nativeBody.includes('Integration requirements (deterministic gates verify these)'));
+
+    const nativeFix = subagentRoleContext(
+      ctx,
+      STATE as never,
+      { role: 'senior-frontend', runId: 'R', spawnIndex: 2 } as never,
+      pluginRoot(),
+    ) as { kind: string; context?: string };
+    const nativeFixBody = nativeFix.context || '';
+    assert.ok(nativeFixBody.includes('FIX-CYCLE'));
+    assert.ok(
+      !nativeFixBody.includes('## Contract kernel'),
+      'a host-native envelope still wins on fix-cycle — typedSubagents:false is only the missing-envelope equivalent',
+    );
   });
 });

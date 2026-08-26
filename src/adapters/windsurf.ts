@@ -164,11 +164,13 @@ export function makeWindsurfAdapter(): HostAdapter {
           ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
         });
       }
+      const userReason = (result.userReason ?? '').trim();
       return JSON.stringify({
         kind: 'deny',
         reason: result.reason,
         ...(result.context ? { context: result.context } : {}),
         ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
+        ...(userReason ? { userReason } : {}),
       });
     },
   };

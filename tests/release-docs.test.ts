@@ -339,30 +339,33 @@ test('the incomplete-installation claim tracks the refusal and the branch that r
   // is resolved from SKILL.md and interpolates the diagnosis, so it is never a
   // stable key.
   const handler = read(path.join('src', 'modules', 'onboarding-gate', 'handler.ts'));
-  const arm = /if \(isMutatingPreToolUse\(toolName, toolInput\)\) \{\n([\s\S]*?)\n {4}\}\n {4}return context\(materialized\.context/
-    .exec(handler)?.[1];
+  // The branch is status-then-mutating, not a single `if (isMutatingPreToolUse)`.
+  // Converged (`materialized` / `current`) falls through; anything else denies a
+  // file-changing tool with the diagnosis and allows reads/spawns via context().
   assert.ok(
-    arm,
+    /const converged = materialized\.status === 'materialized' \|\| materialized\.status === 'current';/.test(handler),
     'the mutating arm of the convergence branch is gone or reshaped — item 12 describes what a file-changing call sees',
   );
   assert.match(
-    arm!,
+    handler,
     /materialized\.status === 'materialized' \|\| materialized\.status === 'current'/,
     'the mutating arm stopped discriminating on STATUS. Every non-null outcome would render the repair paragraph again — '
     + '"state was repaired, rerun the same tool now" — for five statuses where nothing was repaired and rerunning cannot '
     + 'work, which is the defect KNOWN-ISSUES.md item 11 was rewritten to stop describing.',
   );
   assert.match(
-    arm!,
-    /block\('materialization-not-converged'.*\{ DIAGNOSIS: materialized\.context \}/s,
+    handler,
+    /block\('materialization-not-converged'[\s\S]*?\{ DIAGNOSIS: materialized\.context \}/,
     'the non-converged arm no longer carries `materialized.context`, so the refusal has lost the diagnosis item 11 '
     + 'promises the reader — the missing entries, the counts, and the doctor command',
   );
-  // …and the verdict must not have been softened along the way. Both arms deny.
+  // File-changing tools still deny when convergence did not finish. Reads and
+  // spawns take context(); converged statuses fall through with no deny.
+  const nonConverged = /if \(!converged\) \{([\s\S]*?)\n {4}\}/.exec(handler)?.[1] ?? '';
   assert.equal(
-    (arm!.match(/\bdeny\(/g) ?? []).length, 2,
-    'the mutating arm no longer has exactly two deny() outcomes. Proceeding is what deletes content the plugin root '
-    + 'cannot resupply, so the fix was to the REASON, never to the verdict.',
+    (nonConverged.match(/\bdeny\(/g) ?? []).length, 1,
+    'the non-converged mutating arm no longer denies a file-changing tool. Proceeding is what deletes content the '
+    + 'plugin root cannot resupply, so the fix was to the REASON, never to the verdict.',
   );
   assert.ok(issue(11).includes('An incomplete plugin installation refuses every file change'));
 });

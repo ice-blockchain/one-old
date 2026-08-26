@@ -121,6 +121,27 @@ test('copilot CLI: PreToolUse deny → flat permissionDecision shape', async () 
   assert.equal(out.additionalContext, 'ctx');
 });
 
+test('copilot CLI + VS Code: deny userReason rides permissionDecisionReason; recipe joins additionalContext', async () => {
+  const handlers: Handler[] = [
+    {
+      id: 'g', event: 'PreToolUse', tools: ['shell'], priority: 0,
+      run: () => deny('no rm -rf', { userReason: 'Stay in this workspace.', context: 'ctx' }),
+    },
+  ];
+  const cli = inv('before-tool-use', { tool_name: 'bash', tool_args: '{"command":"rm -rf /"}' }, 'cli');
+  const cliOut = JSON.parse(await dispatch(cli.adapter, handlers, cli.raw));
+  assert.equal(cliOut.permissionDecision, 'deny');
+  assert.equal(cliOut.permissionDecisionReason, 'Stay in this workspace.');
+  assert.match(String(cliOut.additionalContext), /ctx/);
+  assert.match(String(cliOut.additionalContext), /no rm -rf/);
+  const vscode = inv('before-tool-use', { tool_name: 'bash', tool_args: '{"command":"rm -rf /"}' }, 'vscode');
+  const vsOut = JSON.parse(await dispatch(vscode.adapter, handlers, vscode.raw));
+  assert.equal(vsOut.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.equal(vsOut.hookSpecificOutput?.permissionDecisionReason, 'Stay in this workspace.');
+  assert.match(String(vsOut.hookSpecificOutput?.additionalContext), /ctx/);
+  assert.match(String(vsOut.hookSpecificOutput?.additionalContext), /no rm -rf/);
+});
+
 test('copilot CLI + VS Code: a deny carries systemMessage — the user-visible banner channel', async () => {
   const handlers: Handler[] = [
     {

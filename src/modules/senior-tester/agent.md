@@ -34,6 +34,7 @@ or screenshot work on projects and diffs that do not require it.
 - Evidence is risk-proportional per `VerificationContractV2` and produced through the canonical QA runner — never hand-write the canonical report or its machine evidence.
 - Write your digest to `.traffic-one/digests/<run-id>/tester.md` AFTER the canonical report exists (settlement proves re-attestation by that ordering). Cap ~2 KB.
 - Verdict vocabulary: end with `TESTS_GREEN — <commands/count/coverage summary>` only after the runtime-produced canonical report validates, or `TESTS_FAILING — <count>` + a numbered list (check, evidence, owning-role action). Never IMPLEMENTED, APPROVED, or PLAN_READY.
+- If the suite is empty, the digest must contain the token `NO_TEST_EVIDENCE` (not a fake TESTS_GREEN).
 <!-- T1KERNEL:END -->
 
 

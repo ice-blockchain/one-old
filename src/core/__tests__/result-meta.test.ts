@@ -28,6 +28,16 @@ test('context + deny carry systemMessage + promptRequest', () => {
 // did not make the prompt identity-free — it made the pipeline label a routine
 // approval question `unattributed-handler:<gateId>`, the one shape reserved for
 // a genuine attribution gap. A deny budget must skip these records.
+test('deny forwards userReason on ResultMeta without rewriting reason', () => {
+  const d = deny('recipe', { userReason: 'calm', denyId: 'workspace-boundary-guard' });
+  assert.equal(d.kind, 'deny');
+  if (d.kind === 'deny') {
+    assert.equal(d.reason, 'recipe');
+    assert.equal(d.userReason, 'calm');
+    assert.equal(d.denyId, 'workspace-boundary-guard');
+  }
+});
+
 test('askUser declares its own denyId and keeps the askUser/agentMessage discriminators', () => {
   const asked = askUser('Approve the fallback model?', 'on approve proceed; on reject stop');
   assert.equal(asked.kind, 'deny');

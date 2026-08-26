@@ -19,6 +19,32 @@ export interface WriteOutcome {
   expected?: boolean;
   /** The phrase the deny was required to contain, echoed for the assertion. */
   denyMatch?: string;
+  // Recorded from HookResult.denyId — run-sim calls planWriteGate directly, not
+  // runPipeline, so the decision-log is never written for scripted writes.
+  denyId?: string;
+  // Runtime spawnIndex is 1-based (`nextSpawnIndex` uses Math.max(..., 1)).
+  // The plan's "spawnIndex 0" means first spawn / first attempt, which is
+  // `spawnIndex === 1` here, or the first write of this role in the transcript.
+  // Parent writes without a role omit this.
+  spawnIndex?: number;
+  // The host passed to writeCtx (applyScriptedWrite defaults to 'claude').
+  host?: string;
+}
+
+// One agentModelGate call from the maintenance spawn-gate composition. A scoped
+// deny already fails the run; denyId is still recorded so the briefing ratchet
+// can see `performance-model-param`.
+export interface SpawnOutcome {
+  ordinal: number;
+  phase: string;
+  role: string;
+  denied: boolean;
+  denyId?: string;
+  // Same 1-based convention as WriteOutcome.spawnIndex.
+  spawnIndex?: number;
+  host?: string;
+  expected?: boolean;
+  reason?: string;
 }
 
 // A fact snapshot taken between phases. Assertions read these rather than
@@ -48,6 +74,7 @@ export interface RunSimTranscript {
   durationMs: number;
   phasesCompleted: string[];
   writes: WriteOutcome[];
+  spawns?: SpawnOutcome[];
   facts: RunSimFacts;
   // Set when the run stopped early. Names the phase and the cause, so a failing
   // case says WHICH link of the chain broke without opening the project dir.

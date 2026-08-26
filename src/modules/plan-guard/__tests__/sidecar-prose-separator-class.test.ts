@@ -1,17 +1,22 @@
 // src/modules/plan-guard/__tests__/sidecar-prose-separator-class.test.ts
-// The sidecar gate's shipped paragraph makes ONE claim that a machine can check
-// against the code it describes: that a name below `.traffic-one/runs` is split
-// where BASH splits it, "on a SPACE, a TAB or a NEWLINE". That sentence replaced
-// a promise ("as is a non-ASCII name") which was false for U+00A0 in both
-// spellings, because the splitting class had been spelled as JavaScript's `\s` —
-// which matches nineteen Unicode space characters bash forms one word from.
+// The sidecar gate used to ship a multi-thousand-word deny paragraph that made
+// ONE claim a machine can check against the code it describes: that a name
+// below `.traffic-one/runs` is split where BASH splits it, "on a SPACE, a TAB
+// or a NEWLINE". That sentence replaced a promise ("as is a non-ASCII name")
+// which was false for U+00A0 in both spellings, because the splitting class had
+// been spelled as JavaScript's `\s` — which matches nineteen Unicode space
+// characters bash forms one word from.
+//
+// The deny T1BLOCK is now a short user-visible reason. The measured essay lives
+// beside this file so the claim is still documented; this test asserts the TS
+// behaviour the essay described, not the essay itself as deny prose.
 //
 // The fix was one shared fact, `SHELL_WORD_SEPARATORS` in shared/shell-
 // vocabulary.ts, consumed at every site where `\s` had stood for "the shell
 // splits here". So the prose and the class can now disagree in exactly one way:
 // the class is widened or narrowed in code and the sentence keeps promising the
-// old one. Nothing else would notice — the parity test pairs the two PROSE
-// halves with each other, not either of them with the code.
+// old one. Nothing else would notice if this file only compared two copies of
+// the sentence to each other.
 //
 // So the phrase is DERIVED here rather than typed twice. This is the lane rule
 // about numbers ("a number copied into two files stops agreeing with itself")
@@ -28,13 +33,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
+import * as path from 'path';
 
 import { extractBlock } from '../../../shared/skill-block';
 
 const MODULE_DIR = path.join(__dirname, '..');
 const SKILL = fs.readFileSync(path.join(MODULE_DIR, 'skill', 'SKILL.md'), 'utf8');
 const FALLBACK_SOURCE = fs.readFileSync(path.join(MODULE_DIR, 'plan-readiness', 'index.ts'), 'utf8');
+const ESSAY = fs.readFileSync(path.join(__dirname, 'runtime-sidecar-owner-gate.essay.md'), 'utf8');
 const VOCABULARY = fs.readFileSync(
   path.join(__dirname, '..', '..', '..', 'shared', 'shell-vocabulary.ts'), 'utf8',
 );
@@ -63,9 +69,9 @@ function expectedPhrase(): string {
     const spelled = SPELLED[member];
     assert.ok(
       spelled,
-      `SHELL_WORD_SEPARATORS gained ${JSON.stringify(member)} and the shipped sidecar paragraph has no wording for `
+      `SHELL_WORD_SEPARATORS gained ${JSON.stringify(member)} and the measured sidecar essay has no wording for `
       + 'it. Widening what counts as a word separator changes which names below `.traffic-one/runs` are refused, so '
-      + 'the sentence has to move with it: add the spelling here and to both prose halves in the same change.',
+      + 'the sentence has to move with it: add the spelling here and to the essay in the same change.',
     );
     return spelled!;
   });
@@ -73,26 +79,49 @@ function expectedPhrase(): string {
   return `on ${named.slice(0, -1).join(', ')} or ${last}`;
 }
 
-test('the shipped sidecar paragraph names exactly the separators the code splits on', () => {
-  const body = extractBlock(SKILL, 'runtime-sidecar-owner-gate');
-  assert.ok(body, 'runtime-sidecar-owner-gate has no T1BLOCK in plan-guard/skill/SKILL.md');
+test('the path-character classes interpolate SHELL_WORD_SEPARATORS', () => {
+  // The deny T1BLOCK no longer restates the separator class. The load-bearing
+  // claim is that every site that used to spell "the shell splits here" as `\s`
+  // now interpolates this constant.
+  assert.ok(
+    VOCABULARY.includes('PATH_BODY_CHARACTER = String.raw`[^${SHELL_WORD_SEPARATORS}'),
+    'PATH_BODY_CHARACTER must interpolate SHELL_WORD_SEPARATORS',
+  );
+  assert.ok(
+    VOCABULARY.includes('PATH_PREFIX_CHARACTER = String.raw`[^${SHELL_WORD_SEPARATORS}'),
+    'PATH_PREFIX_CHARACTER must interpolate SHELL_WORD_SEPARATORS',
+  );
+  assert.ok(
+    VOCABULARY.includes('SHELL_WORD_SEPARATOR_RE = new RegExp(`[${SHELL_WORD_SEPARATORS}]`)'),
+    'SHELL_WORD_SEPARATOR_RE must interpolate SHELL_WORD_SEPARATORS',
+  );
+});
+
+test('the measured sidecar essay still names the separators the code splits on', () => {
   const phrase = expectedPhrase();
   assert.ok(
-    body!.includes(`A NAME IS SPLIT WHERE BASH SPLITS IT — ${phrase} —`),
-    `the T1BLOCK must state the separator class as derived from SHELL_WORD_SEPARATORS: expected the phrase `
-    + `${JSON.stringify(phrase)}. The class in shared/shell-vocabulary.ts and the promise in the shipped prose are `
+    ESSAY.includes(`A NAME IS SPLIT WHERE BASH SPLITS IT — ${phrase} —`),
+    `the moved essay must keep the separator class as derived from SHELL_WORD_SEPARATORS: expected the phrase `
+    + `${JSON.stringify(phrase)}. The class in shared/shell-vocabulary.ts and the promise in the measured essay are `
     + 'the two halves of one claim, and only this assertion pairs them.',
   );
 });
 
-test('the verbatim TS fallback carries the same derived phrase', () => {
-  // The parity test compares the two prose halves to each other; if BOTH were
-  // edited to the old wording it would pass and the claim would still be false.
-  // This is the same assertion against the fallback, so neither copy can drift
-  // from the code alone.
+test('the shipped sidecar deny is the short reason, not the measured essay', () => {
+  const body = extractBlock(SKILL, 'runtime-sidecar-owner-gate');
+  assert.ok(body, 'runtime-sidecar-owner-gate has no T1BLOCK in plan-guard/skill/SKILL.md');
+  assert.ok(body!.includes('{{TARGET}}'), 'the short deny must keep the TARGET interpolation');
   assert.ok(
-    FALLBACK_SOURCE.includes(`A NAME IS SPLIT WHERE BASH SPLITS IT — ${expectedPhrase()} —`),
-    'plan-readiness/index.ts renders the sidecar fallback with a separator class the code no longer uses',
+    !body!.includes('THE READ RULE') && !body!.includes('WHAT THIS COSTS') && !body!.includes('A NAME IS SPLIT'),
+    'the user-visible T1BLOCK must not carry the measured essay',
+  );
+  assert.ok(
+    FALLBACK_SOURCE.includes('is published by the runtime. Do not create, edit, delete, or repair it.'),
+    'the TS fallback must stay the short deny, not the essay',
+  );
+  assert.ok(
+    !FALLBACK_SOURCE.includes('THE READ RULE') && !FALLBACK_SOURCE.includes('WHAT THIS COSTS'),
+    'the TS fallback must not carry the measured essay',
   );
 });
 
