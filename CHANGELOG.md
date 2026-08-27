@@ -28,7 +28,7 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-08-26
+## 1.0.52 — 2026-08-27
 
 ### Agent-visible content — what your agents are told
 
@@ -63,6 +63,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Consent: inherit prefs-capable parent so enclosed folders cannot deadlock ask-first (`d7f3df1a`)
 - Setup: persist OpenCode authorization before prefs and heal first-time .one.json (`4ff4c823`)
 - Gates: brief write and spawn rules before the first tool (`a162a469`)
 - Install: reclaim generated agents; always ask Code Graph; name Cursor hook edges (`c628b61a`)
