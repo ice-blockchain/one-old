@@ -1,17 +1,19 @@
 // THE CONSUMERS THAT PAY FOR AN OVERLAPPING REGISTRY.
 //
 // `resolveToolScope` is not the only reader of the resolution walk, and it is not
-// even the majority one. Twenty-two sites across production source resolve a
-// working directory DIRECTLY — session start, prompt submit, the model gate,
-// subagent bind, the agent recorder, the Cursor failure paths, graphify,
-// page-speed, the onboarding-gate stop, the workspace boundary guard, the
-// Devin/Windsurf entry, the two materialize write paths, the two OpenCode
-// delegation entries and the reset runner — and every one of them takes the
-// answer as "the project this call is operating on": where the plan lives, where
-// run state is minted, which manifest is read, whose role claims are staked. None
-// of them builds a tool scope, so no fence test covers them, and until this file
-// existed NO test exercised any of them against a registry with overlapping
-// entries — the one registry shape where the walk's answer moved.
+// even the majority one. Twenty-one sites across production source resolve a
+// working directory DIRECTLY — session start, the model gate, subagent bind, the
+// agent recorder, the Cursor failure paths, graphify, page-speed, the
+// onboarding-gate stop, the workspace boundary guard, the Devin/Windsurf entry,
+// the two materialize write paths, the two OpenCode delegation entries and the
+// reset runner — and every one of them takes the answer as "the project this call
+// is operating on": where the plan lives, where run state is minted, which
+// manifest is read, whose role claims are staked. Prompt submit still resolves,
+// but through `sessionProjectRoot` (census row: `session-start-setup.ts`), not a
+// direct `resolveProjectRoot(ctx.cwd)` of its own. None of them builds a tool
+// scope, so no fence test covers them, and until this file existed NO test
+// exercised any of them against a registry with overlapping entries — the one
+// registry shape where the walk's answer moved.
 //
 // ── WHAT THE ENUMERATION COVERS, since the enumeration is the claim ──────────
 //
@@ -37,7 +39,7 @@
 // convenience:
 //
 //   - THE ARGUMENT SHAPE. Production source holds 48 `resolveProjectRoot*` calls;
-//     22 of them pass `ctx.cwd` or a local holding it, and those are the ones this
+//     21 of them pass `ctx.cwd` or a local holding it, and those are the ones this
 //     file drives. The rest resolve an explicit path that is not the caller's own
 //     working directory (`shared/tool-scope.ts` resolves a re-anchored target, and
 //     the fence tests own it), so "which project is this call operating in" is not
@@ -49,7 +51,7 @@
 //
 // Two properties, because a list and a behaviour rot in different directions:
 //
-//   1. THE POPULATION IS PINNED. A twenty-third site added later is not covered by
+//   1. THE POPULATION IS PINNED. A twenty-second site added later is not covered by
 //      anything below unless it uses one of the argument shapes this file drives,
 //      so the enumeration fails on a new site and names it.
 //   2. EVERY ARGUMENT SHAPE ANSWERS THE DEEPER MEMBER. The sites differ only in
@@ -121,7 +123,6 @@ const DIRECT_SITES: Readonly<Record<string, number>> = {
   'src/modules/materialize/post-stack-setup.ts': 1,
   'src/modules/onboarding-gate/stop.ts': 1,
   'src/modules/page-speed/handler.ts': 1,
-  'src/modules/session/prompt-submit.ts': 1,
   'src/modules/session/session-start-setup.ts': 1,
   'src/modules/session/workspace-boundary-guard.ts': 1,
   'src/runners/opencode/from-plan.ts': 1,
@@ -139,7 +140,7 @@ test('direct resolution sites: the population that reads the walk without a tool
     found[relative] = matches.length;
   }
   const total = Object.values(found).reduce((sum, count) => sum + count, 0);
-  assert.equal(total, 22, `expected 22 direct resolution sites, found ${total} — the scan may be broken`);
+  assert.equal(total, 21, `expected 21 direct resolution sites, found ${total} — the scan may be broken`);
   assert.deepEqual(found, DIRECT_SITES,
     'a hook now resolves the project root directly and is not covered by the shapes below. Add it to this list,'
     + ' and if it passes arguments no row here drives, add the row: an uncovered site attributes a deeper'

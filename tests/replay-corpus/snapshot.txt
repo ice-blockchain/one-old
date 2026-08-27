@@ -39,6 +39,7 @@ consent.declined-project-deploy-gate-stands-down	allow			-
 consent.declined-project-library-gate-stands-down	allow			-
 consent.declined-project-scaffold-gate-stands-down	allow			-
 consent.declined-project-supabase-gate-stands-down	allow			-
+consent.enclosed-child-pending-write	deny	onboarding-gate	onboarding-use-plugin-question	-
 consent.pre-consent-writes-fenced-still-pending	deny	onboarding-gate	onboarding-use-plugin-question	-
 consent.pre-consent-writes-fenced-then-no	allow			-
 consent.pre-consent-writes-fenced-then-yes	deny	onboarding-gate	onboarding-server-deny-first	-

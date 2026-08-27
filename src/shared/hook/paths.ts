@@ -12,6 +12,7 @@ import { readJson, readJsonResult } from '../fsjson';
 import { obj } from '../obj';
 import { dirOwnsProject, projectMembershipRoot } from '../project-membership';
 import { isNativeState } from '../state';
+import { prefsCapableRoot } from '../state/local-prefs';
 import { hasStateFile } from '../tool-classify';
 import { dirDeclaresWorkspace, workspaceClaimsDescendant } from './workspace-declaration';
 import {
@@ -640,12 +641,15 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string, authority: Wor
       // always its own root, so a real repo can never become a cleanup candidate.
       //
       // Under `membership` authority the workspace half of this test additionally
-      // requires the ancestor's declaration to CLAIM `current`; the membership half
-      // is untouched, so stray state inside a real repo (mercury/strategies) still
-      // climbs past and still heals.
+      // requires the ancestor's declaration to CLAIM `current`. A non-owning dir
+      // with an enclosing prefs-capable root is not adopted — the walk continues
+      // so a leaked mode-bearing `.one.json` (including under a host ceiling at
+      // the child) still climbs past and still heals. A dir that owns a marker,
+      // or whose prefs-capable root is itself (unclaimed or already-strayed),
+      // stays a root.
       if (nearestWorkspaceRoot(path.dirname(current), ceiling, authority === 'membership' ? current : '') === null
         && (dirOwnsProject(current)
-          || projectMembershipRoot(path.dirname(current), ceiling) === null)) {
+          || path.resolve(prefsCapableRoot(current)) === path.resolve(current))) {
         return { root: current, container: container ? current : '', registry: container };
       }
     }
@@ -1062,6 +1066,16 @@ export function resolveProjectRootDetailed(
   const member = (fileStart && projectMembershipRoot(fileStart, ceiling))
     || projectMembershipRoot(cwdStart, ceiling);
   if (member) return { root: member, ...NO_WORKSPACE_CONTAINER };
+  // Membership is VCS-only on ancestors and honours the host ceiling, so a
+  // marker-less child under a package.json-only parent — or under a git parent
+  // when ceiling === child — still falls through. prefsCapableRoot has no
+  // ceiling and treats a manifest start-dir as enclosing; adopt it when it
+  // differs from start so resolution agrees with the prefs CREATE veto.
+  const start = fileStart || cwdStart;
+  const capable = prefsCapableRoot(start);
+  if (path.resolve(capable) !== path.resolve(start)) {
+    return { root: capable, ...NO_WORKSPACE_CONTAINER };
+  }
   return { root: findProjectRootForHookFile(cwdStart, fileAbs || filePath), ...NO_WORKSPACE_CONTAINER };
 }
 

@@ -11,6 +11,7 @@ import * as path from 'path';
 import type { HostId } from '../../core/types';
 import { hostFlags } from '../host/capability-flags';
 import { qualifiesAsSeedPrompt, truncateSeedPrompt } from '../onboarding/seed-prompt';
+import { prefsCapableRoot } from '../state/local-prefs';
 import { trafficOneEnvShellPrefix } from '../state/traffic-one-paths';
 import { pluginRoot } from '../paths';
 import { shellQuote } from '../shell-quote';
@@ -37,12 +38,14 @@ function onboardingRunnerCommand(
   host: HostId | undefined,
   flags: readonly string[],
   trailingFlags: readonly string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
+  const subject = prefsCapableRoot(cwd, env);
   const flagArgs = flags.map((flag) => ` ${shellQuote(flag)}`).join('');
   const hostArg = host ? ` ${shellQuote(`--host=${host}`)}` : '';
   const trailingArgs = trailingFlags.map((flag) => ` ${shellQuote(flag)}`).join('');
-  const envPrefix = trafficOneEnvShellPrefix(cwd, host);
-  return `${envPrefix}node ${shellQuote(onboardingWaitScriptPath())}${flagArgs} ${shellQuote(cwd)}${hostArg}${trailingArgs}`;
+  const envPrefix = trafficOneEnvShellPrefix(subject, host);
+  return `${envPrefix}node ${shellQuote(onboardingWaitScriptPath())}${flagArgs} ${shellQuote(subject)}${hostArg}${trailingArgs}`;
 }
 
 // The user's original request, carried on the `--use` yes commands as an inert
@@ -65,8 +68,8 @@ function syncSessionFlags(syncSession?: string): string[] {
 // Starts the wizard under an approval-capable shell process, prints its live URL,
 // and exits immediately. `--bootstrap-only` deliberately precedes the project
 // path so Codex can persist a narrow prefix approval that works for future projects.
-export function onboardingBootstrapCommand(cwd: string, host?: HostId, syncSession?: string): string {
-  return onboardingRunnerCommand(cwd, host, ['--bootstrap-only'], syncSessionFlags(syncSession));
+export function onboardingBootstrapCommand(cwd: string, host?: HostId, syncSession?: string, env?: NodeJS.ProcessEnv): string {
+  return onboardingRunnerCommand(cwd, host, ['--bootstrap-only'], syncSessionFlags(syncSession), env);
 }
 
 // `host` stamps an explicit `--host=<id>` arg so the spawned runner subprocess detects the
@@ -74,15 +77,15 @@ export function onboardingBootstrapCommand(cwd: string, host?: HostId, syncSessi
 // the hook process), so without this the runner would mis-detect as `claude` and skip the
 // Cursor-only pre-spawn model directive. Shell-quoted so the gate's clean-node-invocation
 // allow-list (isOnboardingWaitCommand) still recognizes it.
-export function onboardingWaitCommand(cwd: string, host?: HostId, syncSession?: string): string {
-  return onboardingRunnerCommand(cwd, host, [], syncSessionFlags(syncSession));
+export function onboardingWaitCommand(cwd: string, host?: HostId, syncSession?: string, env?: NodeJS.ProcessEnv): string {
+  return onboardingRunnerCommand(cwd, host, [], syncSessionFlags(syncSession), env);
 }
 
 // Records the durable per-project "don't use Traffic One" choice (stored in the
 // per-user prefs, never inside the repo) and exits. Every Traffic One hook
 // stands down for the project afterwards.
-export function onboardingDeclineCommand(cwd: string, host?: HostId): string {
-  return onboardingRunnerCommand(cwd, host, ['--decline']);
+export function onboardingDeclineCommand(cwd: string, host?: HostId, env?: NodeJS.ProcessEnv): string {
+  return onboardingRunnerCommand(cwd, host, ['--decline'], [], env);
 }
 
 // Records "yes, use Traffic One here", then continues straight into the normal
@@ -90,8 +93,8 @@ export function onboardingDeclineCommand(cwd: string, host?: HostId): string {
 // setup completes — one command for the whole yes path. The prescribed recipe
 // (usePluginQuestion) is now the bootstrap-first two-step, but this single-command
 // form stays valid: sessions that saw the old prose re-run it verbatim.
-export function onboardingUseCommand(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string): string {
-  return onboardingRunnerCommand(cwd, host, ['--use'], [...seedPromptFlags(seedPrompt), ...syncSessionFlags(syncSession)]);
+export function onboardingUseCommand(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string, env?: NodeJS.ProcessEnv): string {
+  return onboardingRunnerCommand(cwd, host, ['--use'], [...seedPromptFlags(seedPrompt), ...syncSessionFlags(syncSession)], env);
 }
 
 // The fast first half of the yes path: records "yes, use Traffic One here",
@@ -101,8 +104,8 @@ export function onboardingUseCommand(cwd: string, host?: HostId, seedPrompt?: st
 // (Claude desktop), the single blocking --use command buried the link for its
 // whole 8-minute timeout and read as a hang (observed 2026-07-14). Prints
 // TRAFFIC_ONE_SETUP_COMPLETE instead when setup is already done.
-export function onboardingUseBootstrapCommand(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string): string {
-  return onboardingRunnerCommand(cwd, host, ['--use', '--bootstrap-only'], [...seedPromptFlags(seedPrompt), ...syncSessionFlags(syncSession)]);
+export function onboardingUseBootstrapCommand(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string, env?: NodeJS.ProcessEnv): string {
+  return onboardingRunnerCommand(cwd, host, ['--use', '--bootstrap-only'], [...seedPromptFlags(seedPrompt), ...syncSessionFlags(syncSession)], env);
 }
 
 // The ask-first HOST-CHAT question (ASK_USE_PLUGIN_FIRST / TRAFFIC_ONE_ASK_USE_PLUGIN):
@@ -113,7 +116,7 @@ export function onboardingUseBootstrapCommand(cwd: string, host?: HostId, seedPr
 // command so the runner can seed `originalPrompt` AFTER recording the yes. The
 // prose RECOMMENDS the yes/"use Traffic One" answer (first option, "(Recommended)"
 // label in a structured picker) while still stopping for the user's own reply.
-export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string): string {
+export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: string, syncSession?: string, env?: NodeJS.ProcessEnv): string {
   return [
     'traffic-one — before anything else, ask the user IN CHAT and STOP for their reply:',
     '',
@@ -130,10 +133,10 @@ export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: strin
     '- If the user answers YES, do these steps IN ORDER:',
     `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately${hostFlags(host).sandboxNeedsEscalation
       ? '. Codex: run it via exec_command with `sandbox_permissions: "require_escalated"` — it stores the choice under `~/.traffic-one`, outside the workspace sandbox, so an unescalated run fails with EPERM'
-      : ''}:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt, syncSession)}`,
+      : ''}:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt, syncSession, env)}`,
     '  2. Post that setup link to the user in a CHAT MESSAGE, on its own line, as plain clickable text — not inside a code block. The command output in step 1 does NOT count as showing it: several hosts collapse or hide it, and an agent that treats it as shown leaves the user with no link at all. Do NOT open the link yourself with a browser tool or an `open`/`xdg-open`/`start` command — the user clicks it and completes setup themselves. (Skip this step if step 1 printed TRAFFIC_ONE_SETUP_COMPLETE. If it printed TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED, follow its printed classification instructions first — inspect the repo, run the printed `--set-tech` command with the tech you identified — and it will print the setup link.)',
-    `  3. Run this command to wait for setup to finish — in the FOREGROUND of this turn, never as a background task, with a long timeout (~9 minutes / 540000 ms). Backgrounding it sends its output (including the setup link it re-prints) to a task file the user never opens, and the turn ends with the user waiting on a link they were never shown. When it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request; if it prints TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED, follow its printed classification instructions, then re-run it:\n${onboardingWaitCommand(cwd, host, syncSession)}`,
-    `- If the user answers NO, run this command — the choice is saved outside the project (no files are added to it) and Traffic One stays silent here until the user explicitly asks for it again:\n${onboardingDeclineCommand(cwd, host)}`,
+    `  3. Run this command to wait for setup to finish — in the FOREGROUND of this turn, never as a background task, with a long timeout (~9 minutes / 540000 ms). Backgrounding it sends its output (including the setup link it re-prints) to a task file the user never opens, and the turn ends with the user waiting on a link they were never shown. When it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request; if it prints TRAFFIC_ONE_TECH_CLASSIFY_REQUIRED, follow its printed classification instructions, then re-run it:\n${onboardingWaitCommand(cwd, host, syncSession, env)}`,
+    `- If the user answers NO, run this command — the choice is saved outside the project (no files are added to it) and Traffic One stays silent here until the user explicitly asks for it again:\n${onboardingDeclineCommand(cwd, host, env)}`,
     '',
     'Run each command EXACTLY as printed — no pipes, redirection, `&&`, or extra arguments. '
     + 'The gate allow-lists this runner by its precise argv, so a wrapped or chained form is '
@@ -145,8 +148,8 @@ export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: strin
 
 // Records exact opt-in after the user explicitly asks to re-enable Traffic One,
 // synchronizes current model config, then starts the normal setup flow.
-export function onboardingReconsiderCommand(cwd: string, host?: HostId, syncSession?: string): string {
-  return onboardingRunnerCommand(cwd, host, ['--reconsider'], syncSessionFlags(syncSession));
+export function onboardingReconsiderCommand(cwd: string, host?: HostId, syncSession?: string, env?: NodeJS.ProcessEnv): string {
+  return onboardingRunnerCommand(cwd, host, ['--reconsider'], syncSessionFlags(syncSession), env);
 }
 
 // The agent's manual tech classification for an UNDETECTABLE existing repo: the
@@ -166,6 +169,7 @@ export function onboardingSetTechCommand(
   host: HostId | undefined,
   tech: SetTechFlags,
   syncSession?: string,
+  env?: NodeJS.ProcessEnv,
 ): string {
   const surfaceFlags = [
     `--frontend=${tech.frontend}`,
@@ -174,12 +178,12 @@ export function onboardingSetTechCommand(
     ...(tech.realtime === 'light' ? ['--realtime=light'] : []),
     ...(tech.evidence?.trim() ? [`--evidence=${tech.evidence.trim().slice(0, 400)}`] : []),
   ];
-  return onboardingRunnerCommand(cwd, host, ['--set-tech'], [...surfaceFlags, ...syncSessionFlags(syncSession)]);
+  return onboardingRunnerCommand(cwd, host, ['--set-tech'], [...surfaceFlags, ...syncSessionFlags(syncSession)], env);
 }
 
 // The base command for directive PROSE: mode flag + cwd + host (+ sync-session),
 // fully quoted; the prose instructs appending the surface flags with ids from
 // the enumerated vocabularies.
-export function onboardingSetTechCommandTemplate(cwd: string, host?: HostId, syncSession?: string): string {
-  return onboardingRunnerCommand(cwd, host, ['--set-tech'], syncSessionFlags(syncSession));
+export function onboardingSetTechCommandTemplate(cwd: string, host?: HostId, syncSession?: string, env?: NodeJS.ProcessEnv): string {
+  return onboardingRunnerCommand(cwd, host, ['--set-tech'], syncSessionFlags(syncSession), env);
 }

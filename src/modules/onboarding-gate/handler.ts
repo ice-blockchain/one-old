@@ -62,6 +62,7 @@ import { ensureCurrentRunId, hookSessionIdentity, isNewProjectMode, isSubagentTh
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyWritePatch, isStateFilePath, isTrafficOneDoctorCommand, isTrafficOneResetCommand, parsedToolInput } from '../../shared/tool-classify';
 import { browserOpenDeniedReason } from '../../shared/onboarding-server/browser-open';
+import { prefsCapableRoot } from '../../shared/state/local-prefs';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, onboardingSetTechCommandTemplate, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
@@ -231,7 +232,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // that the root is already onboarded. A hook whose raw cwd is the plugin
   // source instead resolves against its explicit external file/workdir/command
   // target, so authoring stand-down never leaks across the boundary.
-  const root = toolScope.projectRoot;
+  const root = prefsCapableRoot(toolScope.projectRoot);
   // The resolver skips authoring roots, but its fallback can still return cwd /
   // a hint dir inside the plugin repo — never gate or materialize there.
   if (isNonProjectRoot(root)) return noop();

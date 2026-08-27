@@ -126,12 +126,12 @@ function repeatsPath(cwd: string, runId: string): string {
  *     escalatable deny rows in the corpus = 64
  *     escalatable deny rows carrying an empty target = 11
  *     ids the corpus fires with an empty target, prose or not = 10
- *     replay-corpus cases = 140
+ *     replay-corpus cases = 141
  *     distinct (denyId, target) pairs among the escalatable deny rows = 60
  *
  * The 74 that never fire are unprovable in either direction; the ten with an
  * empty target are the eight above plus two that ship no prose at all. The last
- * row is over the 64 escalatable deny ROWS, not over the 140 cases above it.
+ * row is over the 64 escalatable deny ROWS, not over the 141 cases above it.
  *
  * THIRTEEN AND NOT NINE — a narrowing this docblock made and has now WITHDRAWN,
  * because its premise was false against the code it named. The narrowing was the

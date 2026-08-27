@@ -127,6 +127,8 @@ export {
   PROJECT_PREFS_LOCK_TIMEOUT_MS,
   defaultProjectPrefsPath,
   normalizeProjectPrefs,
+  prefsCapableRoot,
+  prefsCreateRefused,
   projectPrefsPath,
   projectRootHash,
   readProjectPrefs,

@@ -285,6 +285,20 @@ export function preConsentWritesStillPending(_host: HostId): string {
   return preConsentOnboardingAttempt('pre-consent-pending', null);
 }
 
+/** Marker-less child of an enclosing git parent. Returns the CHILD path (that
+ * becomes hook `cwd`). Consent is unanswered. No planted prefs path — the pin
+ * is cwd-blind and would collapse parent+child onto one file. The deadlock:
+ * pending child + enclosing parent + mutating Write with the host ceiling at
+ * the child used to ask (and try to record) at the child, which prefs CREATE
+ * then vetoes forever. */
+export function enclosedChildPending(_host: HostId): string {
+  const parent = newProjectDir('enclosed-git-parent');
+  fs.mkdirSync(path.join(parent, '.git'), { recursive: true });
+  const child = path.join(parent, 'strategies');
+  fs.mkdirSync(child, { recursive: true });
+  return child;
+}
+
 /** Onboarding writes attempted before the answer, then the user said NO — the
  * declined half ("the project stays untouched"). */
 export function preConsentWritesThenDeclined(_host: HostId): string {

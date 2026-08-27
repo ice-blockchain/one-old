@@ -80,6 +80,25 @@ function leakedByPredicate(dir: string): boolean {
   }
 }
 
+/**
+ * Layer D leftover when membership is null and there is no `.git`.
+ * `prefsCapableRoot` remaps a one-level child of a manifest parent (`src/`,
+ * `reporting_etl/`) to the owning member. A two-level package
+ * (`internal/ledger`) has no enclosing membership hop — parent `internal` owns
+ * nothing, ancestor absorb is VCS-only — so the nested dir stays itself and a
+ * container+file-hint call stays on the container cwd.
+ */
+function recordedNoVcsAnswers(
+  workspace: PolyglotWorkspace,
+  member: PolyglotWorkspace['members'][number],
+): { nested: string; hintedFromContainer: string } {
+  const remaps = path.dirname(member.nestedSourceDir) === member.dir;
+  return {
+    nested: remaps ? member.dir : member.nestedSourceDir,
+    hintedFromContainer: remaps ? member.dir : workspace.container,
+  };
+}
+
 /** The deletion actions the sweep plans for nested state roots, relative to the container. */
 function plannedNestedLeaks(container: string): string[] {
   return sweepTrafficOneRetention(container, { dryRun: true }).actions
@@ -327,29 +346,36 @@ test('polyglot workspace: an UNPARSEABLE container declaration still anchors res
 });
 
 /**
- * BEFORE anything is onboarded, and with NO workspace registered, whether a
- * member resolves to itself depends entirely on whether it is a git repository —
- * its language manifest does not decide it.
+ * BEFORE anything is onboarded, and with NO workspace registered, membership of
+ * a marker-less nested source dir is still null (VCS-only absorb — members have
+ * no `.git` in this half). Resolution then follows `prefsCapableRoot` of the
+ * start: a one-level child (`src/`, `reporting_etl/`) remaps to the enclosing
+ * owning member (`member.dir`). A two-level Go package (`internal/ledger`) does
+ * not — `prefsCapableRoot` asks membership of the parent only, `internal` owns
+ * nothing, and ancestor absorb stays VCS-only — so the nested dir remains
+ * itself. The container+file-hint row follows that remap when it happens;
+ * otherwise the container cwd stays (not necessarily the container for every
+ * member).
  *
- * `projectMembershipRoot` (project-membership.ts:78) accepts a manifest for the
- * START dir but only VERSION CONTROL for an ANCESTOR, so a tool touching
- * `<member>/internal/ledger/ledger.go` in a member with no `.git` finds no
- * owner: the nested directory becomes its own root, and a hook whose cwd is the
- * container adopts the CONTAINER. That is the moment onboarding is offered, so
- * it decides which directory a workspace member's `.one.json` is written into.
- *
- * Still recorded rather than fixed, because it is the behaviour of an ORDINARY
- * container — a directory nobody has told Traffic One anything about. The row
- * below is the one that moved.
+ * Membership still does not absorb via ancestor manifests. The VCS half below
+ * is unchanged: version control alone already moved both answers onto the member.
  */
 test('polyglot workspace [recorded]: with no workspace registered, only version control anchors a member', () => {
   withWorkspace({ memberVcs: false }, (workspace) => {
     readbackFixture(workspace, 'pre-onboarding/no-vcs');
     for (const member of workspace.members) {
-      assert.equal(resolveProjectRoot(member.nestedSourceDir), member.nestedSourceDir,
-        `${member.id}: a marker-less source dir becomes its own project root`);
-      assert.equal(resolveProjectRoot(workspace.container, member.nestedSourcePath), workspace.container,
-        `${member.id}: a container-level cwd with a file hint into the member adopts the CONTAINER`);
+      const recorded = recordedNoVcsAnswers(workspace, member);
+      assert.equal(resolveProjectRoot(member.nestedSourceDir), recorded.nested,
+        `${member.id}: a marker-less source dir follows prefsCapableRoot`
+        + (recorded.nested === member.dir
+          ? ' to the owning member'
+          : '; a deeper package has no enclosing membership hop'));
+      assert.equal(
+        resolveProjectRoot(workspace.container, member.nestedSourcePath),
+        recorded.hintedFromContainer,
+        `${member.id}: pre-onboarding resolution follows prefsCapableRoot to the owning member;`
+        + ' membership still does not absorb via ancestor manifests',
+      );
     }
   });
 
@@ -435,8 +461,9 @@ test('polyglot workspace: a registered member anchors with no version control an
  * Same direction as the declaration reader's `opaque` arm, arrived at from the
  * other side: there an unreadable declaration keeps its resolution leniency and
  * loses its deletion authority, and here an unreadable workspace grants no
- * membership at all — so the members fall back to the recorded pre-onboarding
- * behaviour rather than inheriting an anchor nobody could read.
+ * membership at all. A torn registry still grants no membership; resolution
+ * falls through to prefsCapableRoot of the file's start — the owning member
+ * when that remaps, otherwise the container cwd.
  */
 test('polyglot workspace: a TORN workspace state registers nobody, and says so as ignorance', () => {
   withWorkspace({ memberVcs: false, registerMembers: true }, (workspace) => {
@@ -452,8 +479,13 @@ test('polyglot workspace: a TORN workspace state registers nobody, and says so a
         `${member.id}: a torn workspace state must not be reported as "not a member"`);
       assert.equal(isRegisteredWorkspaceMember(member.dir), false,
         `${member.id}: and the boolean grants nothing on an answer nobody established`);
-      assert.equal(resolveProjectRoot(workspace.container, member.nestedSourcePath), workspace.container,
-        `${member.id}: resolution falls back to the recorded pre-onboarding answer, not to a guessed member`);
+      assert.equal(
+        resolveProjectRoot(workspace.container, member.nestedSourcePath),
+        recordedNoVcsAnswers(workspace, member).hintedFromContainer,
+        `${member.id}: a torn registry still grants no membership; resolution falls through`
+        + " to prefsCapableRoot of the file's start, which is the owning member"
+        + ' when that remaps',
+      );
     }
     assert.deepEqual(plannedNestedLeaks(workspace.container), [],
       'and an unreadable workspace never authorizes a deletion');

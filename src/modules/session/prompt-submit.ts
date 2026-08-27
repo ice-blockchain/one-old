@@ -17,7 +17,6 @@ import {
   techClassifyRequiredReason,
 } from '../../shared/onboarding-server/tech-classify-setup';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
-import { resolveProjectRoot } from '../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
@@ -43,6 +42,7 @@ import { maintenanceTriageDirective, unresolvedRunDirective } from './triage-dir
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan/directive';
 import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
 import { runSessionStartAuthed } from './session-start';
+import { sessionProjectRoot } from './session-start-setup';
 import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
 import { finalizePaidMaintenanceFallback } from '../../shared/maintenance/fallback';
@@ -111,7 +111,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   if (isNonProjectRoot(ctx.cwd)) return noop();
-  const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  const cwd = sessionProjectRoot(ctx);
   initializeTrafficOneEnv(cwd, ctx.host);
 
   const raw = ctx.input.raw;

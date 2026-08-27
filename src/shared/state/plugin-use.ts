@@ -11,7 +11,7 @@ import * as path from 'path';
 
 import { obj, type Rec } from '../obj';
 import { stateTimestamp } from './io';
-import { mergeProjectPrefs, readProjectPrefs } from './local-prefs';
+import { mergeProjectPrefs, prefsCapableRoot, readProjectPrefs } from './local-prefs';
 import { askUsePluginFirst } from '../../config/onboarding';
 import { STATE_DIR, STATE_FILE } from '../../config/paths';
 import { readJson } from '../fsjson';
@@ -55,11 +55,20 @@ export function resetPluginUseCache(): void {
   choiceMemo.clear();
 }
 
+// Reads name the directory the store will ACCEPT (`prefsCapableRoot`), not the
+// raw caller cwd. A marker-less child (pmax-images, mercury/strategies) has no
+// bucket of its own: reading that cwd stays `null` forever even after the parent
+// answered, which is the ask-first deadlock — hooks keep asking and the write
+// fence stays closed. The memo is keyed by that subject so a parent read and a
+// remapped child read share one answer. Writes stay on the caller path
+// (`recordPluginUseChoice` / `clearPluginUseChoice` are not remapped) so a
+// child `--decline` cannot flip the parent.
 export function readPluginUseChoice(cwd: string, env: NodeJS.ProcessEnv = process.env): PluginUseChoice | null {
-  const key = choiceMemoKey(cwd, env);
+  const subject = prefsCapableRoot(cwd, env);
+  const key = choiceMemoKey(subject, env); // key by SUBJECT, not the raw cwd
   const cached = choiceMemo.get(key);
   if (cached !== undefined) return cached;
-  const raw = obj(obj(readProjectPrefs(cwd, env))?.pluginUse);
+  const raw = obj(obj(readProjectPrefs(subject, env))?.pluginUse);
   const choice = !raw || typeof raw.enabled !== 'boolean'
     ? null
     : {

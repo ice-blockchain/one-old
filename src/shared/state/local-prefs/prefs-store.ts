@@ -366,6 +366,31 @@ export function writeProjectPrefs(cwd: string, prefs: unknown, env: NodeJS.Proce
   return normalized;
 }
 
+// CREATE veto, extracted so `prefsCapableRoot` and the write path cannot drift.
+// True → `updateProjectPrefs` returns the current read and does not mint a bucket.
+// Write semantics stay "refuse CREATE on the child" — never redirect the write.
+export function prefsCreateRefused(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return !fs.existsSync(projectPrefsPath(dir, env))
+    && !dirOwnsProject(dir)
+    && projectMembershipRoot(path.dirname(path.resolve(dir))) !== null;
+}
+
+// The directory whose prefs bucket `updateProjectPrefs` will actually accept.
+// Same three clauses as the CREATE veto (no ceiling): an existing hash-keyed file
+// keeps an already-strayed root writable; a dir that owns a project writes itself;
+// a marker-less child of an enclosing membership is not capable — the enclosing
+// project is. Genuinely unclaimed dirs stay themselves. This primitive NAMES the
+// capable root; it does not change who the write lands on.
+//
+// Always absolute: later layers embed this return in `--use`/`--decline` argv,
+// and `onboardingRunnerInvocation` rejects a non-absolute cwd. A relative
+// spelling (`strategies`, `./pmax-images`) would fail the allow-list.
+export function prefsCapableRoot(dir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const resolved = path.resolve(dir);
+  if (!prefsCreateRefused(dir, env)) return resolved;
+  return projectMembershipRoot(path.dirname(resolved)) ?? resolved;
+}
+
 export function updateProjectPrefs(
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -378,9 +403,7 @@ export function updateProjectPrefs(
   // (`mercury/strategies`) accrued its own consent + wizard answers. Creation-time
   // only — an existing prefs file keeps updating, so a legitimately nested project
   // and an already-strayed root are both left writable.
-  if (!fs.existsSync(prefsPath)
-    && !dirOwnsProject(cwd)
-    && projectMembershipRoot(path.dirname(path.resolve(cwd))) !== null) {
+  if (prefsCreateRefused(cwd, env)) {
     return readProjectPrefs(cwd, env);
   }
   const next = withProjectPrefsLock(prefsPath, () => {

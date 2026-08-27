@@ -11,6 +11,7 @@ import { hasMaterializedProjectAssets } from '../../shared/materialize';
 import { hostCapability } from '../../shared/host/capability-schema';
 import { hostSpawnType } from '../../shared/host/spawn-types';
 import { resolveProjectRoot } from '../../shared/hook/paths';
+import { prefsCapableRoot } from '../../shared/state/local-prefs';
 import {  packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { readActiveRunBootstrap, type RunBootstrapEnvelopeV2 } from '../../shared/run-bootstrap-policy';
@@ -110,7 +111,8 @@ export function setupPendingDirective(ctx: Ctx, cwd: string): string {
 export const STACK_IDS = new Set(Object.keys(STACKS));
 
 export function sessionProjectRoot(ctx: Ctx): string {
-  return resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  const resolved = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  return prefsCapableRoot(resolved);
 }
 
 // The active envelope, tolerated as absent: header decoration must never fail

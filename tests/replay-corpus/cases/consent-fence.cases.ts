@@ -50,6 +50,7 @@ import type { CaseSpec } from '../run-case';
 import {
   declinedExistingCodebase,
   declinedScaffolded,
+  enclosedChildPending,
   preConsentWritesStillPending,
   preConsentWritesThenConsented,
   preConsentWritesThenDeclined,
@@ -141,5 +142,15 @@ export const CONSENT_FENCE_CASES: CaseSpec[] = [
     event: 'SessionStart',
     project: declinedScaffolded,
     expectGate: null,
+  },
+  {
+    id: 'consent.enclosed-child-pending-write',
+    notes: 'DEADLOCK: pending marker-less child + enclosing git parent + mutating Write, workspace ceiling at the child (cwd). Consent must stay on the parent — deny onboarding-use-plugin-question, never a child-identity ask or a later gate that would go green if the child were treated as its own unanswered root. Seeded: resolve/prefsCapableRoot falling back to the child moves this row off onboarding-use-plugin-question (or keeps the question but names a bucket prefs CREATE will refuse). workspaceRoot: cwd so ceiling === child, the architect\'s primary reproduction',
+    host: 'claude',
+    event: 'PreToolUse',
+    project: enclosedChildPending,
+    expectGate: 'onboarding-gate',
+    workspaceRoot: 'cwd',
+    tool: { class: 'file-write', rawName: 'Write', filePath: 'src/app.ts', content: 'export const app = 1;\n' },
   },
 ];

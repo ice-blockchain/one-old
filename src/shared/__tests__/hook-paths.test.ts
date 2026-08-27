@@ -497,8 +497,16 @@ test('projectMembershipRoot: a stray manifest in an ancestor never absorbs a chi
 
     assert.equal(projectMembershipRoot(workspace), null,
       'a manifest-only ancestor is not a repository boundary');
-    assert.equal(resolveProjectRoot(workspace, ''), workspace,
-      'the marker-less dir stays its own root');
+    assert.equal(resolveProjectRoot(workspace, ''), outer,
+      'resolution follows prefsCapableRoot to the leftover-manifest parent');
+
+    // Leftover go.mod must not hijack a directory that owns itself.
+    const owned = path.join(outer, 'owned-git');
+    fs.mkdirSync(path.join(owned, '.git'), { recursive: true });
+    assert.equal(projectMembershipRoot(owned), owned,
+      'a child with its own .git is its own membership root');
+    assert.equal(resolveProjectRoot(owned), owned,
+      'an owning-git child under a leftover ancestor manifest stays itself');
 
     // Version control in the same place DOES absorb it — that is the intended signal.
     fs.mkdirSync(path.join(outer, '.git'), { recursive: true });

@@ -29,6 +29,7 @@ import {
   clearProjectHostPrefs,
   mergeProjectHostPrefs,
   mergeProjectPrefs,
+  prefsCapableRoot,
   readEffectiveState,
   readState,
   writeGlobalCodeGraphProvider,
@@ -80,7 +81,7 @@ export function computeOnboarding(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): OnboardingView {
-  return computeOnboardingAt(cwd, env, 0);
+  return computeOnboardingAt(prefsCapableRoot(cwd, env), env, 0);
 }
 
 function computeOnboardingAt(

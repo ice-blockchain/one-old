@@ -387,7 +387,7 @@ const ROWS: readonly Row[] = [
       fs.mkdirSync(workspace, { recursive: true });
       return {
         cwd: workspace,
-        expected: workspace,
+        expected: root, // resolution follows prefsCapableRoot; membership still does not absorb
         readback: [
           ['the ancestor has a manifest', () => fs.existsSync(path.join(root, 'go.mod')), true],
           ['but NO version control', () => fs.existsSync(path.join(root, '.git')), false],
