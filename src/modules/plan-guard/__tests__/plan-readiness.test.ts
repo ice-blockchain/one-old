@@ -4632,3 +4632,47 @@ test('a damaged or forged bound record reads as bound, and an absent one as clea
     assert.equal(boundedScanTruncated(dir, 'OTHER'), true);
   });
 });
+
+test('PLAN_READY maps source-surface overflow to architecture-scan-bound-gate', {
+  timeout: 120_000,
+}, () => {
+  withProject((dir) => {
+    const state = {
+      mode: 'existing-codebase',
+      stack: 'custom-frontend',
+      frontend: 'react-vite',
+      backend: 'none',
+      mobile: { framework: 'none' },
+      onboardingComplete: true,
+      currentRunId: 'R',
+    };
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      dependencies: { react: '19.0.0', vite: '7.0.0' },
+    }));
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src/main.tsx'), 'export {}\n');
+    fs.mkdirSync(path.join(dir, 'public'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'public/foo.png'), '');
+    for (let i = 0; i < 10_001; i += 1) {
+      fs.writeFileSync(path.join(dir, 'src', `bulk-${String(i).padStart(5, '0')}.ts`), 'export {}\n');
+    }
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+
+    writeRequiredMemory(dir, state);
+    writeArchitectureInputOnly(dir, 'R');
+    const violations = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.ok(violations.includes('architecture-scan-bound-gate'), `got: ${violations.join(', ')}`);
+    assert.ok(!violations.includes('architecture-contract-gate'), `got: ${violations.join(', ')}`);
+  });
+});

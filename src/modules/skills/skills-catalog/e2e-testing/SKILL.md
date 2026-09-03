@@ -15,6 +15,7 @@ Comprehensive Playwright patterns for building stable, fast, and maintainable E2
 For the RED-GREEN-REFACTOR cycle, coverage tiers, and AAA test structure, use
 the `tdd-workflow` skill. This skill covers the Playwright-specific layer:
 Page Object Model, config, flakiness control, artifacts, and CI integration.
+Visual and behavioral Traffic One QA is `node ~/.traffic-one/bin/qa-evidence-runner.cjs browser`, not `pnpm test:e2e` or `npm run dev`.
 
 ## Test File Organization
 

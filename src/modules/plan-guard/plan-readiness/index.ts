@@ -11,6 +11,7 @@ import {
   capabilityProfileForRun,
   compileArchitectureForRun,
   ensureScaffoldContent,
+  isArchitectureScanBoundError,
   moduleOutputVariants,
   persistCompiledArchitecture,
   publishRuntimeAssignments,
@@ -731,10 +732,16 @@ Write/Edit/apply_patch of this path are refused. Unrecognised shell that names t
           }
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        violations.push(block('architecture-contract-gate',
-          `Architecture contract gate: do not emit \`PLAN_READY\` until \`.traffic-one/runs/${runId || '<runId>'}/architecture-input-v1.json\` is valid and runtime compilation succeeds. ${message}. The architect may change only semantic routes/modules/component placement/uiPrimitives/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.`,
-          { ERROR: message }));
+        if (isArchitectureScanBoundError(error)) {
+          violations.push(block('architecture-scan-bound-gate',
+            `Architecture scan bound: compilation listed ${error.count} source-surface files, which exceeds the compile listing bound. Narrow \`sourceRoots\` / \`layerRoots\` or declare generated trees in \`buildOutputs\` so the listing stays inside the owned surface.`,
+            { COUNT: error.count }));
+        } else {
+          const message = error instanceof Error ? error.message : String(error);
+          violations.push(block('architecture-contract-gate',
+            `Architecture contract gate: do not emit \`PLAN_READY\` until \`.traffic-one/runs/${runId || '<runId>'}/architecture-input-v1.json\` is valid and runtime compilation succeeds. ${message}. The architect may change only semantic routes/modules/component placement/uiPrimitives/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.`,
+            { ERROR: message }));
+        }
       }
     }
   }

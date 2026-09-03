@@ -1010,9 +1010,8 @@ export function changedRoutes(
   // `theme/tokens.ts`, `styles/colors.ts`, `packages/ui/**` — is untouched.
   //
   // Getting this wrong is expensive in a way the impact verdict is not: the
-  // fan-out is consumed by qa-evidence/lighthouse.ts, which runs Lighthouse
-  // PER ROUTE, and by qa-evidence/browser.ts, which requires the scenario to
-  // cover `changedRoutes` exactly. A `token-report/aggregate.ts` in the diff
+  // fan-out is consumed by qa-evidence/browser.ts, which requires the scenario
+  // to cover `changedRoutes` exactly. A `token-report/aggregate.ts` in the diff
   // bought a full-site sweep on the strength of a hyphen.
   const globalVisualChange = impact === 'visual' && paths.some((file) => (
     VISUAL_RE.test(file)

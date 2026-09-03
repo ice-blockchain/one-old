@@ -125,8 +125,11 @@ everyone else.
    hardcoded copy, rendered-child `t()`, incomplete `<Trans>` (`ns`,
    `i18nKey`, or fallback missing), and missing catalog keys without turning
    untouched legacy backlog into a test migration.
-6. Run canonical root test/build/lint/typecheck/format commands that exist and
-   are relevant to the stack. Name exact commands and actual outcomes.
+6. Run canonical root test/lint/typecheck/format commands that exist and are
+   relevant to the stack. Name exact commands and actual outcomes. For
+   `none`/`nonvisual`, the `stack` runner still executes the project `build`.
+   For `behavioral`/`visual`, do not run a production `build` on this step —
+   first-pass QA is the output-manifest preflight below.
 7. Measure changed-surface coverage when configured. Never invent a percentage;
    report unavailable tooling explicitly.
 
@@ -160,7 +163,17 @@ a browser.
 ## Canonical web QA runner
 
 For `behavioral`/`visual`, follow the exact commands and scenario schema in the
-`browser-qa` skill. Build first, then invoke:
+`browser-qa` skill. First pass is the output-manifest preflight, not a project
+`build`:
+
+```bash
+node ~/.traffic-one/bin/qa-evidence-runner.cjs manifest \
+  --run-id "$RUN_ID" \
+  --build-dir apps/web/dist
+```
+
+Change `--build-dir` to the runtime-detected output root. Project `build` only
+if that preflight fails or product source changed (fix-cycle). Then invoke:
 
 ```bash
 node ~/.traffic-one/bin/qa-evidence-runner.cjs browser \
@@ -169,8 +182,8 @@ node ~/.traffic-one/bin/qa-evidence-runner.cjs browser \
   --scenario-file ".traffic-one/reports/qa/$RUN_ID/scenario-v1.json"
 ```
 
-Change `--build-dir` to the runtime-detected output root. For Next/Nuxt/custom
-SSR, append the skill's shell-free `--server-command-json` adapter. Each changed
+For Next/Nuxt/custom SSR, append the skill's shell-free `--server-command-json`
+adapter. Each changed
 route must include a real interactive action, route-specific selector, and
 planned final path.
 
@@ -199,6 +212,12 @@ one exit with `{"status":"already-running","lockPid":…}` (code 3) — if you s
 that, a runner is still working; wait for it instead of retrying (a real run
 was invalidated by four overlapping runners racing the same artifacts). Read
 the final report from disk only after the terminal JSON line appears.
+
+After the runner finishes, Read `report-v2.json` and use its **summary fields
+only** (`schemaVersion`, `runId`, `status`, `checks`, `gates`,
+`lighthouse.status` / `lighthouse.reason`, `blockerSummary`). Do not unzip
+`*.trace.zip`. Do not Read `lighthouse.raw.json`, screenshot PNGs, `graph.json`,
+or `GRAPH_REPORT.md`.
 
 The runner must reserve a free port and bind it strictly for this run; never
 reuse a familiar preview port. It compares the expected fingerprint from the

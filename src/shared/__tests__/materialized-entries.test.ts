@@ -1563,7 +1563,6 @@ const ADMISSION_CENSUS: readonly string[] = [
   'fix-cycles :: src/modules/skills/skills-catalog/senior-eng-orchestrator/resources/prompt-templates.md',
   'manifest.json :: src/modules/rules/rules/modes/new-project-setup.md',
   'manifest.json :: src/modules/skills/skills-catalog/project-memory/SKILL.md',
-  'reports/lighthouse :: src/modules/rules/rules/frontend/performance.md',
   'reports/qa :: src/modules/skills/skills-catalog/browser-qa/SKILL.md',
   'rules :: src/modules/rules/rules/modes/new-project-setup.md',
   'rules :: src/modules/skills/skills-catalog/project-memory/SKILL.md',
@@ -1591,8 +1590,8 @@ test('the admission census is pinned file by file, so a new shipped instruction 
   // The empty half, asserted rather than left implied by absence.
   const covered = new Set(ADMISSION_CENSUS.map((row) => row.split(' :: ')[0]!));
   assert.deepEqual(RUNTIME_ENTRY_PATHS.map((rel) => rel.split(path.sep).join('/')).filter((rel) => !covered.has(rel)).sort(),
-    ['.codegraph-build-lock', '.once', '.opencode-heal-lock', 'backups', 'runs/.once'],
-    'these five are recognised on the strength of nothing shipped mentioning them beside an authoring verb, and '
+    ['.codegraph-build-lock', '.once', '.opencode-heal-lock', 'backups', 'reports/lighthouse', 'runs/.once'],
+    'these six are recognised on the strength of nothing shipped mentioning them beside an authoring verb, and '
     + 'that is an assertion, not a gap in the table above');
 });
 

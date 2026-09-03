@@ -106,6 +106,12 @@ export interface HostCapabilityFlags {
    * intentional; do not mention this" — which workers report as sabotage.
    */
   disjointWorkUnitFiles: boolean;
+  /**
+   * The host prompts the user before a model `rm -rf` of build output
+   * (`dist`, `.next`, `supabase/.temp`). That Allow dialog stalls the run.
+   * Named for the quirk, not the majority: only Claude Code and Cursor do this.
+   */
+  shellRecursiveRmPromptsUser: boolean;
 }
 
 const NONE: HostCapabilityFlags = {
@@ -119,12 +125,18 @@ const NONE: HostCapabilityFlags = {
   ignoresMaterializedGuidance: false,
   nativeBootstrapEnforcementPoint: false,
   disjointWorkUnitFiles: false,
+  shellRecursiveRmPromptsUser: false,
 };
 
 export const HOST_CAPABILITY_FLAGS: Readonly<Record<TrafficOneHost, HostCapabilityFlags>> = {
-  claude: { ...NONE, nativeBootstrapEnforcementPoint: true },
+  claude: { ...NONE, nativeBootstrapEnforcementPoint: true, shellRecursiveRmPromptsUser: true },
   codex: { ...NONE, sandboxNeedsEscalation: true },
-  cursor: { ...NONE, modelChoiceNeedsUserReply: true, availableModelsMustBeCaptured: true },
+  cursor: {
+    ...NONE,
+    modelChoiceNeedsUserReply: true,
+    availableModelsMustBeCaptured: true,
+    shellRecursiveRmPromptsUser: true,
+  },
   opencode: { ...NONE, opencodeSelfHosted: true, disjointWorkUnitFiles: true },
   kilo: { ...NONE, opencodeSelfHosted: true, noTaskCompletionLifecycle: true, disjointWorkUnitFiles: true },
   copilot: { ...NONE },

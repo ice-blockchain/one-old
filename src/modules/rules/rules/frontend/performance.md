@@ -24,11 +24,15 @@ live in `frontend/react/performance.md`.
   cannot disagree. A metric the contract does not declare is not gated at all —
   do not reintroduce a local default. An explicit `--fcp-max`-style flag still
   overrides, for a human deliberately tightening one run.
-- When auditing, use the Traffic One runner against a built production preview:
-  `node ~/.traffic-one/bin/lighthouse-runner.cjs --route /`.
-  The runner builds the app, starts production preview, runs Lighthouse mobile,
-  writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
-  non-zero below the contract's thresholds.
+- When auditing a behavioral/visual run, use the same-listener QA runner against
+  the built output:
+  `node ~/.traffic-one/bin/qa-evidence-runner.cjs browser --run-id "$RUN_ID" --build-dir apps/web/dist`
+  (change `--build-dir` to the runtime-detected output root). That command owns
+  the listener and runs Lighthouse against the same origin.
+- When `uiImpact` is `none` or `nonvisual` (tester ran `stack`, no browser
+  Lighthouse) and a production tree just finished, escape with
+  `node ~/.traffic-one/bin/lighthouse-runner.cjs --route / --skip-build`.
+  Do not pass `--build-dir` on that CLI.
 - Do not re-audit an unchanged build. If the same production build was already
   audited in this run, reuse that result; a change confined to tests, reports or
   documentation is not a reason to re-run Lighthouse.
@@ -36,8 +40,8 @@ live in `frontend/react/performance.md`.
   runner always finds a local binary. Without one it falls back to a network
   install (`pnpm dlx lighthouse@…`), and approval layers that deny
   registry-download execution (Codex Desktop guardian) then deny the WHOLE
-  runner. On such hosts run
-  `node ~/.traffic-one/bin/lighthouse-runner.cjs --route / --local-only`;
+  runner. On such hosts, for the stack-impact escape only, run
+  `node ~/.traffic-one/bin/lighthouse-runner.cjs --route / --skip-build --local-only`;
   a `blocked:lighthouse-missing` result means: add the devDependency with the
   project's package manager, then re-run — never retry the dlx path there.
 - Run the audit only for routes named by the performance contract, prioritizing

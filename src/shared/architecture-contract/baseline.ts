@@ -14,6 +14,7 @@ import {
   AUTHORED_SOURCE_EXTENSIONS,
   SKIP_DIRS,
   SKIP_FILES,
+  isInertScanPath,
 } from '../../config/reporting';
 import { readJson } from '../fsjson';
 import { sha256 } from '../text';
@@ -38,9 +39,143 @@ import {
 } from './naming';
 import { readRegularBytesOrThrow, readRegularFileOrThrow } from '../bounded-read';
 
+export const ARCHITECTURE_SCAN_BOUND_CODE = 'ARCHITECTURE_SCAN_BOUND' as const;
+
+export class ArchitectureScanBoundError extends Error {
+  readonly code = ARCHITECTURE_SCAN_BOUND_CODE;
+  readonly count: number;
+
+  constructor(count: number) {
+    super(`architecture scan bound exceeded: ${count} source-surface files`);
+    this.name = 'ArchitectureScanBoundError';
+    this.count = count;
+  }
+}
+
+export function isArchitectureScanBoundError(error: unknown): error is ArchitectureScanBoundError {
+  return error instanceof ArchitectureScanBoundError
+    || (
+      typeof error === 'object'
+      && error !== null
+      && (error as { code?: unknown }).code === ARCHITECTURE_SCAN_BOUND_CODE
+      && typeof (error as { count?: unknown }).count === 'number'
+    );
+}
+
+function listingPathspec(value: string): string | null {
+  const trimmed = value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '').trim();
+  if (!trimmed || trimmed === '.' || trimmed === '..' || trimmed.startsWith('../') || trimmed.startsWith('/')) {
+    return null;
+  }
+  if (trimmed.includes('..')) return null;
+  return trimmed;
+}
+
+function workspaceAppRoots(profile: CapabilityProfileV1): string[] {
+  const roots = new Set<string>();
+  for (const candidate of [...profile.sourceRoots, ...profile.entrypoints]) {
+    const match = /^(apps\/[^/]+)\//.exec(candidate.replace(/\\/g, '/'));
+    if (match) roots.add(`${match[1]}/app`);
+  }
+  return [...roots];
+}
+
+/**
+ * Trees (and the few exact files) compile listing asks Git for. Not the raw
+ * commit: public assets, tracked vendor, and plugin JS stay off the list
+ * unless they sit under a compiled root.
+ */
+export function compileListingPathspecs(profile: CapabilityProfileV1): string[] {
+  const specs: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string): void => {
+    const normalized = listingPathspec(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    specs.push(normalized);
+  };
+  for (const root of profile.sourceRoots) add(root);
+  for (const root of [
+    ...profile.layerRoots.pages,
+    ...profile.layerRoots.components,
+    ...profile.layerRoots.features,
+    ...profile.layerRoots.lib,
+  ]) add(root);
+  add('app');
+  for (const root of workspaceAppRoots(profile)) add(root);
+  add('internal');
+  add('cmd');
+  add('pkg');
+  add('src');
+  for (const entry of profile.entrypoints) {
+    const parent = path.posix.dirname(entry.replace(/\\/g, '/'));
+    if (parent && parent !== '.') add(parent);
+  }
+  add('package.json');
+  add('*/settings.py');
+  return specs;
+}
+
+function expandListingPathspecs(
+  projectRoot: string,
+  sha: string,
+  prefix: string,
+  requested: readonly string[],
+): string[] {
+  const concrete: string[] = [];
+  let wantsSettings = false;
+  for (const spec of requested) {
+    if (spec === '*/settings.py' || spec === ':(glob)*/settings.py') {
+      wantsSettings = true;
+      continue;
+    }
+    concrete.push(spec);
+  }
+  if (!wantsSettings) return concrete.map((spec) => prefixGitPathspec(prefix, spec));
+  let top = '';
+  try {
+    top = execFileSync('git', [
+      '-C', projectRoot, 'ls-tree', '--name-only', sha,
+      ...(prefix ? ['--', prefix] : []),
+    ], {
+      encoding: 'utf8',
+      timeout: 3_000,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    top = '';
+  }
+  const settings: string[] = [];
+  for (const raw of top.split(/\r?\n/)) {
+    const entry = raw.replace(/\\/g, '/');
+    if (!entry) continue;
+    const rel = prefix && entry.startsWith(prefix) ? entry.slice(prefix.length) : entry;
+    if (!rel || rel.includes('/')) continue;
+    settings.push(`${rel}/settings.py`);
+  }
+  return [...concrete, ...settings].map((spec) => prefixGitPathspec(prefix, spec));
+}
+
+function prefixGitPathspec(prefix: string, spec: string): string {
+  if (!prefix) return spec;
+  if (spec.startsWith(':(')) {
+    const close = spec.indexOf(')');
+    if (close < 0) return `${prefix}${spec}`;
+    return `${spec.slice(0, close + 1)}${prefix}${spec.slice(close + 1)}`;
+  }
+  return `${prefix}${spec}`;
+}
+
+function countTowardScanBound(relativePath: string, leftoverFullWalk: boolean): boolean {
+  if (leftoverFullWalk && isScanSkippedPath(relativePath)) return false;
+  return !isInertScanPath(relativePath);
+}
+
 export function baselinePathSet(
   projectRoot: string,
   baseline: ArchitectureBaselineV1,
+  pathspecs?: readonly string[],
 ): Set<string> {
   if (baseline.kind === 'file-manifest') {
     return new Set([
@@ -51,6 +186,10 @@ export function baselinePathSet(
   if (!baseline.identity.startsWith('git:')) {
     throw new Error('immutable Git baseline identity is invalid');
   }
+  const requested = (pathspecs || [])
+    .map((spec) => spec.replace(/\\/g, '/').trim())
+    .filter(Boolean);
+  const leftoverFullWalk = requested.length === 0;
   let output: string;
   let prefix = '';
   try {
@@ -60,16 +199,20 @@ export function baselinePathSet(
       maxBuffer: 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim().replace(/\\/g, '/');
+    const gitPathspecs = leftoverFullWalk
+      ? (prefix ? [prefix] : [])
+      : expandListingPathspecs(projectRoot, baseline.identity.slice(4), prefix, requested);
     output = execFileSync('git', [
       '-C', projectRoot, 'ls-tree', '-r', '--name-only', baseline.identity.slice(4),
-      ...(prefix ? ['--', prefix] : []),
+      ...(gitPathspecs.length > 0 ? ['--', ...gitPathspecs] : []),
     ], {
       encoding: 'utf8',
       timeout: 3_000,
       maxBuffer: 8 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-  } catch {
+  } catch (error) {
+    if (isArchitectureScanBoundError(error)) throw error;
     throw new Error('immutable Git baseline tree cannot be read');
   }
   const files = output.split(/\r?\n/)
@@ -78,10 +221,19 @@ export function baselinePathSet(
     .filter((entry) => !prefix || entry.startsWith(prefix))
     .map((entry) => prefix ? entry.slice(prefix.length) : entry)
     .filter(Boolean);
-  if (files.length > ARCHITECTURE_SCAN_MAX_FILES) {
-    throw new Error(`baseline tree exceeds ${ARCHITECTURE_SCAN_MAX_FILES} files`);
+  let counted = 0;
+  const listed = new Set<string>();
+  for (const file of files) {
+    if (leftoverFullWalk && isScanSkippedPath(file)) continue;
+    listed.add(file);
+    if (countTowardScanBound(file, leftoverFullWalk)) {
+      counted += 1;
+      if (counted > ARCHITECTURE_SCAN_MAX_FILES) {
+        throw new ArchitectureScanBoundError(counted);
+      }
+    }
   }
-  return new Set(files);
+  return listed;
 }
 
 
@@ -119,7 +271,11 @@ export function isDeletableStrayArtifact(
   if (compiled.has(normalized)) return false;
   let baselinePaths: ReadonlySet<string>;
   try {
-    baselinePaths = baselinePathSet(projectRoot, architecture.baseline);
+    baselinePaths = baselinePathSet(
+      projectRoot,
+      architecture.baseline,
+      compileListingPathspecs(architecture.profile),
+    );
   } catch {
     return false;
   }
@@ -564,9 +720,11 @@ function fileManifestBaseline(projectRoot: string, roots: string[]): Architectur
       if (entry.isSymbolicLink()) {
         const target = canonicalTrafficOneContextLink(projectRoot, full, rel);
         if (target) {
-          scanned += 1;
-          if (scanned > ARCHITECTURE_SCAN_MAX_FILES) {
-            throw new Error(`baseline scan exceeds ${ARCHITECTURE_SCAN_MAX_FILES} files`);
+          if (!isInertScanPath(rel)) {
+            scanned += 1;
+            if (scanned > ARCHITECTURE_SCAN_MAX_FILES) {
+              throw new ArchitectureScanBoundError(scanned);
+            }
           }
           // The target file is hashed independently. This row additionally
           // makes replacing the canonical alias with another filesystem shape
@@ -582,9 +740,11 @@ function fileManifestBaseline(projectRoot: string, roots: string[]): Architectur
         continue;
       }
       if (!entry.isFile()) continue;
-      scanned += 1;
-      if (scanned > ARCHITECTURE_SCAN_MAX_FILES) {
-        throw new Error(`baseline scan exceeds ${ARCHITECTURE_SCAN_MAX_FILES} files`);
+      if (!isInertScanPath(rel)) {
+        scanned += 1;
+        if (scanned > ARCHITECTURE_SCAN_MAX_FILES) {
+          throw new ArchitectureScanBoundError(scanned);
+        }
       }
       let bytes: Buffer;
       try { bytes = readRegularBytesOrThrow(full); } catch {

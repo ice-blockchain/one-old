@@ -66,6 +66,7 @@ import {
   architectureRunSnapshotPath,
   baselinePathSet,
   captureArchitectureBaseline,
+  compileListingPathspecs,
   readArchitectureRunBaseline,
   readArchitectureRunSnapshot,
 } from './baseline';
@@ -272,7 +273,11 @@ export function compileArchitecture(
   ].map((root) => normalizeRelative(root)).filter((root): root is string => Boolean(root)))];
   const compiledBaseline = baseline
     || captureArchitectureBaseline(projectRoot, { ...profile, sourceRoots: compiledSourceRoots });
-  const immutablePaths = baselinePathSet(projectRoot, compiledBaseline);
+  const immutablePaths = baselinePathSet(
+    projectRoot,
+    compiledBaseline,
+    compileListingPathspecs(profile),
+  );
   const routesByModule = new Map(input.routes.map((route) => [route.moduleId, route]));
   const modules = input.modules.map((module) => {
     const resolved = resolveModuleOutput(

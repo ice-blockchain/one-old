@@ -3,8 +3,16 @@ import assert from 'node:assert/strict';
 
 import {
   applyPatchTargetPaths,
+  commandAppearsToExtractQaTrace,
   commandAppearsToWriteBuildArtifact,
+  commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
+  commandAppearsToWriteOrExecLocalMjs,
+  commandAppearsToCreateCodeGraphIgnore,
+  commandAppearsToDeleteCodeGraphIgnore,
+  commandAppearsToRecursiveRmPromptTarget,
+  isCodeGraphIgnorePath,
+  isLocalMjsPath,
   FEATURE_SOURCE_RE,
   isTestInfraConfigPath,
   isTestScopePath,
@@ -751,6 +759,148 @@ test('isTestInfraConfigPath classifies test-runner configs, not app bundler conf
   assert.equal(isTestInfraConfigPath('myvitest.config.ts'), false);
   assert.equal(isTestInfraConfigPath(''), false);
   assert.equal(isTestInfraConfigPath(undefined), false);
+});
+
+test('commandAppearsToWriteExternalTemp catches cd-relative, extract-without-dest, and /var/folders', () => {
+  const qaRecipe = 'cd /tmp && rm -rf tn390 && mkdir && unzip home-390.trace.zip';
+  assert.equal(commandAppearsToWriteExternalTemp(qaRecipe), true);
+  assert.equal(commandAppearsToWriteExternalTemp('cd /tmp && touch scratch.log'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('cd /private/tmp && touch x'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('cd /var/tmp && touch x'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('cd /tmp && mkdir'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('rm -rf /tmp'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('rm -rf /tmp/'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('unzip home-390.trace.zip', '/tmp'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('echo x > /var/folders/xx/yy/T/log'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('echo x > /private/var/folders/xx/yy/T/log'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('rm -rf /var/folders/xx/yy/T/scratch'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('npx tsc > /tmp/i18n_build.log'), true);
+
+  assert.equal(commandAppearsToWriteExternalTemp('rm -rf "$TMPDIR/scratch"'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('touch $TMPDIR/scratch'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('TMPDIR=/tmp/foo pnpm build'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('mktemp'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('mktemp -d'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('mktemp /tmp/foo.XXXX'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('unzip -l archive.zip'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('unzip -l archive.zip', '/tmp'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('cd /tmp && unzip -p vendor-release.zip'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('tar -tzf archive.tar.gz'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('tar -t archive.tar'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('npm test'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('npm test', '/tmp'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('mv .traffic-one/runs/finished-9 /tmp/parked'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('rm -rf apps/web/dist'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('rm -rf apps/web/dist && cd /tmp'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('touch ./file && cd /tmp'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('cp /tmp/payload ./dest'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('cp ./file /tmp/out'), true);
+  assert.equal(commandAppearsToWriteExternalTemp('mv /tmp/x ./y'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('mv ./y /tmp/x'), true);
+
+  assert.equal(commandAppearsToWriteExternalTemp('touch /Users/me/app/tmp/out', undefined, '/Users/me/app'), false);
+  assert.equal(commandAppearsToWriteExternalTemp('touch /tmp/out', undefined, '/Users/me/app'), true);
+  assert.equal(
+    commandAppearsToWriteExternalTemp('echo x > /var/folders/xx/yy/T/proj/out', undefined, '/var/folders/xx/yy/T/proj'),
+    false,
+  );
+  assert.equal(
+    commandAppearsToWriteExternalTemp('echo x > /var/folders/xx/yy/T/other/out', undefined, '/var/folders/xx/yy/T/proj'),
+    true,
+  );
+});
+
+test('commandAppearsToExtractQaTrace is extract-of-trace.zip only, not listing or release zips', () => {
+  assert.equal(commandAppearsToExtractQaTrace('unzip home-390.trace.zip'), true);
+  assert.equal(commandAppearsToExtractQaTrace('unzip .traffic-one/reports/qa/R/home-390.trace.zip'), true);
+  assert.equal(commandAppearsToExtractQaTrace('unzip HOME-390.TRACE.ZIP -d /tmp'), true);
+  assert.equal(commandAppearsToExtractQaTrace('cd /tmp && unzip home-390.trace.zip'), true);
+  assert.equal(commandAppearsToExtractQaTrace('tar -xf home-390.trace.zip'), true);
+  assert.equal(commandAppearsToExtractQaTrace('bsdtar -x -f home-390.trace.zip'), true);
+  assert.equal(commandAppearsToExtractQaTrace('unar home-390.trace.zip'), true);
+  assert.equal(commandAppearsToExtractQaTrace('ditto -x home-390.trace.zip dest'), true);
+  assert.equal(commandAppearsToExtractQaTrace('python -m zipfile -e home-390.trace.zip dest'), true);
+  assert.equal(commandAppearsToExtractQaTrace('unzip -p home-390.trace.zip'), true);
+  assert.equal(commandAppearsToExtractQaTrace('unzip -l home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('unzip -t home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('unzip --list home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('unzip --test home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('unzip -z home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('tar -t home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('tar -tzf home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('python3 -m zipfile -l home-390.trace.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace('unzip vendor-release.zip -d vendor/'), false);
+  assert.equal(commandAppearsToExtractQaTrace('unzip archive.zip'), false);
+  assert.equal(commandAppearsToExtractQaTrace(''), false);
+  assert.equal(commandAppearsToExtractQaTrace(undefined), false);
+});
+
+test('isLocalMjsPath and commandAppearsToWriteOrExecLocalMjs cover write and exec, not .local.ts or vite.config', () => {
+  assert.equal(isLocalMjsPath('apps/web/probe.local.mjs'), true);
+  assert.equal(isLocalMjsPath('./apps/web/probe.local.mjs'), true);
+  assert.equal(isLocalMjsPath('apps/web/probe.LOCAL.MJS'), true);
+  assert.equal(isLocalMjsPath('apps/web/probe.local.ts'), false);
+  assert.equal(isLocalMjsPath('vite.config.ts'), false);
+  assert.equal(isLocalMjsPath('apps/web/src/main.ts'), false);
+
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('echo x > apps/web/probe.local.mjs'), true);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('touch apps/web/probe.local.mjs'), true);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('node apps/web/probe.local.mjs'), true);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('node --import tsx apps/web/probe.local.mjs'), true);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('npx tsx apps/web/probe.local.mjs'), true);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('bun apps/web/probe.local.mjs'), true);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('./apps/web/probe.local.mjs'), true);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('node apps/web/probe.local.ts'), false);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('node vite.config.ts'), false);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs('cat apps/web/probe.local.mjs'), false);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs(''), false);
+  assert.equal(commandAppearsToWriteOrExecLocalMjs(undefined), false);
+});
+
+test('commandAppearsToRecursiveRmPromptTarget is rm -rf of dist/.next/supabase/.temp only', () => {
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -rf apps/web/dist'), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -fr ./dist'), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -r -f dist/'), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -f -r apps/web/.next'), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm --recursive --force supabase/.temp'), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -rf supabase/.temp/cache'), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -rf "$(pwd)/dist"'), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -rf node_modules'), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -rf node_modules/.cache'), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -rf node_modules/dist'), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -rf distribution'), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -r apps/web/dist'), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget('rm -f apps/web/dist'), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget("bash -c 'rm -rf apps/web/dist'"), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget("bash -o pipefail -c 'rm -rf .next'"), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget("sh -c 'rm -rf supabase/.temp'"), true);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget("bash -c 'echo rm -rf dist'"), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget("bash <<'SH'\nrm -rf apps/web/dist\nSH"), true);
+  const digest = [
+    "cat > .traffic-one/digests/run-1/reviewer.md <<'EOF'",
+    'Do not run',
+    'rm -rf apps/web/dist',
+    'echo x > .gitnexusignore',
+    'EOF',
+  ].join('\n');
+  assert.equal(commandAppearsToRecursiveRmPromptTarget(digest), false);
+  assert.equal(commandAppearsToCreateCodeGraphIgnore(digest, '/no-such-project'), false);
+  assert.equal(commandAppearsToDeleteCodeGraphIgnore(digest), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget(''), false);
+  assert.equal(commandAppearsToRecursiveRmPromptTarget(undefined), false);
+});
+
+test('codegraph ignore path is root .gitnexusignore/.graphifyignore only', () => {
+  assert.equal(isCodeGraphIgnorePath('.gitnexusignore'), true);
+  assert.equal(isCodeGraphIgnorePath('./.graphifyignore'), true);
+  assert.equal(isCodeGraphIgnorePath('apps/.gitnexusignore'), false);
+  assert.equal(isCodeGraphIgnorePath('src/.graphifyignore'), false);
+  assert.equal(commandAppearsToDeleteCodeGraphIgnore('rm .gitnexusignore'), true);
+  assert.equal(commandAppearsToDeleteCodeGraphIgnore('rm -f .graphifyignore'), true);
+  assert.equal(commandAppearsToDeleteCodeGraphIgnore('unlink .gitnexusignore'), true);
+  assert.equal(commandAppearsToDeleteCodeGraphIgnore('rm apps/.gitnexusignore'), false);
+  assert.equal(commandAppearsToCreateCodeGraphIgnore('echo x > .gitnexusignore', '/no-such-project'), true);
+  assert.equal(commandAppearsToCreateCodeGraphIgnore('touch .graphifyignore', '/no-such-project'), true);
 });
 
 test('applyPatchTargetPaths extracts Add/Update/Delete/Move targets, normalized', () => {

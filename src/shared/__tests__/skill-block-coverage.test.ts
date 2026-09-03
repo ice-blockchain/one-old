@@ -925,8 +925,6 @@ const PROSE_DIVERGED_FROM_FALLBACK: readonly string[] = [
   'plan-guard :: run-team-runtime-allowlist-gap',
   'plan-guard :: run-team-scope-conflict',
   'plan-guard :: scaffold-plan-gate',
-  'plan-guard :: tester-qa-build-identity-mismatch',
-  'plan-guard :: tester-qa-build-identity-missing',
   'plan-guard :: tester-qa-v2-gate',
   'plan-guard :: tester-stale-qa-gate',
   'plan-guard :: verification-contract-refresh-gate',

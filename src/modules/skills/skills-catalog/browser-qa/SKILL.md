@@ -54,8 +54,10 @@ manifest, owns the listener, loads Playwright and Lighthouse only from the
 project, writes machine evidence, writes `report-v2.json`, validates it while
 the listener is live, and then tears the listener down.
 
-After the stack's production build, run this manifest preflight with the actual
-output directory:
+First pass for `behavioral`/`visual` is this output-manifest preflight — not a
+project `build`. Change `--build-dir` to the runtime-detected output root.
+Project `build` only if the preflight fails or product source changed
+(fix-cycle):
 
 ```bash
 node ~/.traffic-one/bin/qa-evidence-runner.cjs manifest \
@@ -147,6 +149,12 @@ The command produces:
 - `.traffic-one/reports/qa/$RUN_ID/report-v2.json`;
 - when performance is required, `lighthouse.raw.json` and
   `lighthouse-evidence-v1.json`.
+
+After the runner finishes, Read `report-v2.json` and use its **summary fields
+only** (`schemaVersion`, `runId`, `status`, `checks`, `gates`,
+`lighthouse.status` / `lighthouse.reason`, `blockerSummary`). Do not unzip
+`*.trace.zip`. Do not Read `lighthouse.raw.json`, screenshot PNGs, `graph.json`,
+or `GRAPH_REPORT.md`.
 
 When `performance.required` is true, install project-local `lighthouse`; the
 same browser command runs it against the same live origin and port before

@@ -1974,7 +1974,6 @@ test('Tailwind breakpoints and shared component edits are visual and cover every
 // `frontend/*/styles.md`. Not one stylesheet, image or design token among them.
 //
 // It is not a cosmetic over-claim. The fan-out is consumed by
-// qa-evidence/lighthouse.ts, which runs Lighthouse PER ROUTE, and by
 // qa-evidence/browser.ts, which requires the scenario to cover changedRoutes
 // exactly — so a `token-logger.ts` in the diff bought a full-site sweep on the
 // strength of a hyphen.

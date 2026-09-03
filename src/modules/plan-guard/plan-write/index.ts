@@ -3,8 +3,9 @@
 // run-team, run-id, and static checks. Target classification lives in
 // targets.ts.
 
+import * as fs from 'fs';
 import * as path from 'path';
-import { asString } from '../../../adapters/coerce';
+import { asString, firstString } from '../../../adapters/coerce';
 import { obj, type Rec } from '../../../shared/obj';
 import { deny, noop } from '../../../core/result';
 import type { Ctx, HookResult } from '../../../core/types';
@@ -14,9 +15,16 @@ import { pluginUseDeclined } from '../../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from '../../agent-model/model-choice';
 import {
   BUILD_ARTIFACT_RE,
+  commandAppearsToExtractQaTrace,
   commandAppearsToWriteBuildArtifact,
   commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
+  commandAppearsToWriteOrExecLocalMjs,
+  commandAppearsToCreateCodeGraphIgnore,
+  commandAppearsToDeleteCodeGraphIgnore,
+  commandAppearsToRecursiveRmPromptTarget,
+  isCodeGraphIgnorePath,
+  isLocalMjsPath,
   FEATURE_SOURCE_RE,
   heredocBodies,
   shellAssetImportDest,
@@ -24,7 +32,7 @@ import {
   shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
 } from '../../../shared/feature-source';
-import { parseApplyPatch, patchTextFromToolInput } from '../../../shared/apply-patch';
+import { parseApplyPatch, patchTextFromToolInput, type ApplyPatchParseResult } from '../../../shared/apply-patch';
 import { projectRelativeHookPath } from '../../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../../shared/materialize';
 import { pluginRoot } from '../../../shared/paths';
@@ -60,6 +68,58 @@ import {
 } from './targets';
 
 const rawBlock = makePlanBlock(makeSkillBlock(pluginRoot));
+
+function normalizeAbsPrefix(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function pathEqualsOrUnder(candidate: string, root: string): boolean {
+  const path = normalizeAbsPrefix(candidate);
+  const base = normalizeAbsPrefix(root);
+  return path === base || path.startsWith(`${base}/`);
+}
+
+function cwdOutsideProject(structuredCwd: string, projectRoot: string): string {
+  if (!structuredCwd || !projectRoot.startsWith('/')) return structuredCwd;
+  return pathEqualsOrUnder(structuredCwd, projectRoot) ? '' : structuredCwd;
+}
+
+function codeGraphIgnoreExists(projectRoot: string, rel: string): boolean {
+  try {
+    return fs.existsSync(path.join(projectRoot, rel));
+  } catch {
+    return false;
+  }
+}
+
+function codeGraphIgnoreMutation(args: {
+  projectRoot: string;
+  writeTargetPaths: readonly string[];
+  directFilePath: string;
+  reconstructedPatch: Extract<ApplyPatchParseResult, { ok: true }> | null;
+  patchBase: string;
+  isShell: boolean;
+  rawCommand: string;
+}): boolean {
+  const { projectRoot, writeTargetPaths, directFilePath, reconstructedPatch, patchBase, isShell, rawCommand } = args;
+  if (reconstructedPatch) {
+    for (const operation of reconstructedPatch.operations) {
+      const rel = projectRelativeHookPath(patchBase, projectRoot, operation.path);
+      if (operation.kind === 'delete' && isCodeGraphIgnorePath(rel)) return true;
+      if (operation.kind === 'add' && isCodeGraphIgnorePath(rel) && !codeGraphIgnoreExists(projectRoot, rel)) {
+        return true;
+      }
+    }
+  }
+  const writeTargets = [...writeTargetPaths];
+  if (directFilePath && !writeTargets.includes(directFilePath)) writeTargets.push(directFilePath);
+  for (const target of writeTargets) {
+    if (isCodeGraphIgnorePath(target) && !codeGraphIgnoreExists(projectRoot, target)) return true;
+  }
+  if (!isShell) return false;
+  return commandAppearsToDeleteCodeGraphIgnore(rawCommand, projectRoot)
+    || commandAppearsToCreateCodeGraphIgnore(rawCommand, projectRoot);
+}
 
 // This single aggregator deny (bottom of planWriteGate) can be reached through
 // ~50 distinct block() call sites spread across plan-static/plan-readiness/
@@ -334,7 +394,30 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
     && !cleaningStrayArtifact
     && commandAppearsToWriteBuildArtifact(rawCommand);
-  const writingExternalTempViaCommand = isShellToolName(toolName) && commandAppearsToWriteExternalTemp(rawCommand);
+  // Structured cwd from tool_input WORKDIR_FIELDS only — never ctx.cwd. Hook
+  // cwd is the project; test fixtures live under os.tmpdir() (/var/folders on
+  // macOS), so treating ctx.cwd as external would deny every shell test here.
+  // Absolute dests under projectRoot are in-project writes even when the
+  // project itself lives under /tmp or /var/folders; the detector takes
+  // projectRoot so `touch ${projectRoot}/tmp/out` is never rewritten into
+  // `/tmp/out`.
+  const structuredCwd = firstString(
+    toolInput.workdir,
+    toolInput.working_dir,
+    toolInput.workingDir,
+    toolInput.working_directory,
+    toolInput.cwd,
+  );
+  const writingExternalTempViaCommand = isShellToolName(toolName)
+    && commandAppearsToWriteExternalTemp(
+      rawCommand,
+      cwdOutsideProject(structuredCwd, projectRoot),
+      projectRoot,
+    );
+  const writingOrExecLocalMjs = writeTargetPaths.some((target) => isLocalMjsPath(target))
+    || isLocalMjsPath(rawFilePath)
+    || isLocalMjsPath(directFilePath)
+    || (isShellToolName(toolName) && commandAppearsToWriteOrExecLocalMjs(rawCommand));
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
   const writingBuildArtifact = buildArtifactTargetPaths.length > 0 || writingBuildArtifactViaCommand;
   const runTeamTargetPaths = [...featureTargetPaths];
@@ -405,9 +488,41 @@ export function planWriteGate(ctx: Ctx): HookResult {
     }));
     noteOffender(target.filePath, before);
   }
-  if (hostFlags(ctx.host).opencodeSelfHosted && writingExternalTempViaCommand) {
+  if (writingExternalTempViaCommand) {
     violations.push(block('opencode-external-temp-shell',
-      'OpenCode/Kilo external-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.'));
+      'External-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.'));
+  }
+  // After external-temp: a `/tmp` unzip of a Playwright trace must keep
+  // first-fired `opencode-external-temp-shell`. In-project extract of
+  // `*.trace.zip` is this gate. Dest flags do not allow a trace extract.
+  if (isShellToolName(toolName) && commandAppearsToExtractQaTrace(rawCommand)) {
+    violations.push(block('qa-trace-unzip',
+      'QA trace gate: do not extract Playwright `*.trace.zip` archives. Those files are failure-only runner diagnostics; unzipping them is not how you read the verdict. Read the summary fields on `.traffic-one/reports/qa/<runId>/report-v2.json` (`schemaVersion`, `runId`, `status`, `checks`, `gates`, `lighthouse.status` / `lighthouse.reason`, `blockerSummary`). Do not Read `lighthouse.raw.json`, screenshot PNGs, `graph.json`, or `GRAPH_REPORT.md`. Re-run the canonical QA runner if the evidence is insufficient.'));
+  }
+  if (writingOrExecLocalMjs) {
+    violations.push(block('local-mjs-path-deny',
+      'Local-module gate: do not write or execute `*.local.mjs` anywhere in the project. That suffix is a host-local probe file, not a compiled output, and running it bypasses the owned toolchain. Use a compiled test or the canonical QA runner instead.'));
+  }
+  if (
+    hostFlags(ctx.host).shellRecursiveRmPromptsUser
+    && isShellToolName(toolName)
+    && commandAppearsToRecursiveRmPromptTarget(rawCommand)
+  ) {
+    violations.push(block('host-recursive-rm-prompt',
+      'Recursive-rm gate: this host prompts the user for `rm -rf` of build output (`dist`, `.next`, `supabase/.temp`). Do not run that from a model command — it stalls the run on an Allow dialog. Delete the tree from the host UI, or ask the user to remove it, then continue. `rm -rf node_modules` and `node_modules/.cache/…` stay allowed.'));
+  }
+  const mutatingCodeGraphIgnore = codeGraphIgnoreMutation({
+    projectRoot,
+    writeTargetPaths,
+    directFilePath,
+    reconstructedPatch: reconstructedPatch?.ok ? reconstructedPatch : null,
+    patchBase,
+    isShell: isShellToolName(toolName),
+    rawCommand,
+  });
+  if (mutatingCodeGraphIgnore) {
+    violations.push(block('codegraph-ignore-mutate',
+      'Code-graph ignore gate: do not create or delete `.gitnexusignore` or `.graphifyignore`. Those files are the user\'s scan-ignore surface (and the runtime\'s temporary scan scope). Leave an existing user file in place; do not invent one; do not remove one. Runtime `applyCodeGraphScanIgnore` owns the temporary scoped file.'));
   }
   // Mode-downgrade guard: mode is set at onboarding, and the architecture-gate
   // family stands down on every mode that is not `new-project` — so a CONFIRMED

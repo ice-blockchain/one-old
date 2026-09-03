@@ -131,6 +131,10 @@ Architecture assignment gate: the runtime-compiled outputs are not covered befor
 Architecture contract gate: do not emit `PLAN_READY` until the run's `architecture-input-v1.json` is valid and runtime compilation succeeds. {{ERROR}}. The architect may change only semantic routes/modules/component placement/uiPrimitives/i18n/exceptions; runtime owns roots, roles, outputs, baseline, and hashes.
 <!-- T1BLOCK:END architecture-contract-gate -->
 
+<!-- T1BLOCK:BEGIN architecture-scan-bound-gate -->
+Architecture scan bound: compilation listed {{COUNT}} source-surface files, which exceeds the compile listing bound. Narrow `sourceRoots` / `layerRoots` or declare generated trees in `buildOutputs` so the listing stays inside the owned surface.
+<!-- T1BLOCK:END architecture-scan-bound-gate -->
+
 <!-- T1BLOCK:BEGIN contract-self-conflict -->
 Contract satisfiability gate: the compiled plan demands outputs its own write gates forbid — {{CONFLICTS}}. `PLAN_READY` is denied before any implementer spawns: a role facing this contract would be hard-denied on a mandatory output and the run would deadlock. Fix the semantic ArchitectureInputV1 (routes/modules/placement/i18n/exceptions) so every compiled output is writable, then re-emit `PLAN_READY`.
 <!-- T1BLOCK:END contract-self-conflict -->
@@ -264,11 +268,11 @@ Tester completion gate: do not write `TESTS_GREEN` on a stale QA report. The rep
 <!-- T1BLOCK:END tester-stale-qa-gate -->
 
 <!-- T1BLOCK:BEGIN tester-qa-build-identity-missing -->
-Tester completion gate: do not write `TESTS_GREEN` when the report does not identify the build served over HTTP. Expected current builds: {{EXPECTED}}. Start the preview on a free strict port owned by this run, record the served fingerprint, and re-run the sweep.
+Tester completion gate: do not write `TESTS_GREEN` when the report does not identify the build served over HTTP. Expected current builds: {{EXPECTED}}. Re-run `node ~/.traffic-one/bin/qa-evidence-runner.cjs` with `--build-dir` pointing at this run's output root. Do not start a preview server.
 <!-- T1BLOCK:END tester-qa-build-identity-missing -->
 
 <!-- T1BLOCK:BEGIN tester-qa-build-identity-mismatch -->
-Tester completion gate: the QA sweep validated a different application. Expected {{EXPECTED}}, observed {{OBSERVED}}. Stop the foreign server or bind a free strict port, then re-run before emitting `TESTS_GREEN`.
+Tester completion gate: the QA sweep validated a different application. Expected {{EXPECTED}}, observed {{OBSERVED}}. Re-run `node ~/.traffic-one/bin/qa-evidence-runner.cjs` with `--build-dir` pointing at this run's output root. Do not start a preview server.
 <!-- T1BLOCK:END tester-qa-build-identity-mismatch -->
 
 <!-- T1BLOCK:BEGIN run-team-shell -->
@@ -276,8 +280,24 @@ Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `
 <!-- T1BLOCK:END run-team-shell -->
 
 <!-- T1BLOCK:BEGIN opencode-external-temp-shell -->
-OpenCode/Kilo external-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.
+External-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.
 <!-- T1BLOCK:END opencode-external-temp-shell -->
+
+<!-- T1BLOCK:BEGIN qa-trace-unzip -->
+QA trace gate: do not extract Playwright `*.trace.zip` archives. Those files are failure-only runner diagnostics; unzipping them is not how you read the verdict. Read the summary fields on `.traffic-one/reports/qa/<runId>/report-v2.json` (`schemaVersion`, `runId`, `status`, `checks`, `gates`, `lighthouse.status` / `lighthouse.reason`, `blockerSummary`). Do not Read `lighthouse.raw.json`, screenshot PNGs, `graph.json`, or `GRAPH_REPORT.md`. Re-run the canonical QA runner if the evidence is insufficient.
+<!-- T1BLOCK:END qa-trace-unzip -->
+
+<!-- T1BLOCK:BEGIN local-mjs-path-deny -->
+Local-module gate: do not write or execute `*.local.mjs` anywhere in the project. That suffix is a host-local probe file, not a compiled output, and running it bypasses the owned toolchain. Use a compiled test or the canonical QA runner instead.
+<!-- T1BLOCK:END local-mjs-path-deny -->
+
+<!-- T1BLOCK:BEGIN host-recursive-rm-prompt -->
+Recursive-rm gate: this host prompts the user for `rm -rf` of build output (`dist`, `.next`, `supabase/.temp`). Do not run that from a model command — it stalls the run on an Allow dialog. Delete the tree from the host UI, or ask the user to remove it, then continue. `rm -rf node_modules` and `node_modules/.cache/…` stay allowed.
+<!-- T1BLOCK:END host-recursive-rm-prompt -->
+
+<!-- T1BLOCK:BEGIN codegraph-ignore-mutate -->
+Code-graph ignore gate: do not create or delete `.gitnexusignore` or `.graphifyignore`. Those files are the user's scan-ignore surface (and the runtime's temporary scan scope). Leave an existing user file in place; do not invent one; do not remove one. Runtime `applyCodeGraphScanIgnore` owns the temporary scoped file.
+<!-- T1BLOCK:END codegraph-ignore-mutate -->
 
 <!-- T1BLOCK:BEGIN run-team-not-subagent -->
 Run-team enforcement gate: this project was onboarded with `team.mode="subagents"`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not {{ROLE}}. {{RECOVERY}} Do NOT fall back to delegating from inside a worker or rewriting team preferences.

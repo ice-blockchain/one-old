@@ -202,7 +202,7 @@ const ROSTER: ReadonlyArray<{ module: string; sites: number; note: string }> = [
   { module: 'shared/qa-report-v2/build.ts', sites: 1, note: 'bounded: served-build HTTP probe at HTTP_PROBE_SPAWN_TIMEOUT_MS' },
   // ---- bounded, owned elsewhere, smaller than the two above ----
   { module: 'shared/verification-contract/git.ts', sites: 6, note: 'bounded: every git execFileSync carries timeout 3_000' },
-  { module: 'shared/architecture-contract/baseline.ts', sites: 5, note: 'bounded: every git execFileSync carries timeout 3_000' },
+  { module: 'shared/architecture-contract/baseline.ts', sites: 6, note: 'bounded: every git execFileSync carries timeout 3_000' },
   { module: 'shared/host/plan.ts', sites: 3, note: 'bounded: sqlite3 -readonly probes at timeout 2_000' },
   { module: 'shared/one-mcp/cache-lock.ts', sites: 1, note: 'bounded: sleepSync inside a retry loop with a constant attempt count' },
   { module: 'shared/one-settings.ts', sites: 1, note: 'bounded: sleepSync inside a retry loop with a constant attempt count' },

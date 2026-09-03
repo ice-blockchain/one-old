@@ -2641,8 +2641,9 @@ test('isDeletableStrayArtifact permits only untracked, uncompiled, non-baseline 
       ],
     });
 
-    // The 6co shape: a stray raster beside owned icons that neither the child
-    // nor the parent could remove.
+    // 6co: a post-capture raster outside the compiled allowlist and the
+    // immutable baseline is deletable — otherwise the frontend cannot remove
+    // `public/icons/favicon.svg.png` after a denied write.
     fs.mkdirSync(path.join(dir, 'public/icons'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'public/icons/favicon.svg.png'), 'stray');
     assert.equal(isDeletableStrayArtifact(dir, 'public/icons/favicon.svg.png', architecture), true);

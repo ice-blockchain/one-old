@@ -801,6 +801,8 @@ const CONSTANT_LITERALS: Readonly<Record<string, string>> = {
   // not see the tilde could not see the shape the first fold exists for either.
   'opencode-plan-batch-required': '~/.traffic-one/bin/opencode-runner.cjs',
   'tester-qa-v2-gate': '~/.traffic-one/bin/qa-evidence-runner.cjs',
+  'tester-qa-build-identity-missing': '~/.traffic-one/bin/qa-evidence-runner.cjs',
+  'tester-qa-build-identity-mismatch': '~/.traffic-one/bin/qa-evidence-runner.cjs',
   // The tilde here is an ILLUSTRATION rather than the setting: the sentence
   // shows that an unreadable literal which does NOT spell the runs tree stays
   // permitted, and a tilde is the shortest unreadable head there is. A home

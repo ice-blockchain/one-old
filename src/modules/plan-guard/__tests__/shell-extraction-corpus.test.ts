@@ -134,17 +134,17 @@ function project(): { dir: string; cleanup: () => void } {
 }
 
 /** The gate outcome of one command against a fresh project: `noop`, `ok` or `deny:<id>`. */
-function outcome(command: string): string {
+function outcome(command: string, host: HostId = 'claude'): string {
   const fixture = project();
   try {
     const input: HookInput = {
       event: 'PreToolUse',
-      host: 'claude' as HostId,
+      host,
       cwd: fixture.dir,
       raw: { tool_name: 'Bash', tool_input: { command } },
       tool: { class: 'shell' as ToolClass, rawName: 'Bash' },
     };
-    const result = planWriteGate({ input, host: 'claude', cwd: fixture.dir, now: () => 'x' } as unknown as Ctx);
+    const result = planWriteGate({ input, host, cwd: fixture.dir, now: () => 'x' } as unknown as Ctx);
     if (result.kind !== 'deny') return result.kind;
     return `deny:${(result as { denyId?: string }).denyId || '?'}`;
   } finally {
@@ -766,13 +766,24 @@ test('the run-rotation exemption is reachable, and only for the shape it is writ
 });
 
 test('ordinary work that destroys nothing is permitted', () => {
+  // OpenCode: the sidecar permit is host-agnostic. Claude/Cursor now refuse
+  // `rm -rf` of `dist` as `host-recursive-rm-prompt` (see the row below).
   const refused: string[] = [];
   for (const row of PERMIT) {
-    const got = outcome(row.cmd);
+    const got = outcome(row.cmd, 'opencode');
     if (got.startsWith('deny')) refused.push(`${row.id} (${row.why}) -> ${got}: ${row.cmd}`);
   }
   assert.deepEqual(refused, [], 'these commands destroy no sidecar and were refused anyway');
   assert.ok(PERMIT.length >= 53, `the permit corpus shrank to ${PERMIT.length} rows`);
+});
+
+test('Claude refuses the permit-corpus dist cleans that OpenCode still allows', () => {
+  for (const id of ['p5-dist', 'p5-pwd-dist', 'r9-permit-glob-dist', 'w10-permit-tilde-suffix', 'w10-permit-closer']) {
+    const row = PERMIT.find((entry) => entry.id === id);
+    assert.ok(row, id);
+    assert.equal(outcome(row!.cmd), `deny:host-recursive-rm-prompt`, row!.cmd);
+    assert.equal(outcome(row!.cmd, 'opencode'), 'noop', row!.cmd);
+  }
 });
 
 /**

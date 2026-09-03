@@ -86,7 +86,11 @@ that do not match the current source, and artifacts older than the run.
 
 ## Lighthouse and SEO
 
-Lighthouse is independent from functional QA. Run it only for redesigns,
+Lighthouse is independent from functional QA. On a behavioral/visual contract,
+run it through `qa-evidence-runner.cjs browser` with `--build-dir` on the same
+listener; do not start a separate preview. On `none`/`nonvisual`, after a
+just-finished production tree use `lighthouse-runner.cjs --route / --skip-build`.
+Run it only for redesigns,
 important visual changes, detected performance risk, or an explicit request.
 
 - Explicit plan thresholds are exact gates.

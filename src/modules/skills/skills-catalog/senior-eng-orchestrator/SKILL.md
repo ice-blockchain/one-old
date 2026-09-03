@@ -541,11 +541,10 @@ the index is now empty or stale vs the new source.
 
 Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls with task names `senior_reviewer` and `senior_tester`, each role's exact runtime-resolved `model`, and `fork_turns: "none"` before any `wait_agent`, then collect them with ONE bare `wait_agent` (no `targets`) at `timeout_ms: 900000`; retain matching message markers for cross-host compatibility). A bare `wait_agent` returns as soon as ANY agent sends a message or finishes, so a long ceiling never delays you — it only deletes the empty wake-ups. Re-issue the SAME single long call after each wake. Never re-wait in 30–60s slices and do not interleave `list_agents` between them: a timeout is not evidence of a stall, so `list_agents` belongs only after a full long wait expired with nothing returned. Measured 15co: 88 `wait_agent` calls at 60s, 72 of them bare timeouts, ≈9M input tokens — about half the orchestrator's entire context spend, buying no information. On Claude/Cursor/Codex, pass the runtime-resolved model: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. On other hosts the same tiers remain recommendations rather than spawn fields. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
 
-Before E2E/visual QA, require fresh build metadata. The tester must prove the
-running preview is backed by a build newer than the last changed source file
-(`dist/`, `.next/BUILD_ID`, Vite manifest, Expo/native bundle stamp, or a fresh
-preview start after a successful build). A stale build blocks QA; it is not a
-green pass.
+Before E2E/visual QA, the tester first-passes `qa-evidence-runner.cjs manifest
+--build-dir …` against the runtime-detected output root. Project `build` only
+if that preflight fails or product source changed (fix-cycle). A missing or
+stale output tree blocks QA; it is not a green pass.
 
 Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Derive `<IMPLEMENTER_DIGEST_PATHS>` from the implementation roles actually present in the immutable work units/assignments; both templates instruct the verifier to read exactly those digests, never an absent sibling's digest, then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool) on every review and re-review pass; tester writes `tester.md` directly on every test and re-test pass.
 
@@ -628,19 +627,21 @@ node ~/.traffic-one/bin/run-status.cjs --run-id "<run-id>" --status blocked --ou
 ### Phase 3c — Parent integration pass
 
 After reviewer `APPROVED` and tests are mechanically green, run the relevant
-root verification commands yourself (install/lint/typecheck/test/build). Read
-the fresh `QaReportV2`; do not replace it with parent-authored evidence.
+root verification commands yourself (install/lint/typecheck/test). Do not run
+another production `build` after `TESTS_GREEN`. Read the fresh `QaReportV2`;
+do not replace it with parent-authored evidence.
 `senior-tester` owns the mechanical sweep and reruns it after fixes in the same
 agent. The parent may inspect the few visual screenshots for subjective
 quality, but the interactive browser is never part of the mandatory path.
 
-The tester starts a build from the current source, binds a free strict port,
-records PID/port/start/URL and expected-versus-served fingerprints, and rejects
-stale servers or older artifacts. For `behavioral`, it asserts DOM, actions,
-routing, hydration, console, and network without mandatory screenshots. For
-`visual`, it also captures every width in `requiredScreenshotWidths` (normally
-390 and 1440; 768 only for tablet risk). Lighthouse is separate performance
-evidence and runs only when the performance contract or user requires it.
+For `behavioral`/`visual`, the tester first-passes `qa-evidence-runner.cjs
+manifest --build-dir …` and only builds if that fails or product source
+changed. The runner owns the listener and records expected-versus-served
+fingerprints. For `behavioral`, it asserts DOM, actions, routing, hydration,
+console, and network without mandatory screenshots. For `visual`, it also
+captures every width in `requiredScreenshotWidths` (normally 390 and 1440;
+768 only for tablet risk). Lighthouse rides the same `browser` command when
+the performance contract or user requires it.
 
 ### Phase 4 — Ship (only on explicit intent)
 

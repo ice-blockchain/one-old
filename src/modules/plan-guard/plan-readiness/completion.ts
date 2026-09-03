@@ -743,11 +743,11 @@ export function digestCompletionGates(ctx: {
       const observed = qaReportVerifiedBuild(projectRoot, testerDigest[2] || '');
       if (observed && !observed.present) {
         violations.push(block('tester-qa-build-identity-missing',
-          `Tester completion gate: do not write \`TESTS_GREEN\` on a QA report that does not name the build it loaded. This run's fresh build is \`${expectedBuilds.join(', ')}\`, but the QA report has no \`verifiedBuild\`. Start the preview on a port THIS run owns (\`--strictPort\`, never a shared default like 4173/5173/3000), fetch the base URL, read the entry asset the served HTML references, record it as \`verifiedBuild\`, and re-run the sweep.`,
+          'Tester completion gate: do not write `TESTS_GREEN` when the report does not identify the build served over HTTP. Expected current builds: {{EXPECTED}}. Re-run `node ~/.traffic-one/bin/qa-evidence-runner.cjs` with `--build-dir` pointing at this run\'s output root. Do not start a preview server.',
           { EXPECTED: expectedBuilds.join(', ') }));
       } else if (observed && observed.present && !expectedBuilds.includes(observed.value)) {
         violations.push(block('tester-qa-build-identity-mismatch',
-          `Tester completion gate: the QA sweep validated a DIFFERENT application. The report records \`verifiedBuild: ${observed.value}\` but this run's fresh build is \`${expectedBuilds.join(', ')}\` — the base URL answered a leftover preview server (observed live: a previous project's \`vite preview\` still held the port, so every check passed against another app). Kill the foreign server or bind your own free port with \`--strictPort\`, re-run the sweep against it, and only then re-emit \`TESTS_GREEN\`.`,
+          'Tester completion gate: the QA sweep validated a different application. Expected {{EXPECTED}}, observed {{OBSERVED}}. Re-run `node ~/.traffic-one/bin/qa-evidence-runner.cjs` with `--build-dir` pointing at this run\'s output root. Do not start a preview server.',
           { EXPECTED: expectedBuilds.join(', '), OBSERVED: observed.value }));
       }
     }

@@ -357,6 +357,7 @@ export const DENY_IDS = [
   'contract-self-conflict',
   'architect-opencode-queue-policy-gate',
   'architecture-contract-gate',
+  'architecture-scan-bound-gate',
   'plan-opencode-queue-gate',
   'plan-opencode-self-delegation-gate',
   'plan-opencode-queue-policy-gate',
@@ -420,6 +421,10 @@ export const DENY_IDS = [
 
   // ── modules/plan-guard/plan-write/index.ts (via block(), file-scoped) ────
   'opencode-external-temp-shell',
+  'qa-trace-unzip',
+  'local-mjs-path-deny',
+  'host-recursive-rm-prompt',
+  'codegraph-ignore-mutate',
   'registry-probe-gate',
   'state-mode-downgrade',
 
@@ -678,6 +683,7 @@ export const DENY_ID_CLASS = {
   'contract-self-conflict': 'sequencing',
   'architect-opencode-queue-policy-gate': 'briefing',
   'architecture-contract-gate': 'sequencing',
+  'architecture-scan-bound-gate': 'sequencing',
   'plan-opencode-queue-gate': 'briefing',
   'plan-opencode-self-delegation-gate': 'briefing',
   'plan-opencode-queue-policy-gate': 'briefing',
@@ -727,6 +733,10 @@ export const DENY_ID_CLASS = {
   'run-team-wrong-role': 'safety',
   'run-id-mismatch': 'briefing',
   'opencode-external-temp-shell': 'briefing',
+  'qa-trace-unzip': 'briefing',
+  'local-mjs-path-deny': 'briefing',
+  'host-recursive-rm-prompt': 'briefing',
+  'codegraph-ignore-mutate': 'briefing',
   'registry-probe-gate': 'briefing',
   'state-mode-downgrade': 'sequencing',
   'team-mode-marker-guard': 'sequencing',
@@ -791,7 +801,7 @@ export function isDenyClass(value: unknown): value is DenyClass {
 // needs it lifted is "fix the cause, or settle the run".
 //
 // A gate NOT listed here is overridable. That is the deliberate default: the
-// 169 remaining ids (206 declared, less the 37 below) are ordinary
+// 174 remaining ids (211 declared, less the 37 below) are ordinary
 // process/sequencing refusals whose worst case is a lower-quality run, and that
 // run is already marked ineligible for `verified`/`shipped` the moment a token is
 // minted for it (run-settlement/io.ts).
@@ -1067,7 +1077,7 @@ void _codexChildFamilyIsNeverOverridable;
 // severe it is, and severity is what makes the escalation worth reading.
 //
 // An id NOT listed here escalates from the third byte-identical attempt. That
-// is the deliberate default: the remaining 177 ids are refusals with an
+// is the deliberate default: the remaining 182 ids are refusals with an
 // in-session remedy the deny text already names, which is the whole 17cl
 // failure (seven identical refusals, 25 minutes, the fix in the text).
 export const NEVER_ESCALATED_DENY_IDS = [

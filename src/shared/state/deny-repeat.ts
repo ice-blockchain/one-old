@@ -114,9 +114,9 @@ function repeatsPath(cwd: string, runId: string): string {
  * that is wrong is a reason to make it derivable, not a reason to stop recording
  * it.
  *
- *     escalatable ids with shipped prose = 115
+ *     escalatable ids with shipped prose = 120
  *     of those, ids the corpus fires = 41
- *     of those, ids the corpus never fires = 74
+ *     of those, ids the corpus never fires = 79
  *     fired ids whose target is empty on every row = 8
  *     fired ids whose prose renders no placeholder at all = 20
  *     fired ids with a populated target AND placeholders = 13
@@ -129,7 +129,7 @@ function repeatsPath(cwd: string, runId: string): string {
  *     replay-corpus cases = 141
  *     distinct (denyId, target) pairs among the escalatable deny rows = 60
  *
- * The 74 that never fire are unprovable in either direction; the ten with an
+ * The 79 that never fire are unprovable in either direction; the ten with an
  * empty target are the eight above plus two that ship no prose at all. The last
  * row is over the 64 escalatable deny ROWS, not over the 141 cases above it.
  *

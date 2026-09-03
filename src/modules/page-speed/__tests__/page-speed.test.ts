@@ -7,9 +7,15 @@ import * as path from 'path';
 import { postBuildPageSpeed } from '../handler';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { RUNNER_STATUSES } from '../../../runners/lighthouse/cli-args';
-import { compileArchitecture } from '../../../shared/architecture-contract';
+import { compileArchitecture, stableContractJson } from '../../../shared/architecture-contract';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
-import { compileVerificationContract } from '../../../shared/verification-contract';
+import { sha256 } from '../../../shared/text';
+import {
+  compileVerificationContract,
+  DEFAULT_LIGHTHOUSE_THRESHOLDS,
+  publishVerificationContract,
+  type VerificationContractV2,
+} from '../../../shared/verification-contract';
 
 function withProject(stateObj: Record<string, unknown>, authed: boolean, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-pagespeed-'));
@@ -51,28 +57,188 @@ function ctxFor(cwd: string, command: string, raw: Record<string, unknown> = {},
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
-function writePerformanceContract(cwd: string, state: Record<string, unknown>, runId = 'R'): void {
+function writePerformanceContract(
+  cwd: string,
+  state: Record<string, unknown>,
+  runId = 'R',
+): VerificationContractV2 {
   const architecture = compileArchitecture(cwd, runId, state, {
     schemaVersion: 1,
     routes: [],
     modules: [{ id: 'app-shell', name: 'App', kind: 'app-shell' }],
   });
-  compileVerificationContract(cwd, runId, state, architecture, {
+  return compileVerificationContract(cwd, runId, state, architecture, {
     changedPaths: [],
     performanceRisk: true,
   });
 }
 
+/** Hashed contract with a stack uiImpact (`none`/`nonvisual`) and a required budget. */
+function writeStackPerformanceContract(
+  cwd: string,
+  uiImpact: 'none' | 'nonvisual',
+  runId = 'R',
+): VerificationContractV2 {
+  const now = new Date().toISOString();
+  const withoutHash = {
+    schemaVersion: 2 as const,
+    runId,
+    architectureHash: sha256('architecture'),
+    baseline: {
+      kind: 'file-manifest' as const,
+      identity: `manifest:pagespeed-${uiImpact}`,
+      capturedAt: now,
+      filesHash: sha256('files'),
+      fileCount: 0,
+      files: [],
+    },
+    uiImpact,
+    uiImpactSource: 'runtime' as const,
+    changedPaths: [],
+    changedRoutes: [],
+    scanComplete: true,
+    requiredChecks: uiImpact === 'nonvisual'
+      ? ['stack-build', 'stack-format', 'stack-test']
+      : ['stack-build', 'stack-test', 'stack-lint'],
+    browserRequired: false,
+    nativeAdapter: null,
+    requiredScreenshotWidths: [],
+    tabletRisk: false,
+    buildIdentityRequired: false,
+    performance: {
+      required: true,
+      advisory: false,
+      reason: 'performance-risk' as const,
+      thresholds: { ...DEFAULT_LIGHTHOUSE_THRESHOLDS },
+      advisoryTolerancePercent: 3 as const,
+    },
+    generatedAt: now,
+  };
+  const contract: VerificationContractV2 = {
+    ...withoutHash,
+    contractHash: sha256(stableContractJson(withoutHash)),
+  };
+  const published = publishVerificationContract(cwd, contract);
+  if (!published) throw new Error(`${uiImpact} performance contract for run ${runId} could not be persisted`);
+  return published;
+}
+
+function assertQaEvidenceAdvisory(text: string): void {
+  assert.ok(text.includes('qa-evidence'), 'after-build advisory must name qa-evidence');
+  assert.ok(text.includes('--build-dir'), 'after-build advisory must name --build-dir');
+  assert.ok(!text.includes('https://staging.example.com'), 'must not invent a staging URL');
+  assert.ok(!/--url\s+https?:\/\//.test(text), 'must not invent a staging --url');
+}
+
+function assertStackEscapeAdvisory(text: string): void {
+  assert.ok(text.includes('lighthouse-runner'), 'stack-impact escape must name lighthouse-runner');
+  assert.ok(text.includes('--skip-build'), 'stack-impact escape must skip a second build');
+  assert.ok(!text.includes('qa-evidence'), 'stack-impact escape must not send the tester stack path through qa-evidence');
+  assert.ok(!text.includes('https://staging.example.com'), 'must not invent a staging URL');
+  assert.ok(!/--url\s+https?:\/\//.test(text), 'must not invent a staging --url');
+  for (const line of text.split('\n')) {
+    if (line.includes('--route /') && !line.includes('--skip-build')) {
+      assert.fail(`bare --route / without --skip-build: ${line}`);
+    }
+  }
+}
+
 test('page-speed fires after a web production build (authed)', () => {
   const state = { stack: 'default', frontend: 'react-vite', currentRunId: 'R' };
   withProject(state, true, (cwd) => {
-    writePerformanceContract(cwd, state);
-    const r = postBuildPageSpeed(ctxFor(cwd, 'pnpm build'));
+    const published = writePerformanceContract(cwd, state);
+    // Measured: this fixture's planned app-shell floor is visual, not none.
+    assert.equal(published.uiImpact, 'visual');
+    assert.equal(published.performance.required, true);
+    const banner = postBuildPageSpeed(ctxFor(cwd, 'pnpm build'));
+    assert.equal(banner.kind, 'context');
+    if (banner.kind === 'context') {
+      assertQaEvidenceAdvisory(banner.context);
+      assert.equal(banner.systemMessage, 'traffic-one page-speed gate pending after build');
+    }
+    const oneLiner = postBuildPageSpeed(ctxFor(cwd, 'pnpm build'));
+    assert.equal(oneLiner.kind, 'context');
+    if (oneLiner.kind === 'context') {
+      assertQaEvidenceAdvisory(oneLiner.context);
+      assert.equal(oneLiner.systemMessage, 'traffic-one page-speed gate pending after build');
+    }
+  });
+});
+
+test('after-build Codex recipe uses qa-evidence when uiImpact is behavioral/visual', () => {
+  const state = { stack: 'default', frontend: 'react-vite', currentRunId: 'R' };
+  withProject(state, true, (cwd) => {
+    assert.equal(writePerformanceContract(cwd, state).uiImpact, 'visual');
+    const input: HookInput = {
+      event: 'PostToolUse', host: 'codex', cwd,
+      raw: {},
+      tool: { class: 'shell' as ToolClass, rawName: 'exec_command', command: 'pnpm build' },
+    };
+    const r = postBuildPageSpeed({ input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx);
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
-      assert.ok(r.context.includes('Lighthouse'));
-      assert.equal(r.systemMessage, 'traffic-one page-speed gate pending after build');
+      assertQaEvidenceAdvisory(r.context);
+      assert.ok(r.context.includes('qa-evidence-runner.cjs'));
+      assert.ok(r.context.includes('require_escalated'));
+      assert.ok(!r.context.includes('lighthouse-runner.cjs'), 'browser-impact after-build Codex recipe is qa-evidence');
     }
+  });
+});
+
+test('after-build stack-impact escape uses lighthouse-runner --skip-build', () => {
+  const state = { stack: 'default', frontend: 'react-vite', currentRunId: 'R' };
+  for (const uiImpact of ['none', 'nonvisual'] as const) {
+    withProject(state, true, (cwd) => {
+      const published = writeStackPerformanceContract(cwd, uiImpact);
+      assert.equal(published.uiImpact, uiImpact);
+      assert.equal(published.performance.required, true);
+      const banner = postBuildPageSpeed(ctxFor(cwd, 'pnpm build'));
+      assert.equal(banner.kind, 'context');
+      if (banner.kind === 'context') {
+        assertStackEscapeAdvisory(banner.context);
+        assert.equal(banner.systemMessage, 'traffic-one page-speed gate pending after build');
+      }
+      const oneLiner = postBuildPageSpeed(ctxFor(cwd, 'pnpm build'));
+      assert.equal(oneLiner.kind, 'context');
+      if (oneLiner.kind === 'context') {
+        assertStackEscapeAdvisory(oneLiner.context);
+      }
+    });
+  }
+});
+
+test('after-build Codex recipe uses lighthouse-runner --skip-build when tester ran stack', () => {
+  const state = { stack: 'default', frontend: 'react-vite', currentRunId: 'R' };
+  withProject(state, true, (cwd) => {
+    assert.equal(writeStackPerformanceContract(cwd, 'nonvisual').uiImpact, 'nonvisual');
+    const input: HookInput = {
+      event: 'PostToolUse', host: 'codex', cwd,
+      raw: {},
+      tool: { class: 'shell' as ToolClass, rawName: 'exec_command', command: 'pnpm build' },
+    };
+    const r = postBuildPageSpeed({ input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assertStackEscapeAdvisory(r.context);
+      assert.ok(r.context.includes('lighthouse-runner.cjs'));
+      assert.ok(r.context.includes('--skip-build'));
+      assert.ok(r.context.includes('require_escalated'));
+    }
+  });
+});
+
+test('qa-evidence-runner stdout is not parsed as lighthouse status', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    const r = postBuildPageSpeed(ctxFor(
+      cwd,
+      'node ~/.traffic-one/bin/qa-evidence-runner.cjs browser --build-dir apps/web/dist',
+      { tool_response: { stdout: `${JSON.stringify({ status: 'blocked:sandbox', error: 'listen EPERM' }, null, 2)}\n` } },
+    ));
+    assert.notEqual(
+      r.kind === 'context' ? r.systemMessage : '',
+      'traffic-one page-speed blocked:sandbox',
+      'qa-evidence-runner output must not be read as lighthouse-runner status JSON',
+    );
   });
 });
 

@@ -147,3 +147,19 @@ export const SKIP_LOCKFILES = new Set([
 ]);
 
 export const SKIP_FILES = new Set([...SKIP_OS_FILES, ...SKIP_LOCKFILES]);
+
+// Bound-only: hashed and stored, but not counted toward ARCHITECTURE_SCAN_MAX_FILES.
+// Never added to isScanSkippedPath — a change to one of these must still appear
+// in the verification diff. No svg (authored markup). No js/css/php.
+export const INERT_SCAN_EXTENSIONS: ReadonlySet<string> = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico',
+  'woff', 'woff2', 'ttf', 'eot',
+  'mp3', 'mp4', 'pdf', 'zip', 'map',
+]);
+
+export function isInertScanPath(relativePath: string): boolean {
+  const name = relativePath.replace(/\\/g, '/').split('/').pop() || '';
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return INERT_SCAN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}

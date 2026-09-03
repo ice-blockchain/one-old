@@ -255,30 +255,59 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
   // build must not manufacture a Lighthouse obligation when the runtime did
   // not compile one for this run.
   if (!contract?.performance.required) return noop();
+  const advice = afterBuildLighthouseAdvice(contract.uiImpact);
   // Iterative implement-verify loops run `npm run build` many times; the full
   // advisory injects once per session, later builds get a one-line reminder.
   if (!firstEmitThisSession(cwd, 'pagespeed-advisory', hookSessionIdentity(ctx.input.raw).sessionId)) {
-    return context(
-      '[traffic-one] The run performance contract still requires Lighthouse evidence — run: node ~/.traffic-one/bin/lighthouse-runner.cjs --route / (the runner ships with the PLUGIN, not the repo).',
-      { systemMessage: 'traffic-one page-speed gate pending after build' },
-    );
+    return context(advice.oneLiner, { systemMessage: 'traffic-one page-speed gate pending after build' });
   }
   return context(
     [
-      '[traffic-one] A production build just ran for a web stack.',
-      'This run has a runtime-compiled performance requirement. Before final delivery, run the Lighthouse mobile gate:',
-      '',
-      '  node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
-      '  node ~/.traffic-one/bin/lighthouse-runner.cjs --url https://staging.example.com --skip-preview',
-      '',
-      'Audit `/` plus the 1-2 heaviest public routes (catalog/listing pages — rerun with `--route <path>`); the home route alone hides heavy-route regressions. A metric flagged `withinTolerance` passed the gate — do NOT iterate on it. A confirmation re-run with no code changes in between may add `--skip-build`. If the local sandbox blocks preview binding, use an already-running or staging URL with `--url ... --skip-preview`. The summary also carries Accessibility/Best-Practices/SEO scores from the same audit — surface a11y warnings to the team.',
-      '',
-      'If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. The runner ALWAYS ends with one JSON status line: report whichever structured status it printed (`blocked:*` when the environment stopped the measurement, `failed:*` when the project had nothing auditable) with concrete risks; never imply page speed was verified.',
-      ...(hostFlags(ctx.host).sandboxNeedsEscalation ? [
-        '',
-        'Codex: the workspace sandbox denies binding the preview port (`blocked:sandbox`, listen EPERM). Run the runner via exec_command with `sandbox_permissions: "require_escalated"` and the persistent prefix `["node", "~/.traffic-one/bin/lighthouse-runner.cjs"]`, or audit an already-running/staging URL with `--url ... --skip-preview`.',
-      ] : []),
+      ...advice.banner,
+      ...(hostFlags(ctx.host).sandboxNeedsEscalation ? ['', advice.codex] : []),
     ].join('\n'),
     { systemMessage: 'traffic-one page-speed gate pending after build' },
   );
+}
+
+/**
+ * After-build Lighthouse advice. Same-listener `qa-evidence-runner.cjs browser`
+ * is the audit path when the tester already owns a browser listener
+ * (`behavioral`/`visual`). `none` and `nonvisual` both run `stack` — no
+ * browser — so Lighthouse is `lighthouse-runner.cjs --route / --skip-build`
+ * against the tree that just finished. Do not invent `--build-dir` on that CLI.
+ */
+function afterBuildLighthouseAdvice(uiImpact: string): {
+  oneLiner: string;
+  banner: string[];
+  codex: string;
+} {
+  if (uiImpact === 'none' || uiImpact === 'nonvisual') {
+    const command = 'node ~/.traffic-one/bin/lighthouse-runner.cjs --route / --skip-build';
+    return {
+      oneLiner: `[traffic-one] The run performance contract still requires Lighthouse evidence — run: ${command} (the runner ships with the PLUGIN, not the repo).`,
+      banner: [
+        '[traffic-one] A production build just ran for a web stack.',
+        'This run has a runtime-compiled performance requirement. Tester ran `stack` (no Lighthouse). After this just-finished production tree, run:',
+        '',
+        `  ${command}`,
+        '',
+        'Do not pass a staging `--url`. A metric flagged `withinTolerance` passed the gate — do NOT iterate on it. If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. The runner ALWAYS ends with one JSON status line: report whichever structured status it printed (`blocked:*` when the environment stopped the measurement, `failed:*` when the project had nothing auditable) with concrete risks; never imply page speed was verified.',
+      ],
+      codex: 'Codex: the workspace sandbox denies binding the preview port (`blocked:sandbox`, listen EPERM). Run the runner via exec_command with `sandbox_permissions: "require_escalated"` and the persistent prefix `["node", "~/.traffic-one/bin/lighthouse-runner.cjs"]` with `--skip-build`.',
+    };
+  }
+  const command = 'node ~/.traffic-one/bin/qa-evidence-runner.cjs browser --build-dir apps/web/dist';
+  return {
+    oneLiner: `[traffic-one] The run performance contract still requires Lighthouse evidence — run: ${command} (change --build-dir to the runtime-detected output root; the runner ships with the PLUGIN, not the repo).`,
+    banner: [
+      '[traffic-one] A production build just ran for a web stack.',
+      'This run has a runtime-compiled performance requirement. Before final delivery, run the same-listener Lighthouse audit through the QA evidence runner (change `--build-dir` to the runtime-detected output root):',
+      '',
+      `  ${command}`,
+      '',
+      'Do not add extra `--route` flags or a staging `--url`. A metric flagged `withinTolerance` passed the gate — do NOT iterate on it. If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. Never imply page speed was verified.',
+    ],
+    codex: 'Codex: the workspace sandbox denies binding the preview port (`blocked:sandbox`, listen EPERM). Run the QA evidence runner via exec_command with `sandbox_permissions: "require_escalated"` and the persistent prefix `["node", "~/.traffic-one/bin/qa-evidence-runner.cjs"]`.',
+  };
 }

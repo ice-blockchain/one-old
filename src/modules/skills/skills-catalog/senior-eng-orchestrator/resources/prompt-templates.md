@@ -488,9 +488,11 @@ Follow `uiImpact` without inventing a frontend/backend exemption:
   contract detected tablet risk).
 - `native-ui`: use the selected simulator/emulator adapter, never a browser.
 
-For behavioral/visual QA, build current source, start the built app on a free
-strict port owned by this run, and record run/source/build hashes, PID, port,
-start time, URL, expected fingerprint, and the fingerprint observed over HTTP.
+For behavioral/visual QA, first-pass `qa-evidence-runner.cjs manifest
+--build-dir …` against the runtime-detected output root. Project `build` only
+if that preflight fails or product source changed (fix-cycle). Then run
+`qa-evidence-runner.cjs browser --build-dir …` — the runner owns the listener
+and records run/source/build hashes plus expected-versus-served fingerprints.
 Reject a stale server, reused port, foreign fingerprint, or artifact older than
 the server. Write route evidence for every changed route and prove its planned
 final path rather than accepting a fallback shell or redirect.
@@ -500,14 +502,6 @@ checks complete, set report status `blocked-environment` with a bounded safe
 reason and return `TESTS_FAILING`; never convert it to green. A browser cannot
 block `none` or `nonvisual`. The interactive browser plugin is optional
 diagnosis and never substitutes for the canonical local Playwright report.
-
-For generated websites or changed web routes, include metadata regression
-coverage for every created or changed public route's title, description,
-canonical URL, OG image, JSON-LD, sitemap inclusion, and private/admin noindex.
-For changed UI in a project with i18n, include tests that assert translated
-accessible labels/names through the rendered UI. For touched EnvBanner or
-missing-config setup surfaces, assert the setup link href is exactly
-`https://traffic.io/`.
 
 Write your digest to:
   .traffic-one/digests/<run-id>/tester.md

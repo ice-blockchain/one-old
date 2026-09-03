@@ -226,6 +226,10 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'architecture-input-gate',
   'architecture-input-owner-gate',
   'architecture-input-shell-unverified',
+  // New compile-listing overflow. Needs a git tree of >10_000 non-inert source
+  // files; the corpus fixtures are small. Driven through
+  // src/shared/__tests__/architecture-scan-bound.test.ts.
+  'architecture-scan-bound-gate',
   'bootstrap-publication-gate',
   'capability-no-implementer-gate',
   // Retired: first wait is allowed + link injected (setupLinkNudge). A denied
@@ -249,6 +253,10 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   // Same retirement as claude-wait-link-first — Codex wait is allowed + injected.
   'codex-wait-link-first',
   'contract-self-conflict',
+  // New: agent create/delete of root `.gitnexusignore` / `.graphifyignore`.
+  // No historical PreToolUse fixture names those files. Driven through
+  // plan-write.test.ts and feature-source.test.ts.
+  'codegraph-ignore-mutate',
   'cursor-api-limit-composer-choice',
   'cursor-api-limit-terminal',
   'cursor-exact-model-required',
@@ -269,6 +277,10 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'frontend-structure-completion-gate',
   'frontend-structure-hot-gate',
   'frontend-structure-scan-incomplete',
+  // New: Claude/Cursor `rm -rf` of `dist` / `.next` / `supabase/.temp`.
+  // Corpus permit rows that name `dist` are sidecar-scoped and now re-hosted
+  // to OpenCode. Driven through plan-write.test.ts.
+  'host-recursive-rm-prompt',
   'implementer-collapse-gate',
   'implementer-contract-delivery-gate',
   'implementer-crawl-origin-gate',
@@ -282,6 +294,9 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'implementer-typecheck-toolchain-gate',
   'implementer-verification-skipped-gate',
   'lighthouse-claim-reconciliation-gate',
+  // New: write/exec of `*.local.mjs`. No corpus case authors that suffix.
+  // Driven through plan-write.test.ts and feature-source.test.ts.
+  'local-mjs-path-deny',
   'materialization-gate',
   // Needs a mutating PreToolUse whose convergence returned incomplete/failed/
   // skipped — every onboarded fixture here is either already materialized
@@ -321,6 +336,9 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'plan-opencode-queue-policy-gate',
   'plan-opencode-self-delegation-gate',
   'plan-write-violation-unattributed',
+  // New: extract of `*.trace.zip`. Corpus shells do not unzip Playwright
+  // traces. Driven through plan-write.test.ts and feature-source.test.ts.
+  'qa-trace-unzip',
   // Converted from deny-for-retry to allow+context after a successful
   // rematerialize (status materialized/current). Catalog id kept; the
   // T1BLOCK remains. The corpus still exercises the heal path via

@@ -796,8 +796,205 @@ test('OpenCode shell write to external /tmp is denied before host permission pro
     }, {}, 'opencode'));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
+      assert.equal(r.denyId, 'opencode-external-temp-shell');
       assert.ok(r.reason.includes('/tmp'));
       assert.ok(/external-directory|permission|stall/i.test(r.reason));
+    }
+  });
+});
+
+test('Claude QA recipe and tsc redirect to /tmp are denied as opencode-external-temp-shell', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const qa = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cd /tmp && rm -rf tn390 && mkdir && unzip home-390.trace.zip',
+    }));
+    assert.equal(qa.kind, 'deny');
+    if (qa.kind === 'deny') assert.equal(qa.denyId, 'opencode-external-temp-shell');
+
+    const tsc = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'npx tsc -p packages/i18n/tsconfig.json > /tmp/i18n_build.log',
+    }));
+    assert.equal(tsc.kind, 'deny');
+    if (tsc.kind === 'deny') assert.equal(tsc.denyId, 'opencode-external-temp-shell');
+
+    const openCodeQa = planWriteGate(writeCtx(cwd, 'bash', 'shell', {
+      command: 'cd /tmp && rm -rf tn390 && mkdir && unzip home-390.trace.zip',
+    }, {}, 'opencode'));
+    assert.equal(openCodeQa.kind, 'deny');
+    if (openCodeQa.kind === 'deny') assert.equal(openCodeQa.denyId, 'opencode-external-temp-shell');
+  });
+});
+
+test('structured cwd /tmp + unzip without dest is denied; npm test is not', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const unzip = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'unzip home-390.trace.zip',
+      cwd: '/tmp',
+    }));
+    assert.equal(unzip.kind, 'deny');
+    if (unzip.kind === 'deny') assert.equal(unzip.denyId, 'opencode-external-temp-shell');
+
+    const npm = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'npm test',
+      cwd: '/tmp',
+    }));
+    if (npm.kind === 'deny') assert.notEqual(npm.denyId, 'opencode-external-temp-shell');
+    else assert.equal(npm.kind, 'noop');
+  });
+});
+
+test('structured workdir /tmp + unzip without dest is denied as opencode-external-temp-shell', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const unzip = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'unzip home-390.trace.zip',
+      workdir: '/tmp',
+    }));
+    assert.equal(unzip.kind, 'deny');
+    if (unzip.kind === 'deny') assert.equal(unzip.denyId, 'opencode-external-temp-shell');
+  });
+});
+
+test('in-project dest under materialized cwd is not opencode-external-temp-shell', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: `touch ${cwd}/tmp/out`,
+    }));
+    if (r.kind === 'deny') assert.notEqual(r.denyId, 'opencode-external-temp-shell');
+    else assert.equal(r.kind, 'noop');
+  });
+});
+
+test('in-project unzip of a Playwright trace is denied as qa-trace-unzip', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const bare = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'unzip home-390.trace.zip',
+    }));
+    assert.equal(bare.kind, 'deny');
+    if (bare.kind === 'deny') assert.equal(bare.denyId, 'qa-trace-unzip');
+
+    const nested = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'unzip .traffic-one/reports/qa/R/home-390.trace.zip',
+    }));
+    assert.equal(nested.kind, 'deny');
+    if (nested.kind === 'deny') assert.equal(nested.denyId, 'qa-trace-unzip');
+  });
+});
+
+test('unzip -l of a trace and a project release zip are not qa-trace-unzip', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const list = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'unzip -l home-390.trace.zip',
+    }));
+    if (list.kind === 'deny') assert.notEqual(list.denyId, 'qa-trace-unzip');
+    else assert.equal(list.kind, 'noop');
+
+    const release = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'unzip vendor-release.zip -d vendor/',
+    }));
+    if (release.kind === 'deny') assert.notEqual(release.denyId, 'qa-trace-unzip');
+    else assert.equal(release.kind, 'noop');
+  });
+});
+
+test('unzip -p of a Playwright trace is qa-trace-unzip; unzip -p of a release zip is not external-temp', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const pipe = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'unzip -p home-390.trace.zip',
+    }));
+    assert.equal(pipe.kind, 'deny');
+    if (pipe.kind === 'deny') assert.equal(pipe.denyId, 'qa-trace-unzip');
+
+    const stdout = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'cd /tmp && unzip -p vendor-release.zip',
+    }));
+    if (stdout.kind === 'deny') assert.notEqual(stdout.denyId, 'opencode-external-temp-shell');
+    else assert.equal(stdout.kind, 'noop');
+  });
+});
+
+test('write and exec of *.local.mjs are denied as local-mjs-path-deny', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const write = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/probe.local.mjs',
+      content: 'export const probe = 1;\n',
+    }));
+    assert.equal(write.kind, 'deny');
+    if (write.kind === 'deny') assert.equal(write.denyId, 'local-mjs-path-deny');
+
+    const exec = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'node apps/web/probe.local.mjs',
+    }));
+    assert.equal(exec.kind, 'deny');
+    if (exec.kind === 'deny') assert.equal(exec.denyId, 'local-mjs-path-deny');
+  });
+});
+
+test('create or delete of .gitnexusignore/.graphifyignore is codegraph-ignore-mutate; existing Write is not', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const create = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.gitnexusignore',
+      content: 'node_modules\n',
+    }));
+    assert.equal(create.kind, 'deny');
+    if (create.kind === 'deny') assert.equal(create.denyId, 'codegraph-ignore-mutate');
+
+    const add = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', {
+      patchText: [
+        '*** Begin Patch',
+        '*** Add File: .graphifyignore',
+        '+node_modules',
+        '*** End Patch',
+      ].join('\n'),
+    }));
+    assert.equal(add.kind, 'deny');
+    if (add.kind === 'deny') assert.equal(add.denyId, 'codegraph-ignore-mutate');
+
+    fs.writeFileSync(path.join(cwd, '.gitnexusignore'), 'user-ignore\n', 'utf8');
+    const existing = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.gitnexusignore',
+      content: 'user-ignore\nnode_modules\n',
+    }));
+    if (existing.kind === 'deny') assert.notEqual(existing.denyId, 'codegraph-ignore-mutate');
+    else assert.equal(existing.kind, 'noop');
+
+    fs.writeFileSync(path.join(cwd, '.graphifyignore'), 'user-ignore\n', 'utf8');
+    const existingGraphify = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.graphifyignore',
+      content: 'user-ignore\nnode_modules\n',
+    }));
+    if (existingGraphify.kind === 'deny') assert.notEqual(existingGraphify.denyId, 'codegraph-ignore-mutate');
+    else assert.equal(existingGraphify.kind, 'noop');
+
+    const del = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: 'rm .gitnexusignore' }));
+    assert.equal(del.kind, 'deny');
+    if (del.kind === 'deny') assert.equal(del.denyId, 'codegraph-ignore-mutate');
+
+    const delPatch = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', {
+      patchText: [
+        '*** Begin Patch',
+        '*** Delete File: .gitnexusignore',
+        '*** End Patch',
+      ].join('\n'),
+    }));
+    assert.equal(delPatch.kind, 'deny');
+    if (delPatch.kind === 'deny') assert.equal(delPatch.denyId, 'codegraph-ignore-mutate');
+  });
+});
+
+test('external-temp gate permits TMPDIR scratch, parked finished-run mv, env assign, mktemp, unzip -l', () => {
+  withMaterialized({ currentRunId: 'run-1', team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    for (const command of [
+      'rm -rf "$TMPDIR/scratch"',
+      'mv .traffic-one/runs/finished-9 /tmp/parked',
+      'TMPDIR=/tmp/foo pnpm build',
+      'mktemp',
+      'mktemp -d /tmp/foo.XXXX',
+      'unzip -l archive.zip',
+    ]) {
+      const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      if (r.kind === 'deny') {
+        assert.notEqual(r.denyId, 'opencode-external-temp-shell', command);
+      }
     }
   });
 });
@@ -1782,9 +1979,61 @@ test('the same channels stay free where they destroy no runtime sidecar', () => 
       `node -e "console.log(require('fs').readFileSync('.traffic-one/runs/run-1/run.json','utf8'))"`,
       'cat .traffic-one/runs/run-1/scan-bound.json',
     ]) {
-      const r = shellResult(cwd, command);
+      const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }, {}, 'opencode'));
       assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason : ''}`);
     }
+  });
+});
+
+test('Claude and Cursor deny rm -rf of build output; OpenCode and node_modules stay free', () => {
+  sidecarProject((cwd) => {
+    const dist = 'rm -rf apps/web/dist';
+    const claude = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: dist }));
+    assert.equal(claude.kind, 'deny');
+    if (claude.kind === 'deny') assert.equal(claude.denyId, 'host-recursive-rm-prompt');
+
+    const cursor = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: dist }, {}, 'cursor'));
+    assert.equal(cursor.kind, 'deny');
+    if (cursor.kind === 'deny') assert.equal(cursor.denyId, 'host-recursive-rm-prompt');
+
+    const opencode = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: dist }, {}, 'opencode'));
+    if (opencode.kind === 'deny') assert.notEqual(opencode.denyId, 'host-recursive-rm-prompt');
+    else assert.equal(opencode.kind, 'noop');
+
+    const nodeModules = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: 'rm -rf node_modules' }));
+    if (nodeModules.kind === 'deny') assert.notEqual(nodeModules.denyId, 'host-recursive-rm-prompt');
+    else assert.equal(nodeModules.kind, 'noop');
+
+    for (const command of [
+      'rm -rf apps/web/.next',
+      'rm -rf supabase/.temp',
+      "bash -c 'rm -rf apps/web/dist'",
+      "bash -o pipefail -c 'rm -rf .next'",
+      "sh -c 'rm -rf supabase/.temp'",
+    ]) {
+      const nested = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      assert.equal(nested.kind, 'deny', command);
+      if (nested.kind === 'deny') assert.equal(nested.denyId, 'host-recursive-rm-prompt', command);
+    }
+
+    const digest = [
+      "cat > .traffic-one/digests/run-1/reviewer.md <<'EOF'",
+      'Do not run',
+      'rm -rf apps/web/dist',
+      'echo x > .gitnexusignore',
+      'EOF',
+    ].join('\n');
+    const quoted = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: digest }));
+    if (quoted.kind === 'deny') {
+      assert.notEqual(quoted.denyId, 'host-recursive-rm-prompt');
+      assert.notEqual(quoted.denyId, 'codegraph-ignore-mutate');
+    }
+
+    const interpreter = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "bash <<'SH'\nrm -rf apps/web/dist\nSH",
+    }));
+    assert.equal(interpreter.kind, 'deny');
+    if (interpreter.kind === 'deny') assert.equal(interpreter.denyId, 'host-recursive-rm-prompt');
   });
 });
 
@@ -1857,7 +2106,6 @@ test('a nested shell that destroys nothing stays free', () => {
     for (const command of [
       `bash -c 'npm test'`,
       `bash -c 'rm -rf node_modules'`,
-      `bash -c 'rm -rf dist build'`,
       `sh -c "git clean -fdx apps/web"`,
       `bash -c 'cat .traffic-one/runs/run-1/scan-bound.json'`,
       `bash -c "find . -name '*.log' -delete"`,
@@ -1865,6 +2113,17 @@ test('a nested shell that destroys nothing stays free', () => {
       const r = shellResult(cwd, command);
       assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason : ''}`);
     }
+    // Sidecar-free nested build clean: OpenCode still permits it. Claude now
+    // refuses the unwrapped body as host-recursive-rm-prompt (covered above).
+    const nestedDist = `bash -c 'rm -rf dist build'`;
+    const opencodeNested = planWriteGate(
+      writeCtx(cwd, 'Bash', 'shell', { command: nestedDist }, {}, 'opencode'),
+    );
+    assert.notEqual(
+      opencodeNested.kind,
+      'deny',
+      `${nestedDist} → ${opencodeNested.kind === 'deny' ? opencodeNested.reason : ''}`,
+    );
   });
 });
 
@@ -1986,8 +2245,27 @@ test('a destruction BESIDE the path, behind a quoted separator, or under an unli
     // THE PRICE THE PREVIOUS ROUND PAID FOR THE SAME FENCE, now back to work:
     // a path whose FIRST segment is interpolated names no scope this gate can
     // answer for, and answering anyway is how a fence gets deleted.
+    //
+    // `rm -rf "$(pwd)/dist"` is still no sidecar scope (the first segment is
+    // interpolated and names no `.traffic-one` remainder). On Claude/Cursor it
+    // is now the recursive-rm prompt gate, because the operand's last segment
+    // is the build-output basename `dist`. OpenCode keeps the sidecar-only
+    // permit so the interpolation fence stays observable.
+    const interpolatedDist = 'rm -rf "$(pwd)/dist"';
+    const claudeDist = shellResult(cwd, interpolatedDist);
+    assert.equal(claudeDist.kind, 'deny', interpolatedDist);
+    if (claudeDist.kind === 'deny') {
+      assert.equal(claudeDist.denyId, 'host-recursive-rm-prompt', interpolatedDist);
+    }
+    const opencodeDist = planWriteGate(
+      writeCtx(cwd, 'Bash', 'shell', { command: interpolatedDist }, {}, 'opencode'),
+    );
+    assert.notEqual(
+      opencodeDist.kind,
+      'deny',
+      `${interpolatedDist} → ${opencodeDist.kind === 'deny' ? opencodeDist.reason : ''}`,
+    );
     for (const command of [
-      'rm -rf "$(pwd)/dist"',
       'rm -f "$f"',
       'rm -rf "$TMPDIR/scratch"',
       'mv "$src" dist/out.js',
