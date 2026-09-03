@@ -65,6 +65,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Latency: load /tmp and trace scanners only for shell tools so Write stays inside the 150 ms budget (`ee121188`)
 - Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
 - Consent: inherit prefs-capable parent so enclosed folders cannot deadlock ask-first (`d7f3df1a`)
 - Setup: persist OpenCode authorization before prefs and heal first-time .one.json (`4ff4c823`)
