@@ -3,14 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   applyPatchTargetPaths,
-  commandAppearsToExtractQaTrace,
   commandAppearsToWriteBuildArtifact,
-  commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
-  commandAppearsToWriteOrExecLocalMjs,
-  commandAppearsToCreateCodeGraphIgnore,
-  commandAppearsToDeleteCodeGraphIgnore,
-  commandAppearsToRecursiveRmPromptTarget,
   isCodeGraphIgnorePath,
   isLocalMjsPath,
   FEATURE_SOURCE_RE,
@@ -24,6 +18,14 @@ import {
   shellWriteTargetsStateDir,
   subagentMayWriteFeatureSource,
 } from '../feature-source';
+import {
+  commandAppearsToCreateCodeGraphIgnore,
+  commandAppearsToDeleteCodeGraphIgnore,
+  commandAppearsToExtractQaTrace,
+  commandAppearsToRecursiveRmPromptTarget,
+  commandAppearsToWriteExternalTemp,
+  commandAppearsToWriteOrExecLocalMjs,
+} from '../feature-source-hygiene';
 
 test('FEATURE_SOURCE_RE matches monorepo + flat feature-source layouts', () => {
   assert.equal(FEATURE_SOURCE_RE.test('apps/web/src/main.ts'), true);

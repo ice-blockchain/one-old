@@ -15,14 +15,8 @@ import { pluginUseDeclined } from '../../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from '../../agent-model/model-choice';
 import {
   BUILD_ARTIFACT_RE,
-  commandAppearsToExtractQaTrace,
   commandAppearsToWriteBuildArtifact,
-  commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
-  commandAppearsToWriteOrExecLocalMjs,
-  commandAppearsToCreateCodeGraphIgnore,
-  commandAppearsToDeleteCodeGraphIgnore,
-  commandAppearsToRecursiveRmPromptTarget,
   isCodeGraphIgnorePath,
   isLocalMjsPath,
   FEATURE_SOURCE_RE,
@@ -68,6 +62,19 @@ import {
 } from './targets';
 
 const rawBlock = makePlanBlock(makeSkillBlock(pluginRoot));
+
+// Statement scanners live in feature-source-hygiene.ts and are required only
+// for shell tools. A static import would pull that module into every hook
+// that loads plan-write (SessionStart included) via loadModules.
+type FeatureSourceHygiene = typeof import('../../../shared/feature-source-hygiene');
+
+let featureSourceHygiene: FeatureSourceHygiene | undefined;
+function loadFeatureSourceHygiene(): FeatureSourceHygiene {
+  if (!featureSourceHygiene) {
+    featureSourceHygiene = require('../../../shared/feature-source-hygiene') as FeatureSourceHygiene;
+  }
+  return featureSourceHygiene;
+}
 
 function normalizeAbsPrefix(value: string): string {
   return value.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -117,8 +124,9 @@ function codeGraphIgnoreMutation(args: {
     if (isCodeGraphIgnorePath(target) && !codeGraphIgnoreExists(projectRoot, target)) return true;
   }
   if (!isShell) return false;
-  return commandAppearsToDeleteCodeGraphIgnore(rawCommand, projectRoot)
-    || commandAppearsToCreateCodeGraphIgnore(rawCommand, projectRoot);
+  const hygiene = loadFeatureSourceHygiene();
+  return hygiene.commandAppearsToDeleteCodeGraphIgnore(rawCommand, projectRoot)
+    || hygiene.commandAppearsToCreateCodeGraphIgnore(rawCommand, projectRoot);
 }
 
 // This single aggregator deny (bottom of planWriteGate) can be reached through
@@ -408,16 +416,20 @@ export function planWriteGate(ctx: Ctx): HookResult {
     toolInput.working_directory,
     toolInput.cwd,
   );
-  const writingExternalTempViaCommand = isShellToolName(toolName)
-    && commandAppearsToWriteExternalTemp(
+  const isShell = isShellToolName(toolName);
+  const hygiene = isShell ? loadFeatureSourceHygiene() : null;
+  const writingExternalTempViaCommand = Boolean(
+    hygiene
+    && hygiene.commandAppearsToWriteExternalTemp(
       rawCommand,
       cwdOutsideProject(structuredCwd, projectRoot),
       projectRoot,
-    );
+    ),
+  );
   const writingOrExecLocalMjs = writeTargetPaths.some((target) => isLocalMjsPath(target))
     || isLocalMjsPath(rawFilePath)
     || isLocalMjsPath(directFilePath)
-    || (isShellToolName(toolName) && commandAppearsToWriteOrExecLocalMjs(rawCommand));
+    || Boolean(hygiene && hygiene.commandAppearsToWriteOrExecLocalMjs(rawCommand));
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
   const writingBuildArtifact = buildArtifactTargetPaths.length > 0 || writingBuildArtifactViaCommand;
   const runTeamTargetPaths = [...featureTargetPaths];
@@ -495,7 +507,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // After external-temp: a `/tmp` unzip of a Playwright trace must keep
   // first-fired `opencode-external-temp-shell`. In-project extract of
   // `*.trace.zip` is this gate. Dest flags do not allow a trace extract.
-  if (isShellToolName(toolName) && commandAppearsToExtractQaTrace(rawCommand)) {
+  if (hygiene && hygiene.commandAppearsToExtractQaTrace(rawCommand)) {
     violations.push(block('qa-trace-unzip',
       'QA trace gate: do not extract Playwright `*.trace.zip` archives. Those files are failure-only runner diagnostics; unzipping them is not how you read the verdict. Read the summary fields on `.traffic-one/reports/qa/<runId>/report-v2.json` (`schemaVersion`, `runId`, `status`, `checks`, `gates`, `lighthouse.status` / `lighthouse.reason`, `blockerSummary`). Do not Read `lighthouse.raw.json`, screenshot PNGs, `graph.json`, or `GRAPH_REPORT.md`. Re-run the canonical QA runner if the evidence is insufficient.'));
   }
@@ -504,9 +516,10 @@ export function planWriteGate(ctx: Ctx): HookResult {
       'Local-module gate: do not write or execute `*.local.mjs` anywhere in the project. That suffix is a host-local probe file, not a compiled output, and running it bypasses the owned toolchain. Use a compiled test or the canonical QA runner instead.'));
   }
   if (
-    hostFlags(ctx.host).shellRecursiveRmPromptsUser
-    && isShellToolName(toolName)
-    && commandAppearsToRecursiveRmPromptTarget(rawCommand)
+    isShell
+    && hostFlags(ctx.host).shellRecursiveRmPromptsUser
+    && hygiene
+    && hygiene.commandAppearsToRecursiveRmPromptTarget(rawCommand)
   ) {
     violations.push(block('host-recursive-rm-prompt',
       'Recursive-rm gate: this host prompts the user for `rm -rf` of build output (`dist`, `.next`, `supabase/.temp`). Do not run that from a model command — it stalls the run on an Allow dialog. Delete the tree from the host UI, or ask the user to remove it, then continue. `rm -rf node_modules` and `node_modules/.cache/…` stay allowed.'));
@@ -517,7 +530,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
     directFilePath,
     reconstructedPatch: reconstructedPatch?.ok ? reconstructedPatch : null,
     patchBase,
-    isShell: isShellToolName(toolName),
+    isShell,
     rawCommand,
   });
   if (mutatingCodeGraphIgnore) {

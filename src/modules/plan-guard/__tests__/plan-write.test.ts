@@ -110,6 +110,93 @@ function writeCtx(
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+// Three-valued on purpose (see src/test-support/__tests__/latency-budget.ts).
+// FIRST in this file on purpose: the serial `latency-budget` job runs the
+// whole file, and measuring after fifty withMaterialized fixtures is how the
+// idle p95 (~14 ms) became a 116 ms GitHub-runner tail against a 150 ms
+// budget. The title must stay byte-identical — that job greps for it.
+//
+// The 150 ms budget is honest — the idle-machine p95 is ~14 ms, over 10x of
+// headroom — but the INSTRUMENT was not: the same assertion returned 28 ms idle
+// and 166 ms, 16.8 s, 31 s and 47.9 s under load, so a red here carried no
+// information about the code. A wall clock taken while the machine is
+// descheduling this process is not evidence in either direction, and now says
+// so instead of guessing.
+//
+// The ~14 ms supersedes an earlier ~28 ms recorded for this same assertion; the
+// path got faster (the root-resolution memo cut resolveProjectRoot from 206
+// syscalls to 49), so a number measured before that is not a baseline for this
+// one.
+//
+// SCOPE — the name overclaims and cannot be fixed here. This times
+// planWriteGate(ctx) on a prepared Ctx: ONE gate, not a whole invocation. A
+// Claude `Write` matches four hooks.json entries (check-codex-child-model,
+// check-onboarding-gate, check-model-choice-gate, check-plan-write) and `Bash`
+// five, each its own OS process; adapter parse, the fail-closed pre-checks,
+// module discovery and serialize all sit outside this closure. Whole-invocation
+// numbers, including the per-process constant this cannot see, live in
+// tests/hook-timing/. Do NOT rename the test to say so: the `latency-budget`
+// job in .github/workflows/generate-check.yml greps for this exact title as its
+// anti-mute guard, so a rename makes that job fail with "test did not run".
+test('complete Write pre-tool path remains below the 150 ms p95 budget with runtime contracts', (t) => {
+  withMaterialized({
+    currentRunId: 'run-hot-path',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const inputPath = architectureInputPath(cwd, 'run-hot-path');
+    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schemaVersion: 1,
+      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
+      modules: [
+        { id: 'app-shell', name: 'App', kind: 'app-shell' },
+        { id: 'home', name: 'Home', kind: 'page' },
+      ],
+    }), 'utf8');
+    const architecture = compileArchitectureForRun(cwd, 'run-hot-path', state);
+    const verification = compileVerificationContract(cwd, 'run-hot-path', state, architecture, {
+      changedPaths: [],
+    });
+    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
+    const frontend = assignments.assignments.find((assignment) => assignment.role === 'senior-frontend');
+    const home = architecture.modules.find((module) => module.id === 'home');
+    assert.ok(frontend);
+    assert.ok(home);
+    assert.ok(frontend.scope.include.includes(home.output));
+
+    const childId = 'frontend-hot-path-child';
+    assert.ok(claimThreadRole(cwd, state, childId, 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+    }));
+    const ctx = writeCtx(cwd, 'Write', 'file-write', {
+      file_path: home.output,
+      content: [
+        "import { Card } from '../components/Card';",
+        'export function Home() {',
+        '  return <main><Card /></main>;',
+        '}',
+        '',
+      ].join('\n'),
+    }, { session_id: childId });
+
+    // Correctness of the measured path is asserted OUTSIDE the timed closure:
+    // a failed assertion inside it would be charged to the budget, and an
+    // assert.equal per sample is measurable work the production path does not
+    // do. One check before the loop is enough — the input never changes.
+    const probe = planWriteGate(ctx);
+    assert.equal(probe.kind, 'noop', probe.kind === 'deny' ? probe.reason : undefined);
+
+    assertLatencyBudget(t, {
+      label: 'complete Write pre-tool path',
+      budgetMs: 150,
+      samples: 250,
+      warmup: 20,
+      run: () => { planWriteGate(ctx); },
+    });
+  });
+});
+
 test('clean write in a materialized main-agent project → noop', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
@@ -1652,88 +1739,6 @@ test('Edit hot structural gate allows a uniquely reconstructed non-structural ch
       new_string: 'const strict = false;',
     }));
     assert.equal(result.kind, 'noop');
-  });
-});
-
-// Three-valued on purpose (see src/test-support/__tests__/latency-budget.ts).
-// The 150 ms budget is honest — the idle-machine p95 is ~14 ms, over 10x of
-// headroom — but the INSTRUMENT was not: the same assertion returned 28 ms idle
-// and 166 ms, 16.8 s, 31 s and 47.9 s under load, so a red here carried no
-// information about the code. A wall clock taken while the machine is
-// descheduling this process is not evidence in either direction, and now says
-// so instead of guessing.
-//
-// The ~14 ms supersedes an earlier ~28 ms recorded for this same assertion; the
-// path got faster (the root-resolution memo cut resolveProjectRoot from 206
-// syscalls to 49), so a number measured before that is not a baseline for this
-// one.
-//
-// SCOPE — the name overclaims and cannot be fixed here. This times
-// planWriteGate(ctx) on a prepared Ctx: ONE gate, not a whole invocation. A
-// Claude `Write` matches four hooks.json entries (check-codex-child-model,
-// check-onboarding-gate, check-model-choice-gate, check-plan-write) and `Bash`
-// five, each its own OS process; adapter parse, the fail-closed pre-checks,
-// module discovery and serialize all sit outside this closure. Whole-invocation
-// numbers, including the per-process constant this cannot see, live in
-// tests/hook-timing/. Do NOT rename the test to say so: the `latency-budget`
-// job in .github/workflows/generate-check.yml greps for this exact title as its
-// anti-mute guard, so a rename makes that job fail with "test did not run".
-test('complete Write pre-tool path remains below the 150 ms p95 budget with runtime contracts', (t) => {
-  withMaterialized({
-    currentRunId: 'run-hot-path',
-    team: { mode: 'subagents', source: 'prompted', approved: true },
-  }, (cwd) => {
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-    const inputPath = architectureInputPath(cwd, 'run-hot-path');
-    fs.mkdirSync(path.dirname(inputPath), { recursive: true });
-    fs.writeFileSync(inputPath, JSON.stringify({
-      schemaVersion: 1,
-      routes: [{ id: 'home-route', path: '/', moduleId: 'home' }],
-      modules: [
-        { id: 'app-shell', name: 'App', kind: 'app-shell' },
-        { id: 'home', name: 'Home', kind: 'page' },
-      ],
-    }), 'utf8');
-    const architecture = compileArchitectureForRun(cwd, 'run-hot-path', state);
-    const verification = compileVerificationContract(cwd, 'run-hot-path', state, architecture, {
-      changedPaths: [],
-    });
-    const assignments = publishRuntimeAssignments(cwd, architecture, verification.contractHash);
-    const frontend = assignments.assignments.find((assignment) => assignment.role === 'senior-frontend');
-    const home = architecture.modules.find((module) => module.id === 'home');
-    assert.ok(frontend);
-    assert.ok(home);
-    assert.ok(frontend.scope.include.includes(home.output));
-
-    const childId = 'frontend-hot-path-child';
-    assert.ok(claimThreadRole(cwd, state, childId, 'senior-frontend', {
-      parentSessionId: 'orchestrator',
-    }));
-    const ctx = writeCtx(cwd, 'Write', 'file-write', {
-      file_path: home.output,
-      content: [
-        "import { Card } from '../components/Card';",
-        'export function Home() {',
-        '  return <main><Card /></main>;',
-        '}',
-        '',
-      ].join('\n'),
-    }, { session_id: childId });
-
-    // Correctness of the measured path is asserted OUTSIDE the timed closure:
-    // a failed assertion inside it would be charged to the budget, and an
-    // assert.equal per sample is measurable work the production path does not
-    // do. One check before the loop is enough — the input never changes.
-    const probe = planWriteGate(ctx);
-    assert.equal(probe.kind, 'noop', probe.kind === 'deny' ? probe.reason : undefined);
-
-    assertLatencyBudget(t, {
-      label: 'complete Write pre-tool path',
-      budgetMs: 150,
-      samples: 250,
-      warmup: 20,
-      run: () => { planWriteGate(ctx); },
-    });
   });
 });
 
