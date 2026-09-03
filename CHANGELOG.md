@@ -28,10 +28,11 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-08-27
+## 1.0.52 — 2026-09-03
 
 ### Agent-visible content — what your agents are told
 
+- Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
 - Gates: brief write and spawn rules before the first tool (`a162a469`)
 - Install: reclaim generated agents; always ask Code Graph; name Cursor hook edges (`c628b61a`)
 - P8 spawn: stop fake Couldn't-start failures; skip architect when small work is already scoped (`9a5a5460`)
@@ -43,6 +44,7 @@ publication date.**
 
 ### Deny prose — what a refusal says
 
+- Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
 - Gates: brief write and spawn rules before the first tool (`a162a469`)
 - P8 spawn: stop fake Couldn't-start failures; skip architect when small work is already scoped (`9a5a5460`)
 - P8 Cursor: bind unlinked Task digest writes; gitignore digest-moves are not fatal QA unless they hide live source (`aa031085`)
@@ -63,6 +65,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
 - Consent: inherit prefs-capable parent so enclosed folders cannot deadlock ask-first (`d7f3df1a`)
 - Setup: persist OpenCode authorization before prefs and heal first-time .one.json (`4ff4c823`)
 - Gates: brief write and spawn rules before the first tool (`a162a469`)
