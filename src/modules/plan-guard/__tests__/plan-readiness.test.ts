@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -864,11 +863,7 @@ test('PLAN_READY consumes strict verification intent and IMPLEMENTED refreshes u
     );
     const page = path.join(dir, 'apps/web/src/pages/Home.tsx');
     fs.writeFileSync(page, 'export function Home(){ return <main>Home</main>; }\n');
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+    commitFixtureRepo(dir);
 
     writeRequiredMemory(dir, state);
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
@@ -976,11 +971,7 @@ test('a truncated baseline diff records STRUCT_SCAN_INCOMPLETE and publishes a p
       "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
     );
     fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'), 'export function Home(){ return <main>Home</main>; }\n');
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+    commitFixtureRepo(dir);
 
     writeRequiredMemory(dir, state);
     writeArchitectureInputOnly(dir, 'R');
@@ -1086,11 +1077,7 @@ function seedTruncatedRun(dir: string, planIntent: Record<string, unknown> | nul
     "import { createBrowserRouter, RouterProvider } from 'react-router-dom';\nimport { Home } from './pages/Home';\nconst router = createBrowserRouter([{ path: '/', element: <Home /> }]);\nexport function App(){ return <RouterProvider router={router} />; }\n",
   );
   fs.writeFileSync(path.join(dir, 'apps/web/src/pages/Home.tsx'), 'export function Home(){ return <main>Home</main>; }\n');
-  execFileSync('git', ['init', '-q'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
-  execFileSync('git', ['add', '.'], { cwd: dir });
-  execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+  commitFixtureRepo(dir);
 
   writeRequiredMemory(dir, TRUNCATION_STATE);
   writeArchitectureInputOnly(dir, 'R');
@@ -1349,11 +1336,7 @@ test('a refused verification-contract publish denies the IMPLEMENTED refresh ins
     );
     const page = path.join(dir, 'apps/web/src/pages/Home.tsx');
     fs.writeFileSync(page, 'export function Home(){ return <main>Home</main>; }\n');
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+    commitFixtureRepo(dir);
 
     writeRequiredMemory(dir, state);
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'plan', 'utf8');
@@ -1497,11 +1480,7 @@ test('refresh authority accepts assignment-scoped siblings, tester tests, and ru
     // Runtime-maintained root context, tracked in the baseline like any real
     // onboarded project.
     fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Project agents\n');
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+    commitFixtureRepo(dir);
 
     writeRequiredMemory(dir, state);
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'plan', 'utf8');

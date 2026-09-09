@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -26,6 +25,7 @@ import {
 import { changedRoutes, rank, validateAgentRaisedImpact } from '../verification-contract/impact';
 import { capabilityProfileForProject } from '../capabilities';
 import type { CapabilityProfileV1 } from '../capabilities/types';
+import { commitFixtureRepo } from '../../test-support/__tests__/git-fixture';
 
 function withProject(fn: (cwd: string) => void): void {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verification-'));
@@ -54,11 +54,7 @@ const EXISTING_REACT = {
 // classified conservatively `visual` with a reason, which cannot distinguish a
 // template edit from a handler-only one.
 function commit(cwd: string): void {
-  execFileSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
-  execFileSync('git', ['add', '-A'], { cwd, stdio: 'ignore' });
-  execFileSync('git', [
-    '-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-qm', 'base',
-  ], { cwd, stdio: 'ignore' });
+  commitFixtureRepo(cwd, 'base');
 }
 
 test('backend/API projects derive uiImpact none and never require a browser', () => {
@@ -1721,11 +1717,7 @@ test('Git baseline hunks classify handler-only TSX as behavioral and markup chan
       '}',
       '',
     ].join('\n'));
-    execFileSync('git', ['init', '-q'], { cwd });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd });
-    execFileSync('git', ['add', '.'], { cwd });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd });
+    commitFixtureRepo(cwd);
 
     const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, {
       schemaVersion: 1,
@@ -1771,11 +1763,7 @@ test('IMPLEMENTED refresh raises a pre-implementation contract from the real bas
     setupReact(cwd);
     const page = path.join(cwd, 'apps/web/src/pages/Home.tsx');
     fs.writeFileSync(page, 'export function Home() { return <main>Home</main>; }\n');
-    execFileSync('git', ['init', '-q'], { cwd });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd });
-    execFileSync('git', ['add', '.'], { cwd });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd });
+    commitFixtureRepo(cwd);
 
     const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, {
       schemaVersion: 1,
@@ -1808,11 +1796,7 @@ test('Git baseline verification includes deletions and rejects an unplanned dele
     fs.mkdirSync(path.join(cwd, 'docs'), { recursive: true });
     const deletedPath = path.join(cwd, 'docs', 'legacy.md');
     fs.writeFileSync(deletedPath, 'legacy contract\n');
-    execFileSync('git', ['init', '-q'], { cwd });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd });
-    execFileSync('git', ['add', '.'], { cwd });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd });
+    commitFixtureRepo(cwd);
 
     const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, {
       schemaVersion: 1,
@@ -2312,11 +2296,7 @@ test('Git verification diff fails closed on an untracked symbolic link', () => {
   withProject((cwd) => {
     setupReact(cwd);
     fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'), 'export const Home = () => <main />;\n');
-    execFileSync('git', ['init', '-q'], { cwd });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd });
-    execFileSync('git', ['add', '.'], { cwd });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd });
+    commitFixtureRepo(cwd);
     const architecture = compileArchitecture(cwd, 'R', REACT, {
       schemaVersion: 1,
       routes: [],
@@ -2365,11 +2345,7 @@ test('the materialized CLAUDE.md → AGENTS.md alias never makes a verification 
     setupReact(cwd);
     fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Home.tsx'), 'export const Home = () => <main />;\n');
     fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Project agents\n');
-    execFileSync('git', ['init', '-q'], { cwd });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd });
-    execFileSync('git', ['add', '.'], { cwd });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd });
+    commitFixtureRepo(cwd);
     const architecture = compileArchitecture(cwd, 'R', REACT, {
       schemaVersion: 1,
       routes: [],
@@ -2408,11 +2384,7 @@ test('runtime-maintained root context (AGENTS.md) never enters the contract iden
   withProject((cwd) => {
     setupReact(cwd);
     fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Project agents\n');
-    execFileSync('git', ['init', '-q'], { cwd });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd });
-    execFileSync('git', ['add', '.'], { cwd });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd });
+    commitFixtureRepo(cwd);
     const architecture = compileArchitecture(cwd, 'R', EXISTING_REACT, {
       schemaVersion: 1,
       routes: [],
@@ -2451,11 +2423,7 @@ test('Git verification source identity is project-relative inside a larger workt
     );
     fs.mkdirSync(path.join(worktree, 'sibling'), { recursive: true });
     fs.writeFileSync(path.join(worktree, 'sibling/untouched.ts'), 'export const sibling = 1;\n');
-    execFileSync('git', ['init', '-q'], { cwd: worktree });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: worktree });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
-    execFileSync('git', ['add', '.'], { cwd: worktree });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: worktree });
+    commitFixtureRepo(worktree);
 
     const architecture = compileArchitecture(cwd, 'NESTED', EXISTING_REACT, {
       schemaVersion: 1,
@@ -2553,11 +2521,7 @@ test('handler-only edits are behavioral in every framework, not just React', () 
     }
     fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Styled.vue'), '<button class="p-6">Go</button>\n');
     fs.writeFileSync(path.join(cwd, 'apps/web/src/pages/Filter.html'), '<ul data-only="active"><li>One</li></ul>\n');
-    execFileSync('git', ['init', '-q'], { cwd, stdio: 'ignore' });
-    execFileSync('git', ['add', '-A'], { cwd, stdio: 'ignore' });
-    execFileSync('git', [
-      '-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-qm', 'base',
-    ], { cwd, stdio: 'ignore' });
+    commitFixtureRepo(cwd, 'base');
     const baseline = captureArchitectureBaseline(cwd, profile);
     assert.equal(baseline.kind, 'git-head', 'fixture guard: hunk evidence needs a git baseline');
 

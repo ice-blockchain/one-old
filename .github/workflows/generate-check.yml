@@ -49,12 +49,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Two full `tsc` builds plus the unit+golden suite. A hung step would
-    # otherwise burn GitHub's 6-hour default on three runners at once. This
-    # is a hang ceiling, not a budget: ubuntu/macos finish in minutes.
-    # windows-latest was cancelled at 31m 23s against 30 while still inside
-    # `npm test` (typecheck + tests only — no gen/build), so the ceiling
-    # has to clear that runner rather than the POSIX ones.
+    # Hang ceiling, not a budget. ubuntu/macos finish in minutes.
+    # windows-latest cancelled at 31m/30, then 59m 10s/60, still inside
+    # `npm test` (typecheck + tests only). That is Defender plus mass
+    # fixture trees, not a hung test and not a ceiling that wants another
+    # raise: the refuse-step red after cancel is the missing `pass <n>`
+    # line from a killed suite. Mass trees skip on win32; the Windows
+    # job turns Defender off before Tests. Do not raise this number again.
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -167,6 +168,26 @@ jobs:
       # which no in-suite leg can observe), by
       # src/build/__tests__/test-preload.test.ts -- included in the run below,
       # in well under a second, on all three operating systems instead of one.
+      # Hosted windows-latest runs Defender real-time scanning. Every
+      # mkdtemp / writeFileSync / git add in the suite is opened by the
+      # scanner; after the 10k trees were skipped, Tests still ran 59m 10s
+      # and the job cancelled at this hang ceiling. The runner also sets
+      # core.autocrlf=true globally, so any fixture `git add` that is not
+      # muted reprints one LF/CRLF warning per file into TAP. Both are
+      # runner costs. Clearing them here is the remaining lever.
+      - name: Unblock Windows test I/O
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.safecrlf false
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          Set-MpPreference -DisableBehaviorMonitoring $true
+          Set-MpPreference -DisableIOAVProtection $true
+          Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE
+          Add-MpPreference -ExclusionPath $env:RUNNER_TEMP
+          Add-MpPreference -ExclusionPath $env:TEMP
+
       - name: Tests
         # No *_PLUGIN_ROOT var is set here on purpose.
         shell: bash

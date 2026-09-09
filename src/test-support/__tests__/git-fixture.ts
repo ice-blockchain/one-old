@@ -8,17 +8,21 @@
 // 45m). Local `core.autocrlf=false` overrides the runner. `stdio: 'ignore'`
 // keeps any leftover chatter off the reporter. A non-zero exit still throws.
 //
-// Creating those 10k-file trees is a second cost: Defender on the hosted
-// Windows runner turns each write/add/rm into tens of milliseconds, and the
-// bound tests (architecture-scan-bound, plan-readiness overflow) write that
-// many files several times. After the CRLF mute, the same job still cancelled
-// at 59m inside `npm test`. The trees prove a file-count cap, not a Windows
-// path, so those tests skip on win32 via `SKIP_10K_TREE_ON_WIN32`.
+// Creating those trees is a second cost: Defender on the hosted Windows
+// runner turns each write/add/rm into tens of milliseconds. After the CRLF
+// mute AND after the 10k architecture/plan-readiness trees were skipped, the
+// same job still cancelled at 59m 10s inside `npm test` — source-scan's
+// entry-budget fixture still writes 25_500 files and then `rmSync`s them,
+// and the rest of the suite is thousands of mkdtemp fixtures the scanner
+// opens one by one. Mass trees prove a file-count cap, not a Windows path,
+// so they skip on win32 via `SKIP_10K_TREE_ON_WIN32`. The generate-check
+// Windows job also turns Defender off and sets `core.autocrlf=false`
+// globally before `npm test`. Do not raise `timeout-minutes` again.
 
 import { execFileSync } from 'child_process';
 
 export const SKIP_10K_TREE_ON_WIN32: boolean | string = process.platform === 'win32'
-  ? '10k-file fixture trees starve windows-latest under Defender (job cancelled at 59m)'
+  ? 'mass fixture trees starve windows-latest under Defender (job cancelled at 59m after 10k skips)'
   : false;
 
 export function commitFixtureRepo(cwd: string, message = 'baseline'): void {

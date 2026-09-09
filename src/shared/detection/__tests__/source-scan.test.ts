@@ -13,6 +13,7 @@ import {
   scanSourceFiles,
 } from '../artifacts';
 import { SKIP_DIRS } from '../../../config/reporting';
+import { SKIP_10K_TREE_ON_WIN32 } from '../../../test-support/__tests__/git-fixture';
 
 // The walk runs in the hook path against a 150ms budget. Measured unbounded on
 // this checkout (macOS/APFS, warm, node 26.5, median of 5): 300,000 source files
@@ -38,7 +39,9 @@ function writeFiles(dir: string, relDir: string, count: number, ext: string): vo
   }
 }
 
-test('a wide directory fan-out is bounded by the DIRECTORY budget, not just the entry budget', () => {
+test('a wide directory fan-out is bounded by the DIRECTORY budget, not just the entry budget', {
+  skip: SKIP_10K_TREE_ON_WIN32,
+}, () => {
   withTree((dir) => {
     // Every directory is empty, so entries visited stays far below the entry
     // budget while the readdir calls are the entire cost. This is the shape the
@@ -60,7 +63,9 @@ test('a wide directory fan-out is bounded by the DIRECTORY budget, not just the 
   });
 });
 
-test('a wide file fan-out is bounded by the ENTRY budget', () => {
+test('a wide file fan-out is bounded by the ENTRY budget', {
+  skip: SKIP_10K_TREE_ON_WIN32,
+}, () => {
   withTree((dir) => {
     writeFiles(dir, 'src', SOURCE_SCAN_ENTRY_BUDGET + 500, '.txt');
   }, (dir) => {

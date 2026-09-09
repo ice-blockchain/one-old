@@ -38,6 +38,7 @@ import {
 import { sha256 } from '../text';
 import { DEFAULT_LIGHTHOUSE_THRESHOLDS, currentVerificationSourceHash, verificationContractPath, type VerificationContractV2 } from '../verification-contract';
 import { runtime1019AcceptsTransition } from './fixtures/runtime-1.0.19-run-ledger';
+import { SKIP_10K_TREE_ON_WIN32 } from '../../test-support/__tests__/git-fixture';
 
 function withProject(run: (cwd: string) => void): void {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-settlement-'));
@@ -626,7 +627,9 @@ test('a reconciled project certifies again, except for the runs the operator qua
   });
 });
 
-test('claim scan truncation is explicit and cannot hide a late active claim', () => {
+test('claim scan truncation is explicit and cannot hide a late active claim', {
+  skip: SKIP_10K_TREE_ON_WIN32,
+}, () => {
   withProject((cwd) => {
     const runDir = path.join(cwd, '.traffic-one', 'runs', 'R');
     writeStrictVerificationEvidence(cwd);
