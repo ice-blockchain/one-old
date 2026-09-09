@@ -23,9 +23,15 @@ import { makeKiloAdapter } from '../../../adapters/kilo';
 import { makeOpenCodeAdapter } from '../../../adapters/opencode';
 import {
   architectureInputPath,
+  capabilityStateForRun,
   compileArchitectureForRun,
   publishRuntimeAssignments,
 } from '../../../shared/architecture-contract';
+import { BOOTSTRAP_SKILLS, PROJECT_UNAVAILABLE_SKILLS } from '../../../config/skill-filters';
+import { detectHost } from '../../../shared/host';
+import { materializeProjectIfNeeded } from '../../../shared/materialize';
+import { activeSkillsForProject } from '../../../shared/skill-filters';
+import { stackSpecForState } from '../../../shared/stacks';
 import { compileVerificationContract } from '../../../shared/verification-contract';
 import {
   ARCHITECTURE_INPUT_RE,
@@ -39,6 +45,29 @@ import {
 // body before the teardown runs: `try { fn(dir) } finally { rm(dir) }` deletes
 // the project while a promise-returning body is still using it, which is a
 // leaked temp dir and a flaky test in one. Every sync caller is unchanged.
+function stampDeclaredMaterialization(cwd: string): void {
+  const state = readEffectiveState(cwd);
+  const mandatory = stackSpecForState(capabilityStateForRun(cwd, state)).mandatory;
+  const skills = [...activeSkillsForProject(cwd, state, detectHost())]
+    .filter((name) => !BOOTSTRAP_SKILLS.has(name) && !PROJECT_UNAVAILABLE_SKILLS.has(name));
+  const t1 = path.join(cwd, '.traffic-one');
+  for (const rel of mandatory) {
+    const abs = path.join(t1, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    if (!fs.existsSync(abs)) fs.writeFileSync(abs, 'r', 'utf8');
+  }
+  for (const name of skills) {
+    const abs = path.join(t1, 'skills', name, 'SKILL.md');
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    if (!fs.existsSync(abs)) fs.writeFileSync(abs, 's', 'utf8');
+  }
+  const manifestPath = path.join(t1, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  manifest.rules = mandatory;
+  manifest.skills = skills;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
+}
+
 function materializedFixture(stateExtra: Record<string, unknown>): { dir: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
   const env = process.env;
@@ -73,6 +102,16 @@ function materializedFixture(stateExtra: Record<string, unknown>): { dir: string
       hostScopedPerformancePrefs(performance, team, 'pro'),
     ), 'utf8');
   }
+  // The lean stub above is enough for hasMaterializedProjectAssets and not
+  // enough for materializedContentIsIncomplete: the runtime declares ~20
+  // mandatory rules and ~50 skills for this stack, and a one-rule manifest
+  // is a truncated install. materializeProjectIfNeeded then rematerializes
+  // on EVERY planWriteGate call. That is not the production hot path (a
+  // healthy project short-circuits to null). Timed, the rematerialize walk
+  // is ~13 ms here and was the whole 15 ms Write-budget p95; the serial
+  // runner's ~8x factor on that walk is what put the same assertion over
+  // 150 ms. Stamping the declared set makes the conjunction return null.
+  stampDeclaredMaterialization(dir);
   return {
     dir,
     cleanup: () => {
@@ -126,17 +165,21 @@ function writeCtx(
 // idle p95 (~14 ms) became a 116 ms GitHub-runner tail against a 150 ms
 // budget. The title must stay byte-identical — that job greps for it.
 //
-// The 150 ms budget is honest — the idle-machine p95 is ~14 ms, over 10x of
-// headroom — but the INSTRUMENT was not: the same assertion returned 28 ms idle
-// and 166 ms, 16.8 s, 31 s and 47.9 s under load, so a red here carried no
-// information about the code. A wall clock taken while the machine is
-// descheduling this process is not evidence in either direction, and now says
-// so instead of guessing.
+// The 150 ms budget is honest — the idle-machine p95 of the production
+// already-current path is a few milliseconds, over 10x of headroom — but the
+// INSTRUMENT was not: the same assertion returned 28 ms idle and 166 ms,
+// 16.8 s, 31 s and 47.9 s under load, so a red here carried no information
+// about the code. A wall clock taken while the machine is descheduling this
+// process is not evidence in either direction, and now says so instead of
+// guessing.
 //
-// The ~14 ms supersedes an earlier ~28 ms recorded for this same assertion; the
-// path got faster (the root-resolution memo cut resolveProjectRoot from 206
-// syscalls to 49), so a number measured before that is not a baseline for this
-// one.
+// The fixture used to ship a one-rule manifest. That is
+// `materializedContentIsIncomplete`, so every timed sample rematerialized
+// (~13 ms here, ~8x that on the 2-vCPU serial runner) and the 150 ms
+// ceiling was a rematerialize budget, not a Write-path budget.
+// `stampDeclaredMaterialization` makes the declared set present so
+// materializeProjectIfNeeded returns null, which is the production
+// already-current path this assertion names.
 //
 // SCOPE — the name overclaims and cannot be fixed here. This times
 // planWriteGate(ctx) on a prepared Ctx: ONE gate, not a whole invocation. A
@@ -194,6 +237,11 @@ test('complete Write pre-tool path remains below the 150 ms p95 budget with runt
     // a failed assertion inside it would be charged to the budget, and an
     // assert.equal per sample is measurable work the production path does not
     // do. One check before the loop is enough — the input never changes.
+    assert.equal(
+      materializeProjectIfNeeded(cwd, { trigger: 'plan preflight convergence' }),
+      null,
+      'budget fixture must already be current; otherwise this times rematerialize',
+    );
     const probe = planWriteGate(ctx);
     assert.equal(probe.kind, 'noop', probe.kind === 'deny' ? probe.reason : undefined);
 

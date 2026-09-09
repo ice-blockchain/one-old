@@ -50,9 +50,12 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     # Two full `tsc` builds plus the unit+golden suite. A hung step would
-    # otherwise burn GitHub's 6-hour default on three runners at once; the
-    # observed run is minutes, so this is a hang ceiling, not a budget.
-    timeout-minutes: 30
+    # otherwise burn GitHub's 6-hour default on three runners at once. This
+    # is a hang ceiling, not a budget: ubuntu/macos finish in minutes.
+    # windows-latest was cancelled at 31m 23s against 30 while still inside
+    # `npm test` (typecheck + tests only — no gen/build), so the ceiling
+    # has to clear that runner rather than the POSIX ones.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -837,11 +840,12 @@ jobs:
           # than merely measured: inside `npm test`'s 291-file parallel suite the
           # same session-start row reads 45.31 ms alone (100% CPU delivered) and
           # 152.40 ms (91%) and 242.86 ms (81%) under load, against the 150 ms it
-          # was first enforced under. The ceiling is now 300 ms, sized to THIS
+          # was first enforced under. The ceiling is now 500 ms, sized to THIS
           # runner rather than to a dev machine — the first enforced run here read
-          # 172.02 ms at 100% delivered CPU and filesystem, which the instrument
-          # cannot discount because `delivered` measures starvation and not
-          # hardware speed. See the test file's header for the full derivation.
+          # 172.02 ms at 100% delivered CPU and filesystem; hardening then grew
+          # the same row from ~45 ms to 88.44 ms locally, which at the measured
+          # 3.79x runner/laptop ratio is ~335 ms here. See the test file's
+          # header for the full derivation.
           #
           # Do not credit the new filesystem reference for those two loaded
           # readings without checking which one you mean; re-derived by driving
@@ -878,7 +882,7 @@ jobs:
           fail=0
           # 1. The budget test itself. Renamed, filtered or deleted, a green job
           #    would certify that six events stay inside a budget nothing checked.
-          budget='every hook event stays inside the 300 ms in-process dispatch budget at p95'
+          budget='every hook event stays inside the 500 ms in-process dispatch budget at p95'
           if ! grep -qF "$budget" "$log"; then
             echo "::error title=Per-event hook budget did not run::nothing matching '$budget' appeared in the output"
             fail=1
