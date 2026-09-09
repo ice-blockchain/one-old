@@ -23,14 +23,25 @@ import {
   devinUserHookCommand,
   matchesDevinUserHookCommand,
   matchesWindsurfUserHookCommand,
+  pluginRootFromTrafficOneHookCommand,
   windsurfUserHookCommand,
 } from '../../shared/windsurf-hook-command';
 import { uncertifiedHostInstallRefusal } from '../../shared/host/tiers';
-import { readRegularFileOrThrow } from '../../shared/bounded-read';
+import { readRegularFileOrThrow, readRegularFileResult } from '../../shared/bounded-read';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
 type Rec = Record<string, unknown>;
+
+type FileOutcome =
+  | { status: 'changed' }
+  | { status: 'unchanged' }
+  | { status: 'left-untouched'; reason: string };
+
+type OwnedBlock =
+  | { kind: 'absent' }
+  | { kind: 'owned'; start: number; endExclusive: number }
+  | { kind: 'refuse'; reason: string };
 
 const OWNER_START = '<!-- traffic-one:windsurf:start -->';
 const OWNER_END = '<!-- traffic-one:windsurf:end -->';
@@ -91,6 +102,83 @@ function writeJson(file: string, value: unknown): void {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+function inspectUserFile(file: string): 'absent' | 'symlink' | 'not-regular' | 'regular' {
+  try {
+    const st = fs.lstatSync(file);
+    if (st.isSymbolicLink()) return 'symlink';
+    if (!st.isFile()) return 'not-regular';
+    return 'regular';
+  } catch {
+    return 'absent';
+  }
+}
+
+function readUserJsonObject(file: string):
+  | { status: 'absent' }
+  | { status: 'ok'; value: Rec }
+  | { status: 'left-untouched'; reason: string } {
+  const kind = inspectUserFile(file);
+  if (kind === 'absent') return { status: 'absent' };
+  if (kind === 'symlink') return { status: 'left-untouched', reason: 'symlink' };
+  if (kind === 'not-regular') return { status: 'left-untouched', reason: 'not a regular file' };
+  const read = readRegularFileResult(file);
+  if (read.kind === 'absent') return { status: 'absent' };
+  if (read.kind === 'unreadable') return { status: 'left-untouched', reason: read.errno };
+  try {
+    const parsed = JSON.parse(read.text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { status: 'left-untouched', reason: 'must contain a JSON object' };
+    }
+    return { status: 'ok', value: parsed as Rec };
+  } catch {
+    return { status: 'left-untouched', reason: 'malformed JSON' };
+  }
+}
+
+function countNeedle(haystack: string, needle: string): number {
+  let n = 0;
+  let from = 0;
+  while (true) {
+    const i = haystack.indexOf(needle, from);
+    if (i < 0) return n;
+    n += 1;
+    from = i + needle.length;
+  }
+}
+
+function locateOwnedBlock(existing: string): OwnedBlock {
+  const startCount = countNeedle(existing, OWNER_START);
+  const endCount = countNeedle(existing, OWNER_END);
+  if (startCount === 0 && endCount === 0) return { kind: 'absent' };
+  if (startCount > 1 || endCount > 1) {
+    return { kind: 'refuse', reason: 'duplicate Traffic One markers' };
+  }
+  const start = existing.indexOf(OWNER_START);
+  if (start < 0) return { kind: 'absent' };
+  const end = existing.indexOf(OWNER_END, start + OWNER_START.length);
+  if (end < 0) {
+    return { kind: 'refuse', reason: 'START marker without a following END' };
+  }
+  return { kind: 'owned', start, endExclusive: end + OWNER_END.length };
+}
+
+function runHostFileStep(fn: () => FileOutcome): FileOutcome {
+  try {
+    return fn();
+  } catch (error) {
+    return {
+      status: 'left-untouched',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function describeFileOutcome(kind: string, outcome: FileOutcome, file: string): string {
+  if (outcome.status === 'changed') return `ok: ${kind} removed at ${file}`;
+  if (outcome.status === 'unchanged') return `ok: ${kind} not present at ${file}`;
+  return `${kind} left untouched at ${file} (${outcome.reason})`;
+}
+
 function windsurfPluginRootStamp(env: NodeJS.ProcessEnv): string {
   return path.join(globalTrafficOneDir(env), 'windsurf-plugin-root');
 }
@@ -114,9 +202,40 @@ function readWindsurfPluginRootStamp(env: NodeJS.ProcessEnv = process.env): stri
   }
 }
 
-function ownedPluginRoots(pluginRoot: string, env: NodeJS.ProcessEnv = process.env): string[] {
+function collectCommandStrings(value: unknown, out: string[]): void {
+  if (typeof value === 'string') {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectCommandStrings(item, out);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value as Rec)) collectCommandStrings(item, out);
+  }
+}
+
+function pluginRootsFromHookFile(file: string): string[] {
+  try {
+    const commands: string[] = [];
+    collectCommandStrings(readJsonObject(file), commands);
+    return commands
+      .map((command) => pluginRootFromTrafficOneHookCommand(command))
+      .filter((root): root is string => Boolean(root));
+  } catch {
+    return [];
+  }
+}
+
+function ownedPluginRoots(
+  pluginRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+  hookFiles: readonly string[] = [],
+): string[] {
   const stamped = readWindsurfPluginRootStamp(env);
-  return [...new Set([pluginRoot, ...(stamped ? [stamped] : [])])];
+  const historical = hookFiles.flatMap((file) => pluginRootsFromHookFile(file));
+  return [...new Set([pluginRoot, ...(stamped ? [stamped] : []), ...historical])];
 }
 
 function ownedHookEntry(entry: unknown, event: WindsurfHookEvent, pluginRoots: readonly string[]): boolean {
@@ -152,9 +271,11 @@ function ensureHooks(file: string, pluginRoot: string, pluginRoots: readonly str
   return changed;
 }
 
-function removeHooks(file: string, pluginRoots: readonly string[]): boolean {
-  if (!fs.existsSync(file)) return false;
-  const config = readJsonObject(file);
+function removeHooks(file: string, pluginRoots: readonly string[]): FileOutcome {
+  const read = readUserJsonObject(file);
+  if (read.status === 'absent') return { status: 'unchanged' };
+  if (read.status === 'left-untouched') return read;
+  const config = read.value;
   const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
     ? config.hooks as Rec
     : {};
@@ -171,8 +292,9 @@ function removeHooks(file: string, pluginRoots: readonly string[]): boolean {
       changed = true;
     }
   }
-  if (changed) writeJson(file, config);
-  return changed;
+  if (!changed) return { status: 'unchanged' };
+  writeJson(file, config);
+  return { status: 'changed' };
 }
 
 function ownedDevinCommand(entry: unknown, pluginRoots: readonly string[]): boolean {
@@ -238,9 +360,11 @@ function ensureDevinHooks(file: string, pluginRoot: string, pluginRoots: readonl
   return changed;
 }
 
-function removeDevinHooks(file: string, pluginRoots: readonly string[]): boolean {
-  if (!fs.existsSync(file)) return false;
-  const config = readJsonObject(file);
+function removeDevinHooks(file: string, pluginRoots: readonly string[]): FileOutcome {
+  const read = readUserJsonObject(file);
+  if (read.status === 'absent') return { status: 'unchanged' };
+  if (read.status === 'left-untouched') return read;
+  const config = read.value;
   const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
     ? config.hooks as Rec
     : {};
@@ -255,11 +379,10 @@ function removeDevinHooks(file: string, pluginRoots: readonly string[]): boolean
       else delete nextHooks[event];
     }
   }
-  if (changed) {
-    config.hooks = nextHooks;
-    writeJson(file, config);
-  }
-  return changed;
+  if (!changed) return { status: 'unchanged' };
+  config.hooks = nextHooks;
+  writeJson(file, config);
+  return { status: 'changed' };
 }
 
 function globalRulesBlock(pluginRoot: string): string {
@@ -277,35 +400,43 @@ function globalRulesBlock(pluginRoot: string): string {
   ].join('\n');
 }
 
-function replaceOwnedBlock(existing: string, block: string): string {
-  const start = existing.indexOf(OWNER_START);
-  const end = existing.indexOf(OWNER_END);
-  if (start >= 0 && end >= start) {
-    return `${existing.slice(0, start).trimEnd()}\n\n${block}${existing.slice(end + OWNER_END.length).replace(/^\s+/, '')}`;
+function replaceOwnedBlock(existing: string, block: string): { ok: true; text: string } | { ok: false; reason: string } {
+  const located = locateOwnedBlock(existing);
+  if (located.kind === 'refuse') return { ok: false, reason: located.reason };
+  if (located.kind === 'absent') {
+    return { ok: true, text: existing.trim() ? `${existing.trimEnd()}\n\n${block}` : block };
   }
-  return existing.trim() ? `${existing.trimEnd()}\n\n${block}` : block;
+  const prefix = existing.slice(0, located.start).trimEnd();
+  const suffix = existing.slice(located.endExclusive).replace(/^\s+/, '');
+  return { ok: true, text: prefix ? `${prefix}\n\n${block}${suffix}` : `${block}${suffix}` };
 }
 
-function ensureGlobalRules(file: string, pluginRoot: string): { changed: boolean; skipped: boolean } {
+function ensureGlobalRules(file: string, pluginRoot: string): { changed: boolean; skipped: boolean; refused?: string } {
   let existing = '';
   try { existing = readRegularFileOrThrow(file); } catch { existing = ''; }
-  const next = replaceOwnedBlock(existing, globalRulesBlock(pluginRoot));
-  if (next.length > GLOBAL_RULE_LIMIT) return { changed: false, skipped: true };
-  if (next === existing) return { changed: false, skipped: false };
+  const replaced = replaceOwnedBlock(existing, globalRulesBlock(pluginRoot));
+  if (!replaced.ok) return { changed: false, skipped: false, refused: replaced.reason };
+  if (replaced.text.length > GLOBAL_RULE_LIMIT) return { changed: false, skipped: true };
+  if (replaced.text === existing) return { changed: false, skipped: false };
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, next, 'utf8');
+  fs.writeFileSync(file, replaced.text, 'utf8');
   return { changed: true, skipped: false };
 }
 
-function removeGlobalRules(file: string): boolean {
-  if (!fs.existsSync(file)) return false;
-  const existing = readRegularFileOrThrow(file);
-  const start = existing.indexOf(OWNER_START);
-  const end = existing.indexOf(OWNER_END);
-  if (start < 0 || end < start) return false;
-  const next = `${existing.slice(0, start).trimEnd()}\n${existing.slice(end + OWNER_END.length).replace(/^\s+/, '')}`.trim();
+function removeGlobalRules(file: string): FileOutcome {
+  const kind = inspectUserFile(file);
+  if (kind === 'absent') return { status: 'unchanged' };
+  if (kind === 'symlink') return { status: 'left-untouched', reason: 'symlink' };
+  if (kind === 'not-regular') return { status: 'left-untouched', reason: 'not a regular file' };
+  const read = readRegularFileResult(file);
+  if (read.kind === 'absent') return { status: 'unchanged' };
+  if (read.kind === 'unreadable') return { status: 'left-untouched', reason: read.errno };
+  const located = locateOwnedBlock(read.text);
+  if (located.kind === 'absent') return { status: 'unchanged' };
+  if (located.kind === 'refuse') return { status: 'left-untouched', reason: located.reason };
+  const next = `${read.text.slice(0, located.start).trimEnd()}\n${read.text.slice(located.endExclusive).replace(/^\s+/, '')}`.trim();
   fs.writeFileSync(file, next ? `${next}\n` : '', 'utf8');
-  return true;
+  return { status: 'changed' };
 }
 
 export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = process.argv.slice(2)): RunnerOutput {
@@ -315,22 +446,24 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: reado
     return { code: 2, stdout: 'Traffic One Windsurf install mutates user-level Windsurf config. Re-run with --yes to confirm.\n' };
   }
   const pluginRoot = runtimePluginRoot(env);
-  const pluginRoots = ownedPluginRoots(pluginRoot, env);
   const hooksFile = windsurfHooksPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
+  const pluginRoots = ownedPluginRoots(pluginRoot, env, [hooksFile, devinFile]);
   const hooksChanged = ensureHooks(hooksFile, pluginRoot, pluginRoots);
   const devinChanged = ensureDevinHooks(devinFile, pluginRoot, pluginRoots);
   const globalRules = ensureGlobalRules(rulesFile, pluginRoot);
   writeWindsurfPluginRootStamp(pluginRoot, env);
   return {
-    code: 0,
+    code: globalRules.refused ? 1 : 0,
     stdout: [
       `ok: Cascade hooks ${hooksChanged ? 'updated' : 'already current'} at ${hooksFile}`,
       `ok: Devin Local hooks ${devinChanged ? 'updated' : 'already current'} at ${devinFile}`,
-      globalRules.skipped
-        ? `warn: global_rules.md is over ${GLOBAL_RULE_LIMIT} characters with the Traffic One block; skipped ${rulesFile}`
-        : `ok: Windsurf global rule ${globalRules.changed ? 'updated' : 'already current'} at ${rulesFile}`,
+      globalRules.refused
+        ? `warn: global_rules.md ${globalRules.refused}; left untouched ${rulesFile}`
+        : globalRules.skipped
+          ? `warn: global_rules.md is over ${GLOBAL_RULE_LIMIT} characters with the Traffic One block; skipped ${rulesFile}`
+          : `ok: Windsurf global rule ${globalRules.changed ? 'updated' : 'already current'} at ${rulesFile}`,
       'Restart Windsurf / Devin Desktop for hook and rule changes to load.',
     ].join('\n') + '\n',
   };
@@ -343,16 +476,17 @@ export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, args: rea
   const hooksFile = windsurfHooksPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
-  const pluginRoots = ownedPluginRoots(runtimePluginRoot(env), env);
-  const hooksChanged = removeHooks(hooksFile, pluginRoots);
-  const devinChanged = removeDevinHooks(devinFile, pluginRoots);
-  const rulesChanged = removeGlobalRules(rulesFile);
+  const pluginRoots = ownedPluginRoots(runtimePluginRoot(env), env, [hooksFile, devinFile]);
+  const hooksOutcome = runHostFileStep(() => removeHooks(hooksFile, pluginRoots));
+  const devinOutcome = runHostFileStep(() => removeDevinHooks(devinFile, pluginRoots));
+  const rulesOutcome = runHostFileStep(() => removeGlobalRules(rulesFile));
+  const failed = [hooksOutcome, devinOutcome, rulesOutcome].some((outcome) => outcome.status === 'left-untouched');
   return {
-    code: 0,
+    code: failed ? 1 : 0,
     stdout: [
-      `ok: hooks ${hooksChanged ? 'removed' : 'not present'} at ${hooksFile}`,
-      `ok: Devin Local hooks ${devinChanged ? 'removed' : 'not present'} at ${devinFile}`,
-      `ok: global rule ${rulesChanged ? 'removed' : 'not present'} at ${rulesFile}`,
+      describeFileOutcome('hooks', hooksOutcome, hooksFile),
+      describeFileOutcome('Devin Local hooks', devinOutcome, devinFile),
+      describeFileOutcome('global rule', rulesOutcome, rulesFile),
     ].join('\n') + '\n',
   };
 }
@@ -361,7 +495,7 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
   const hooksFile = windsurfHooksPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
-  const pluginRoots = ownedPluginRoots(runtimePluginRoot(env), env);
+  const pluginRoots = ownedPluginRoots(runtimePluginRoot(env), env, [hooksFile, devinFile]);
   const issues: string[] = [];
   try {
     const hooksConfig = readJsonObject(hooksFile);

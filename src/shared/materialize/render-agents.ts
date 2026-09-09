@@ -229,17 +229,44 @@ function preserveBody(localPath: string, fileName: string, body: string): boolea
   return carriesBody();
 }
 
+function lstatOrNull(filePath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function rootContextSiblingName(fileName: string): string {
+  return fileName === 'CLAUDE.md' ? 'AGENTS.md' : 'CLAUDE.md';
+}
+
+/** True when `linkPath` is a symlink whose (possibly relative) target is `fileName` in `cwd`. */
+function linkResolvesTo(cwd: string, linkPath: string, fileName: string): boolean {
+  try {
+    if (!fs.lstatSync(linkPath).isSymbolicLink()) return false;
+    return path.resolve(cwd, fs.readlinkSync(linkPath)) === path.resolve(cwd, fileName);
+  } catch {
+    return false;
+  }
+}
+
+function siblingLinkPointsAt(cwd: string, fileName: string): boolean {
+  return linkResolvesTo(cwd, path.join(cwd, rootContextSiblingName(fileName)), fileName);
+}
+
 /**
  * Take over a hand-written root AGENTS.md/CLAUDE.md, preserving its content in
  * `.traffic-one/AGENTS.local.md` first.
  *
  * The ONLY function permitted to delete a user-authored root context file:
  * writeRootAgents/writeRootClaude below both stand down on anything that is not
- * already generated (or a symlink). So the delete here is what licenses the
- * generated write that follows, and its precondition is that the CONTENT
- * replacing it is on disk — see preserveBody, which re-reads to prove it rather
- * than inferring it from a writer's return value or from a file merely existing
- * at the preserved path.
+ * already generated. A symlink is user-authored unless its target `isGenerated`
+ * (`isGenerated` follows and reads the target). So the delete here is what
+ * licenses the generated write that follows, and its precondition is that the
+ * CONTENT replacing it is on disk — see preserveBody, which re-reads to prove it
+ * rather than inferring it from a writer's return value or from a file merely
+ * existing at the preserved path.
  *
  * That ordering is the fix for observed data loss, not a hypothetical: on a
  * project whose use-plugin question was unanswered the copy was refused by the
@@ -266,6 +293,12 @@ function preserveBody(localPath: string, fileName: string, body: string): boolea
  * owner wrote by hand five minutes ago. So the invariant this function keeps is
  * the content one, and it holds for every mode: nothing is deleted until the
  * bytes are provably reachable somewhere else.
+ *
+ * Never delete a file a sibling root-context link points at. In new-project
+ * mode the previous shape was: this function removed `CLAUDE.md` while
+ * `AGENTS.md` still linked at it, then `writeRootClaude` created
+ * `CLAUDE.md -> AGENTS.md`, forming `AGENTS.md <-> CLAUDE.md`. `isGenerated`
+ * then ELOOPs and every hook rematerializes.
  */
 export function preserveManualRootContext(cwd: string, fileName: string, state: Rec): boolean {
   const rootPath = path.join(cwd, fileName);
@@ -273,6 +306,7 @@ export function preserveManualRootContext(cwd: string, fileName: string, state: 
   const stat = fs.lstatSync(rootPath);
   if (stat.isSymbolicLink() || isGenerated(rootPath)) return false;
   if (!isNewProjectMode(state)) return false;
+  if (siblingLinkPointsAt(cwd, fileName)) return false;
 
   const localPath = path.join(cwd, '.traffic-one', localContextName(fileName));
   const body = normalizeBody((readText(rootPath) || '').replace(TOOL_MANAGED_BLOCK_RE, ''));
@@ -332,25 +366,28 @@ function renderClaudeFallback(): string {
 
 export function writeRootAgents(cwd: string, content: string): boolean {
   const rootAgents = path.join(cwd, 'AGENTS.md');
-  if (fs.existsSync(rootAgents) && !fs.lstatSync(rootAgents).isSymbolicLink()) {
+  const stat = lstatOrNull(rootAgents);
+  if (stat) {
+    // Symlink or file: user-authored unless the (followed) target isGenerated.
     if (!isGenerated(rootAgents)) return false;
-    // Same generated content → leave the file (and its mtime) alone.
-    if (readText(rootAgents) === content) return false;
+    if (!stat.isSymbolicLink() && readText(rootAgents) === content) return false;
+    // Replace a generated-target link with a regular file; do not write through it.
+    if (stat.isSymbolicLink() && !removePath(rootAgents)) return false;
   }
-  if (fs.existsSync(rootAgents)) fs.rmSync(rootAgents, { force: true });
   return writeTextIfChanged(rootAgents, content);
 }
 
 export function writeRootClaude(cwd: string): boolean {
   const rootClaude = path.join(cwd, 'CLAUDE.md');
-  if (fs.existsSync(rootClaude) && !fs.lstatSync(rootClaude).isSymbolicLink() && !isGenerated(rootClaude)) return false;
-  try {
-    // Already the canonical symlink → nothing to do.
-    if (fs.lstatSync(rootClaude).isSymbolicLink() && fs.readlinkSync(rootClaude) === 'AGENTS.md') return false;
-  } catch {
-    // missing file → fall through and create it
+  // AGENTS.md -> CLAUDE.md already: creating CLAUDE.md -> AGENTS.md is an ELOOP.
+  if (siblingLinkPointsAt(cwd, 'CLAUDE.md')) return false;
+  const stat = lstatOrNull(rootClaude);
+  if (stat) {
+    if (linkResolvesTo(cwd, rootClaude, 'AGENTS.md')) return false;
+    // Only replace a CLAUDE.md link (or file) whose target/content isGenerated.
+    if (!isGenerated(rootClaude)) return false;
+    if (!removePath(rootClaude)) return false;
   }
-  if (fs.existsSync(rootClaude)) fs.rmSync(rootClaude, { force: true });
   try {
     fs.symlinkSync('AGENTS.md', rootClaude);
     return true;

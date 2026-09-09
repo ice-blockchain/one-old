@@ -11,6 +11,7 @@ import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, onboardingUseBootstrapCommand } from '../../shared/onboarding-server/wait-command';
 import { agentOnboardingUrls } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
+import { stripOnboardingWaitPermission } from '../../shared/onboarding-server/wait-permission';
 import { localFallbackSection, setupLinkNudgeLabel, wizardOpened } from '../../shared/onboarding-server/wizard-links';
 import { clearEmitMarker, emittedWithin, stampEmitMarker } from '../../shared/once';
 
@@ -144,7 +145,9 @@ export function awaitWizardCompletionAck(cwd: string, host: string, graceMs: num
 // assertion, state/__tests__/home-rooted-consent.ts, and two cases in this
 // runner's own wait.test.ts); it stays byte-identical and only the body varies.
 export function declineOutput(cwd: string, host: string): string {
-  if (recordPluginUseChoice(cwd, false, 'command')) {
+  const recorded = recordPluginUseChoice(cwd, false, 'command');
+  stripOnboardingWaitPermission(cwd);
+  if (recorded) {
     return 'TRAFFIC_ONE_DISABLED\n'
       + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions. "
       + 'It stays silent here until the user explicitly asks for Traffic One again.\n';

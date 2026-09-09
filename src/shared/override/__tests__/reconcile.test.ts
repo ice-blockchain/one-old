@@ -27,7 +27,7 @@ import { runOverrideReconcile } from '../../../runners/doctor/unblock';
 import { probeOverrides } from '../../../runners/doctor/override-probe';
 import { oneSettingsPath } from '../../one-settings';
 import { recordPluginUseChoice, resetPluginUseCache } from '../../state/plugin-use';
-import { overrideProjectDir, overrideSnapshotDir } from '../paths';
+import { overrideProjectDir, overrideQuarantineSidecarPath, overrideSnapshotDir } from '../paths';
 import {
   OVERRIDE_ACKNOWLEDGED_COUNTER_CONTRADICTED_CHECK,
   OVERRIDE_LEDGER_ILLEGIBLE_CHECK,
@@ -38,14 +38,21 @@ import {
   mintOverride,
   overrideEvidenceReport,
   overrideLedgerPath,
+  overrideReconciliationDraft,
   readOverrideMintCounter,
   readOverrideReconciliations,
   runQuarantinedByOverrideReconciliation,
 } from '../index';
-import { recordOverrideReconciliation } from '../reconcile';
+import {
+  MAX_QUARANTINED_RUNS,
+  OVERRIDE_RECONCILIATION_VERSION,
+  quarantinedRunsDigest,
+  recordOverrideReconciliation,
+} from '../reconcile';
 import {
   OVERRIDE_MINT_COUNTER_MAC_DOMAIN,
   OVERRIDE_RECONCILIATION_MAC_DOMAIN,
+  OVERRIDE_SETTLEMENT_MAC_DOMAIN,
   OVERRIDE_TOKEN_MAC_DOMAIN,
   overrideMac,
   readOverrideKey,
@@ -584,11 +591,12 @@ test('the repair leaves an existing counter EXACTLY as it found it, even one tha
 
 test('an acknowledgement signed in another domain is not an acknowledgement', async () => {
   // DOMAIN SEPARATION, which keys.ts calls load-bearing and which nothing
-  // checked. One install key signs three flat records — a ledger token, a mint
-  // counter, a reconciliation — so without a distinct prefix per record the
-  // question "did the doctor issue this?" stops distinguishing WHICH thing it
-  // issued, and a signature over one shape is redeemable in the slot of
-  // another. It matters most here, because this is the slot that FORGIVES.
+  // checked. One install key signs four flat records — a ledger token, a mint
+  // counter, a reconciliation, a verified settlement — so without a distinct
+  // prefix per record the question "did the doctor issue this?" stops
+  // distinguishing WHICH thing it issued, and a signature over one shape is
+  // redeemable in the slot of another. It matters most here, because this is
+  // the slot that FORGIVES.
   await withProject(['run-1'], async (projectRoot) => {
     plantOrphan(projectRoot);
     assert.equal((await runOverrideReconcile({ projectRoot }, AT_TERMINAL)).ok, true);
@@ -599,6 +607,7 @@ test('an acknowledgement signed in another domain is not an acknowledgement', as
     for (const [label, domain] of [
       ['the token domain', OVERRIDE_TOKEN_MAC_DOMAIN],
       ['the mint counter domain', OVERRIDE_MINT_COUNTER_MAC_DOMAIN],
+      ['the settlement domain', OVERRIDE_SETTLEMENT_MAC_DOMAIN],
     ] as const) {
       const settings = readSettings();
       const entry = reconciliationEntry(settings);
@@ -864,5 +873,81 @@ test('the contradiction has a way out, and the way out survives the next honest 
     dropCounterKey();
     assert.deepEqual(overrideEvidenceReport(projectRoot).checks,
       [OVERRIDE_ACKNOWLEDGED_COUNTER_CONTRADICTED_CHECK]);
+  });
+});
+
+// ── v2 quarantine sidecar (the 256-run cap is an offer, not a refusal) ───────
+
+test('a reconciliation signs the digest of a sidecar, not an inlined run list', async () => {
+  const names = Array.from({ length: 300 }, (_, i) => `run-${String(i).padStart(3, '0')}`);
+  await withProject(['run-1'], async (projectRoot) => {
+    plantOrphan(projectRoot);
+    const draft = overrideReconciliationDraft(projectRoot);
+    const outcome = recordOverrideReconciliation({
+      projectRoot,
+      fingerprint: draft.fingerprint,
+      quarantinedRuns: names,
+    });
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.equal(outcome.entry.quarantinedRuns.length, 300);
+
+    const stored = reconciliationEntry(readSettings());
+    assert.equal(stored.v, OVERRIDE_RECONCILIATION_VERSION);
+    assert.equal(stored.quarantinedRuns, undefined, 'v2 must not persist the names on the signed record');
+    assert.equal(stored.quarantinedRunsDigest, quarantinedRunsDigest(names));
+    assert.ok(!JSON.stringify(stored).includes('run-150'), 'one.json must not inline the run list');
+
+    const sidecar = overrideQuarantineSidecarPath(projectRoot, stored.quarantinedRunsDigest as string);
+    assert.equal(fs.existsSync(sidecar), true);
+    const parsed = readOverrideReconciliations(projectRoot);
+    assert.equal(parsed.entries.length, 1);
+    assert.equal(parsed.entries[0]?.quarantinedRuns.length, 300);
+    assert.equal(runQuarantinedByOverrideReconciliation(projectRoot, 'run-000'), true);
+    assert.equal(runQuarantinedByOverrideReconciliation(projectRoot, 'run-299'), true);
+    assert.equal(runQuarantinedByOverrideReconciliation(projectRoot, 'run-later'), false);
+  });
+});
+
+test('a missing or tampered quarantine sidecar makes the acknowledgement unverifiable', async () => {
+  await withProject(['run-1'], async (projectRoot) => {
+    plantOrphan(projectRoot);
+    assert.equal((await runOverrideReconcile({ projectRoot }, AT_TERMINAL)).ok, true);
+    assert.equal(runQuarantinedByOverrideReconciliation(projectRoot, 'run-1'), true);
+    const digest = reconciliationEntry(readSettings()).quarantinedRunsDigest as string;
+    const sidecar = overrideQuarantineSidecarPath(projectRoot, digest);
+    const original = fs.readFileSync(sidecar, 'utf8');
+
+    fs.rmSync(sidecar);
+    assert.equal(readOverrideReconciliations(projectRoot).unverifiable, 1);
+    assert.equal(runQuarantinedByOverrideReconciliation(projectRoot, 'run-1'), false,
+      'membership is tested against the signed sidecar; without it the list does not count');
+
+    fs.writeFileSync(sidecar, original, 'utf8');
+    assert.equal(runQuarantinedByOverrideReconciliation(projectRoot, 'run-1'), true,
+      'restoring the exact bytes restores the acknowledgement');
+
+    fs.writeFileSync(sidecar, 'run-forged\n', 'utf8');
+    assert.equal(readOverrideReconciliations(projectRoot).unverifiable, 1);
+    assert.equal(runQuarantinedByOverrideReconciliation(projectRoot, 'run-1'), false);
+  });
+});
+
+test('doctor offers retention pruning before reconcile when the project has more than MAX_QUARANTINED_RUNS', async () => {
+  const names = Array.from({ length: MAX_QUARANTINED_RUNS + 1 }, (_, i) => `run-${String(i).padStart(3, '0')}`);
+  await withProject(names, async (projectRoot) => {
+    plantOrphan(projectRoot);
+    let summary = '';
+    const outcome = await runOverrideReconcile({ projectRoot }, async (text) => {
+      summary = text;
+      return 'confirmed';
+    });
+    assert.equal(outcome.ok, true, outcome.message);
+    assert.match(summary, /prune/i);
+    assert.match(summary, /reclaim/);
+    assert.ok((outcome.prunedRuns ?? 0) > 0, 'confirming applies the retention sweep first');
+    assert.ok((outcome.quarantinedRuns ?? 0) < names.length,
+      'the acknowledgement names the runs that remain after the sweep');
+    assert.ok((outcome.quarantinedRuns ?? 0) > 0);
   });
 });

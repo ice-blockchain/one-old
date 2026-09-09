@@ -23,6 +23,7 @@ import {
   scanSecrets,
   scanSupabaseSql,
   shouldIgnoreFingerprint,
+  securityCheckCanStamp,
   stampState,
   stripComments,
   timestampSlug,
@@ -35,6 +36,7 @@ import {
 } from '../lib';
 import { computeProjectFingerprint } from '../fingerprint';
 import { runSecurityCheck } from '../run';
+import { SECURITY_STAMP_FIELDS } from '../../../config/security';
 
 function scanReport(): { report: ScanReport; issues: Issue[] } {
   const reporter = createReporter();
@@ -91,7 +93,8 @@ test('missingToolInstallPrompt names the tools + the install command', () => {
 });
 
 test('normalizeTrafficState + trafficStateHasOnlyStampFields strip stamp fields', () => {
-  const stampOnly = JSON.stringify({ lastSecurityCheckAt: 't', lastShipperApprovalAt: 't' });
+  assert.ok(SECURITY_STAMP_FIELDS.includes('lastSecurityCheckStrict'));
+  const stampOnly = JSON.stringify({ lastSecurityCheckAt: 't', lastSecurityCheckStrict: true, lastShipperApprovalAt: 't' });
   assert.equal(normalizeTrafficState(stampOnly).trim(), '{}');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sec-stamp-'));
   try {
@@ -267,6 +270,7 @@ test('security-check state stamping preserves the immutable One MCP report id', 
     const state = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal(state['one-uid'], reportId);
     assert.equal(state.lastSecurityCheckFingerprint, 'a'.repeat(64));
+    assert.equal(state.lastSecurityCheckStrict, false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -354,12 +358,155 @@ test('a refused security stamp is reported as a failed run, not a passed one', (
       'fixture guard: nothing was written through the link');
 
     // End to end: the runner must not headline PASSED, and must not exit 0, for a
-    // stamp the deploy gate cannot find.
+    // stamp the deploy gate cannot find. Only characterize the WRITE refusal
+    // when the scan itself is stamp-eligible — a missing scanner is a high
+    // finding and refuses the stamp for a different reason.
     const result = runSecurityCheck({ cwd: dir, stamp: true, reportDir: '.traffic-one/reports' });
-    assert.equal(result.report.status, 'passed', 'fixture guard: the scan itself found nothing');
-    assert.equal(result.stamped, false, 'the requested stamp did not land');
-    assert.equal(result.exitCode, 1, 'a run that was asked to stamp and did not is not a success');
+    const highs = result.report.issues.filter((issue) => issue.severity === 'high');
+    if (highs.length === 0) {
+      assert.equal(result.report.status, 'passed', 'fixture guard: the scan itself found nothing');
+      assert.equal(result.stamped, false, 'the requested stamp did not land');
+      assert.equal(result.exitCode, 1, 'a run that was asked to stamp and did not is not a success');
+    } else {
+      assert.equal(result.stamped, false, 'high findings also refuse the stamp; write refusal is covered above');
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+function passingReport(dir: string, extras: Partial<Report> = {}): Report {
+  return {
+    generatedAt: '2026-07-17T12:00:00Z',
+    status: 'passed',
+    strict: false,
+    cwd: dir,
+    fingerprint: { fingerprint: 'a'.repeat(64), head: 'no-git', fileCount: 1 },
+    tools: {},
+    externalReports: {},
+    issues: [],
+    ...extras,
+  };
+}
+
+function highIssue(): Issue {
+  return {
+    severity: 'high', category: 'secrets', message: 'leak',
+    file: '.env', line: 1, evidence: null, remediation: 'rotate',
+  };
+}
+
+test('securityCheckCanStamp refuses high findings even when status is still passed', () => {
+  assert.equal(securityCheckCanStamp({ status: 'passed', issues: [] }), true);
+  assert.equal(securityCheckCanStamp({ status: 'passed', issues: [highIssue()] }), false);
+  assert.equal(securityCheckCanStamp({ status: 'failed', issues: [] }), false);
+  assert.equal(securityCheckCanStamp({
+    status: 'passed',
+    issues: [{ ...highIssue(), severity: 'medium' }],
+  }), true, 'warnings do not block a stamp');
+});
+
+test('stampState refuses high findings and records lastSecurityCheckStrict on a clean stamp', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sec-stamp-strict-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    fs.writeFileSync(statePath, JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+
+    assert.equal(
+      stampState(dir, passingReport(dir, { issues: [highIssue()] }), '.traffic-one/reports/security.json'),
+      false,
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(statePath, 'utf8')).lastSecurityCheckStatus,
+      undefined,
+      'a high-finding report must not write a deploy stamp',
+    );
+
+    assert.equal(stampState(dir, passingReport(dir, { strict: true }), '.traffic-one/reports/security.json'), true);
+    const strictState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(strictState.lastSecurityCheckStatus, 'passed');
+    assert.equal(strictState.lastSecurityCheckStrict, true);
+
+    assert.equal(stampState(dir, passingReport(dir, { strict: false }), '.traffic-one/reports/security.json'), true);
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).lastSecurityCheckStrict, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function withScanProject(plantHigh: boolean, fn: (dir: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sec-run-stamp-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'note.txt'), 'nothing secret here', 'utf8');
+    if (plantHigh) {
+      fs.writeFileSync(path.join(dir, '.env'), 'SECRET=x\n', 'utf8');
+    }
+    fn(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function stateAfter(dir: string): Record<string, unknown> | null {
+  const statePath = path.join(dir, '.traffic-one', '.one.json');
+  if (!fs.existsSync(statePath)) return null;
+  return JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+}
+
+test('high findings + --stamp without --strict is not stamped', () => {
+  withScanProject(true, (dir) => {
+    const result = runSecurityCheck({ cwd: dir, strict: false, stamp: true });
+    assert.ok(result.report.issues.some((issue) => issue.severity === 'high'));
+    assert.equal(result.report.status, 'passed', 'non-strict still reports passed as a diagnostic');
+    assert.equal(result.stamped, false);
+    assert.equal(result.exitCode, 1);
+    const state = stateAfter(dir);
+    assert.equal(state?.lastSecurityCheckStatus, undefined);
+  });
+});
+
+test('high findings + --strict --stamp is failed and not stamped', () => {
+  withScanProject(true, (dir) => {
+    const result = runSecurityCheck({ cwd: dir, strict: true, stamp: true });
+    assert.ok(result.report.issues.some((issue) => issue.severity === 'high'));
+    assert.equal(result.report.status, 'failed');
+    assert.equal(result.stamped, undefined, 'a failed scan does not report a refused stamp');
+    assert.equal(result.exitCode, 1);
+    const state = stateAfter(dir);
+    assert.equal(state?.lastSecurityCheckStatus, undefined);
+  });
+});
+
+test('clean + --strict --stamp writes lastSecurityCheckStrict true when the scan is clean', (t) => {
+  withScanProject(false, (dir) => {
+    const result = runSecurityCheck({ cwd: dir, strict: true, stamp: true });
+    const highs = result.report.issues.filter((issue) => issue.severity === 'high');
+    if (highs.length > 0) {
+      t.skip(`live scan is not clean here (${highs.map((issue) => issue.message).join('; ')}); stampState covers the clean-stamp field`);
+      return;
+    }
+    assert.equal(result.report.status, 'passed');
+    assert.equal(result.stamped, true);
+    assert.equal(result.exitCode, 0);
+    const state = stateAfter(dir);
+    assert.equal(state?.lastSecurityCheckStatus, 'passed');
+    assert.equal(state?.lastSecurityCheckStrict, true);
+    assert.equal(state?.lastSecurityCheckFingerprint, result.report.fingerprint.fingerprint);
+  });
+});
+
+test('clean + --stamp without --strict still stamps lastSecurityCheckStrict false when the scan is clean', (t) => {
+  withScanProject(false, (dir) => {
+    const result = runSecurityCheck({ cwd: dir, strict: false, stamp: true });
+    const highs = result.report.issues.filter((issue) => issue.severity === 'high');
+    if (highs.length > 0) {
+      t.skip(`live scan is not clean here (${highs.map((issue) => issue.message).join('; ')}); stampState covers the clean-stamp field`);
+      return;
+    }
+    assert.equal(result.report.status, 'passed');
+    assert.equal(result.stamped, true);
+    assert.equal(result.exitCode, 0);
+    assert.equal(stateAfter(dir)?.lastSecurityCheckStrict, false);
+  });
 });

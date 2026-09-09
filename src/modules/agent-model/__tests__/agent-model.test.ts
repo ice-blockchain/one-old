@@ -1901,7 +1901,7 @@ test('maintenance v2 unscoped frontend is spawn-bounded-scope-missing not archit
   });
 });
 
-test('scoped senior-frontend spawn skips architect on new-project without plan.md', () => {
+test('scoped senior-frontend spawn does not skip architect on new-project without plan.md', () => {
   withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
     const t1 = path.join(cwd, '.traffic-one');
     const onePath = path.join(t1, '.one.json');
@@ -1911,19 +1911,20 @@ test('scoped senior-frontend spawn skips architect on new-project without plan.m
     const planPath = path.join(t1, 'plan.md');
     if (fs.existsSync(planPath)) fs.unlinkSync(planPath);
 
-    const ok = agentModelGate(spawnCtx(cwd, {
+    const denied = agentModelGate(spawnCtx(cwd, {
       subagent_type: 'senior-frontend',
       model: 'opus',
       prompt: '[t1-bounded-scope: {"outputs":["src/News.tsx"]}]',
     }));
-    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
-    const envelope = readActiveRunBootstrap(cwd, 'run-small-new', 'senior-frontend');
-    assert.equal(envelope?.workUnit.unitId, 'senior-frontend:bounded-maintenance');
-    assert.ok(envelope?.workUnit.outputs.includes('src/News.tsx'));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.equal(denied.denyId, 'architect-phase-incomplete');
+    }
+    assert.equal(readActiveRunBootstrap(cwd, 'run-small-new', 'senior-frontend'), null);
   });
 });
 
-test('scoped senior-backend spawn skips architect on new-project without plan.md', () => {
+test('scoped senior-backend spawn does not skip architect on new-project without plan.md', () => {
   withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
     const t1 = path.join(cwd, '.traffic-one');
     const onePath = path.join(t1, '.one.json');
@@ -1933,15 +1934,16 @@ test('scoped senior-backend spawn skips architect on new-project without plan.md
     const planPath = path.join(t1, 'plan.md');
     if (fs.existsSync(planPath)) fs.unlinkSync(planPath);
 
-    const ok = agentModelGate(spawnCtx(cwd, {
+    const denied = agentModelGate(spawnCtx(cwd, {
       subagent_type: 'senior-backend',
       model: 'opus',
       prompt: '[t1-bounded-scope: {"outputs":["src/api.ts"]}]',
     }));
-    assert.equal(ok.kind, 'noop', ok.kind === 'deny' ? ok.reason : undefined);
-    const envelope = readActiveRunBootstrap(cwd, 'run-small-new-be', 'senior-backend');
-    assert.equal(envelope?.workUnit.unitId, 'senior-backend:bounded-maintenance');
-    assert.ok(envelope?.workUnit.outputs.includes('src/api.ts'));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.equal(denied.denyId, 'architect-phase-incomplete');
+    }
+    assert.equal(readActiveRunBootstrap(cwd, 'run-small-new-be', 'senior-backend'), null);
   });
 });
 
@@ -7201,6 +7203,11 @@ test('agent-teams: hookSessionIdentity reads agent_id + agent_type as a subagent
   assert.equal(id.agentId, 'a05438499c80df496');
   // A bare orchestrator payload (no agent_id/agent_type) is NOT a subagent.
   assert.equal(hookSessionIdentity({ session_id: 'p1' }).isSubagent, false);
+  const cascade = hookSessionIdentity({ trajectory_id: 'cascade-trajectory-1' });
+  assert.equal(cascade.sessionId, 'cascade-trajectory-1');
+  assert.equal(cascade.parentSessionId, null);
+  assert.equal(cascade.isSubagent, false,
+    'Cascade trajectory_id is the session, not a parent — otherwise every Cascade hook looks like a worker');
 });
 
 test('agent-teams: a worker write binds its claim by agent_id (no transcript inference)', () => {

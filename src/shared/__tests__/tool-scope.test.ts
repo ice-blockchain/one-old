@@ -373,3 +373,26 @@ test('a subshell inside a READ is not adoption evidence, but a real writer still
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('host-relative writes join against input.cwd, not a package-rewritten ctx.cwd', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 't1-tool-scope-join-'));
+  const pkg = path.join(root, 'packages', 'api-client');
+  try {
+    makeProject(root);
+    fs.mkdirSync(path.join(pkg, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'api-client' }));
+    const rel = 'packages/api-client/src/CoursesAPI.ts';
+    const input = {
+      event: 'PreToolUse' as const,
+      host: 'codex' as const,
+      cwd: root,
+      raw: { tool_name: 'Write', tool_input: { file_path: rel, content: 'x' } },
+      tool: { class: 'file-write' as const, rawName: 'Write', filePath: rel },
+    };
+    const scope = resolveToolScope({ input, host: 'codex', cwd: pkg, now: () => 'x' } as Ctx);
+    assert.equal(scope.base, path.resolve(root));
+    assert.equal(scope.targets[0]?.path, path.resolve(root, rel));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

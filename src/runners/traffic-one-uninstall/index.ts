@@ -8,8 +8,10 @@
 //      gone denies every tool call in every Traffic One project on Kilo — and
 //      the script that would repair it has just been deleted. OpenCode's wrapper
 //      fails open, so it is merely residual, but it is removed here as well.
-//   2. Windsurf/Cascade hooks + global rule, and the Codex machine-global MCP
-//      block. Both survive bundle removal and keep pointing at a dead path.
+//   2. Windsurf/Cascade hooks + global rule, and both Codex machine-global MCP
+//      blocks (the disabled public traffic-one-mcp entry and the marked
+//      opencode-worker entry). They survive bundle removal and keep pointing
+//      at a dead path.
 //   3. The plugin bundle, via each host CLI. Every module this runner needs is
 //      already loaded by then, so deleting the bundle mid-run is safe.
 //   4. ~/.traffic-one — auth record, per-user preferences, runner shims, managed
@@ -57,7 +59,7 @@ import {
   windsurfGlobalRulesPath,
   windsurfHooksPath,
 } from '../windsurf-host';
-import { codexConfigPath } from '../../shared/codex-mcp';
+import { codexConfigPath, removeCodexMcpServerRegistration } from '../../shared/codex-mcp';
 import { globalTrafficOneDir } from '../../shared/state/traffic-one-paths';
 import { projectRootHash, readProjectRootSidecar } from '../../shared/state/local-prefs';
 import {
@@ -491,13 +493,33 @@ function pipxGraphifyStep(env: NodeJS.ProcessEnv): Step {
   };
 }
 
-function hostStep(label: string, result: RunnerOutput): Step {
+function removeCodexWorkerMcp(env: NodeJS.ProcessEnv): RunnerOutput {
+  const result = removeCodexMcpServerRegistration(env);
   return {
-    label,
-    ok: result.code === 0,
-    detail: (result.code === 0 ? firstLine(result.stdout) : firstLine(result.stderr) || firstLine(result.stdout))
-      || (result.code === 0 ? 'done' : `exit ${result.code}`),
+    code: result === 'failed' || result === 'modified' ? 1 : 0,
+    stdout: `Codex opencode-worker MCP registration removal: ${result}\n`,
+    ...(result === 'modified' ? {
+      stderr: 'The Traffic One opencode-worker marker block is not a unique marked span and was left untouched.\n',
+    } : {}),
   };
+}
+
+export function hostStep(label: string, run: () => RunnerOutput): Step {
+  try {
+    const result = run();
+    return {
+      label,
+      ok: result.code === 0,
+      detail: (result.code === 0 ? firstLine(result.stdout) : firstLine(result.stderr) || firstLine(result.stdout))
+        || (result.code === 0 ? 'done' : `exit ${result.code}`),
+    };
+  } catch (error) {
+    return {
+      label,
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 interface UninstallOptions {
@@ -532,7 +554,12 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
     steps.push(presenceStep(
       'Codex MCP block',
       codexConfigPath(env),
-      'would remove the Traffic One marked block if it is still byte-exact',
+      'would remove the Traffic One public MCP block if it is still byte-exact',
+    ));
+    steps.push(presenceStep(
+      'Codex opencode-worker MCP block',
+      codexConfigPath(env),
+      'would remove the unique Traffic One opencode-worker BEGIN..END marked span',
     ));
     for (const install of installs) {
       steps.push({
@@ -550,12 +577,13 @@ export function runUninstall(options: UninstallOptions, env: NodeJS.ProcessEnv =
   }
 
   // 1-2. User-level host integrations, while the bundle they point at still exists.
-  steps.push(hostStep('Kilo wrapper', uninstallKiloWrapper(env, ['uninstall'])));
-  steps.push(hostStep('OpenCode wrapper', uninstallOpenCodeWrapper(env, ['uninstall'])));
+  steps.push(hostStep('Kilo wrapper', () => uninstallKiloWrapper(env, ['uninstall', '--yes'])));
+  steps.push(hostStep('OpenCode wrapper', () => uninstallOpenCodeWrapper(env, ['uninstall', '--yes'])));
   for (const channel of WINDSURF_CHANNELS) {
-    steps.push(hostStep(`Windsurf integration (${channel})`, uninstallWindsurfWrapper(env, ['uninstall', '--yes', '--channel', channel])));
+    steps.push(hostStep(`Windsurf integration (${channel})`, () => uninstallWindsurfWrapper(env, ['uninstall', '--yes', '--channel', channel])));
   }
-  steps.push(hostStep('Codex MCP block', runOneMcpHostCommand(['uninstall', '--yes'], env)));
+  steps.push(hostStep('Codex MCP block', () => runOneMcpHostCommand(['uninstall', '--yes'], env)));
+  steps.push(hostStep('Codex opencode-worker MCP block', () => removeCodexWorkerMcp(env)));
 
   // 3. The bundle itself (every module this runner needs is already loaded).
   if (options.keepPlugin) {
@@ -592,7 +620,7 @@ function usage(): string {
     'Usage: traffic-one-uninstall.cjs [--yes] [--dry-run] [--keep-plugin]',
     '',
     'Removes every machine-global Traffic One artifact: the user-level host',
-    'integrations (Kilo, OpenCode, Windsurf, the Codex MCP block), the plugin',
+    'integrations (Kilo, OpenCode, Windsurf, both Codex MCP blocks), the plugin',
     'bundle from each host CLI that has it, the bundle copies no host CLI',
     'reclaims (the Codex local marketplace, a Copilot plugin copy, a Cursor local',
     'install), and — LAST, so nothing can repopulate it — the entire state dir',

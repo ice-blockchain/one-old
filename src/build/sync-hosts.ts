@@ -664,11 +664,62 @@ function syncCursor(): void {
 // this runs. A second exercise of the same directory would add latency and no
 // evidence. The one shape that escapes is a claude the presence probe reported
 // `absent`, and for that shape the missing-import check below already fires.
+const CURSOR_EXTENSIBILITY_SQL = "SELECT value FROM ItemTable WHERE key='thirdPartyExtensibilityEnabled' LIMIT 1";
+
+/** Read Cursor's third-party import flag. `null` means missing or unreadable. */
+export function readCursorExtensibilityFlag(db: string): true | false | null {
+  if (!fs.existsSync(db)) return null;
+  try {
+    const out = spawnSync('sqlite3', ['-readonly', db, `${CURSOR_EXTENSIBILITY_SQL};`], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (out.status === 0 && typeof out.stdout === 'string') {
+      const raw = out.stdout.trim().replace(/^"|"$/g, '');
+      if (raw === 'true') return true;
+      if (raw === 'false') return false;
+      return null;
+    }
+  } catch {
+    /* sqlite3 missing */
+  }
+  try {
+    const sqlite = require('node:sqlite') as {
+      DatabaseSync: new (file: string, options?: { readOnly?: boolean }) => {
+        prepare(sql: string): { get(): { value?: unknown } | undefined };
+        close(): void;
+      };
+    };
+    const handle = new sqlite.DatabaseSync(db, { readOnly: true });
+    try {
+      const row = handle.prepare(CURSOR_EXTENSIBILITY_SQL).get();
+      const value = row?.value;
+      const text = typeof value === 'string'
+        ? value
+        : value instanceof Uint8Array
+          ? Buffer.from(value).toString('utf8')
+          : '';
+      const raw = text.trim().replace(/^"|"$/g, '');
+      if (raw === 'true') return true;
+      if (raw === 'false') return false;
+      return null;
+    } finally {
+      handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
 function verifyCursor(version: string): VerifyResult {
   const problems: string[] = [];
   if (fs.existsSync(cursorLocal())) problems.push(`local install still present — duplicate hooks: ${cursorLocal()}`);
   const versioned = claudeVersionedCache(version);
   if (!fs.existsSync(versioned)) problems.push(`imported source is stale: claude cache is missing ${version}`);
+  const db = cursorStateDb();
+  if (fs.existsSync(db) && readCursorExtensibilityFlag(db) !== true) {
+    problems.push(`thirdPartyExtensibilityEnabled is not true in ${db}`);
+  }
   return problems.length ? verifyProblem(problems.join('; ')) : VERIFIED;
 }
 

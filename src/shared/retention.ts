@@ -269,7 +269,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { STATE_FILE } from '../config/paths';
+import { STATE_DIR, STATE_FILE } from '../config/paths';
 import { SUBAGENT_STALE_MS } from '../config/state';
 import { agentVisibleName, agentVisiblePath } from './agent-visible-name';
 import { trustworthyAgeSince } from './clock-skew';
@@ -2749,6 +2749,80 @@ function listFiles(root: string): string[] {
 // The membership arm of the resolver's leak rule is untouched, so stray state inside a
 // real repository (the observed mercury/strategies case, which has no npm workspace
 // anywhere in it) is still reported and still healed.
+//
+// POSITIVE EVIDENCE is a second keep, and it is the one this function used to
+// lack. A nested directory that already carries a plan, run digests, a local
+// consent record, or `onboardingComplete` is a PROJECT — leftover debris does
+// not look like that. The resolver comparison still answers "this dir is not
+// its own root" for an onboarded member sitting under a workspace declaration,
+// and without this fence the next SessionStart deleted that member's history.
+// Consent is read INSIDE this nested `.traffic-one/` only: remapping through
+// prefsCapableRoot would inherit a consented parent's answer and disable the
+// sweep for every leftover under it.
+function isRegularEntry(target: string, kind: 'file' | 'dir'): boolean {
+  try {
+    const stat = fs.statSync(target);
+    return kind === 'file' ? stat.isFile() : stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Exact basename, so APFS/NTFS case-folding cannot turn `PLAN.MD` into `plan.md`. */
+function hasExactNamedEntry(dir: string, name: string, kind: 'file' | 'dir'): boolean {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true }).some((entry) => (
+      entry.name === name && (kind === 'file' ? entry.isFile() : entry.isDirectory())
+    ));
+  } catch {
+    return false;
+  }
+}
+
+function digestTreeHasEntries(dir: string): boolean {
+  if (!isRegularEntry(dir, 'dir')) return false;
+  try {
+    return fs.readdirSync(dir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function nestedRootHasProjectEvidence(projectDir: string, state: unknown): boolean {
+  const dir = path.resolve(projectDir);
+  const traffic = path.join(dir, STATE_DIR);
+  if (hasExactNamedEntry(traffic, 'plan.md', 'file')) return true;
+  const runs = path.join(traffic, 'runs');
+  if (hasExactNamedEntry(traffic, 'runs', 'dir')) {
+    try {
+      for (const entry of fs.readdirSync(runs, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (digestTreeHasEntries(path.join(runs, entry.name, 'digests'))) return true;
+      }
+    } catch {
+      // A runs/ we cannot list is not evidence; keep looking.
+    }
+  }
+  // run-sim (and some hosts) write project-level digests here, not under runs/.
+  // An empty leftover `digests/` directory is runtime debris, not a project.
+  if (hasExactNamedEntry(traffic, 'digests', 'dir')
+    && digestTreeHasEntries(path.join(traffic, 'digests'))) return true;
+  const sessions = path.join(traffic, '.onboarding-main-sessions.json');
+  if (hasExactNamedEntry(traffic, '.onboarding-main-sessions.json', 'file')) {
+    const read = readJsonResult<unknown>(sessions);
+    const recorded = obj(read.kind === 'ok' ? obj(read.value)?.sessions : null);
+    if (recorded && Object.keys(recorded).length > 0) return true;
+  }
+  const prefs = path.join(traffic, 'preferences.json');
+  if (hasExactNamedEntry(traffic, 'preferences.json', 'file')) {
+    const read = readJsonResult<unknown>(prefs);
+    const pluginUse = obj(read.kind === 'ok' ? obj(read.value)?.pluginUse : null);
+    if (pluginUse && typeof pluginUse.enabled === 'boolean') return true;
+  }
+  const rec = obj(state);
+  return rec !== null && rec.onboardingComplete === true;
+}
+
 function isLeakedNestedRoot(projectDir: string, notices?: string[]): boolean {
   const dir = path.resolve(projectDir);
   // The same ruling, applied one level closer to home: the STATE FILE must be
@@ -2783,10 +2857,17 @@ function isLeakedNestedRoot(projectDir: string, notices?: string[]): boolean {
     return false;
   }
   try {
-    return resolveProjectRoot(dir, undefined, { workspaceAuthority: 'membership' }) !== dir;
+    if (resolveProjectRoot(dir, undefined, { workspaceAuthority: 'membership' }) === dir) {
+      return false;
+    }
   } catch {
     return false; // never delete on an indeterminate resolution
   }
+  if (nestedRootHasProjectEvidence(dir, state.value)) {
+    announceKeptNestedProject(dir, notices);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -2871,6 +2952,16 @@ function announceIllegibleNestedRoot(file: string, read: JsonRead<unknown>, noti
     + ' file cannot be read cannot be shown to be a leak rather than a project of its own, and the sweep never'
     + ' deletes on that doubt.\n'
     + `  ${remedy} The next sweep decides normally as soon as that file reads cleanly.`,
+  );
+}
+
+function announceKeptNestedProject(dir: string, notices?: string[]): void {
+  collectRetentionAnomaly(
+    notices,
+    `KEPT — ${agentVisiblePath(path.join(dir, STATE_FILE))} belongs to a project `
+    + '(plan, run digests, a local consent record, or completed onboarding), not leftover debris. '
+    + 'This sweep will not delete it. Leftovers inside a recognised module stay advisory: if the directory '
+    + 'is one you do not want, remove it yourself.',
   );
 }
 

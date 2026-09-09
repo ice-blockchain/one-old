@@ -30,6 +30,7 @@ import {
   sweepStalePresyncBackups,
   unconfirmedBlock,
   unconfirmedLine,
+  readCursorExtensibilityFlag,
   verifyProblem,
   verifyUnknown,
 } from '../sync-hosts';
@@ -1086,6 +1087,69 @@ test('the sweep reclaims a backup left by an older version of this command', () 
 
     assert.deepEqual(swept, [oldVersion]);
     assert.equal(fs.existsSync(live), true, 'a live version dir is not a backup');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const canWriteSqliteFixture = (() => {
+  try {
+    require('node:sqlite');
+    return true;
+  } catch {
+    try {
+      return spawnSync('sqlite3', ['-version']).status === 0;
+    } catch {
+      return false;
+    }
+  }
+})();
+
+function writeCursorItemTable(db: string, rows: ReadonlyArray<{ key: string; value: string }>): boolean {
+  fs.mkdirSync(path.dirname(db), { recursive: true });
+  try {
+    const sqlite = require('node:sqlite') as {
+      DatabaseSync: new (f: string) => {
+        exec(s: string): void;
+        prepare(s: string): { run(...a: unknown[]): unknown };
+        close(): void;
+      };
+    };
+    const handle = new sqlite.DatabaseSync(db);
+    handle.exec('CREATE TABLE IF NOT EXISTS ItemTable(key TEXT PRIMARY KEY, value BLOB)');
+    for (const row of rows) {
+      handle.prepare('INSERT OR REPLACE INTO ItemTable(key, value) VALUES(?, ?)').run(row.key, row.value);
+    }
+    handle.close();
+    return true;
+  } catch { /* fall through to CLI */ }
+  try {
+    const inserts = rows.map((row) => {
+      const key = row.key.replace(/'/g, "''");
+      const value = row.value.replace(/'/g, "''");
+      return `INSERT INTO ItemTable VALUES('${key}','${value}');`;
+    }).join(' ');
+    return spawnSync('sqlite3', [db, `CREATE TABLE ItemTable(key TEXT PRIMARY KEY, value BLOB); ${inserts}`]).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+test('readCursorExtensibilityFlag reads true/false/missing from a fixture db', {
+  skip: !canWriteSqliteFixture,
+}, () => {
+  const root = tmp('cursor-flag');
+  try {
+    const trueDb = path.join(root, 'true.vscdb');
+    const falseDb = path.join(root, 'false.vscdb');
+    const emptyDb = path.join(root, 'empty.vscdb');
+    assert.ok(writeCursorItemTable(trueDb, [{ key: 'thirdPartyExtensibilityEnabled', value: 'true' }]));
+    assert.equal(readCursorExtensibilityFlag(trueDb), true);
+    assert.ok(writeCursorItemTable(falseDb, [{ key: 'thirdPartyExtensibilityEnabled', value: 'false' }]));
+    assert.equal(readCursorExtensibilityFlag(falseDb), false);
+    assert.ok(writeCursorItemTable(emptyDb, []));
+    assert.equal(readCursorExtensibilityFlag(emptyDb), null);
+    assert.equal(readCursorExtensibilityFlag(path.join(root, 'missing.vscdb')), null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

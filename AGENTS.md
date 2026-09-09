@@ -56,12 +56,17 @@ is `spec` on a TTY and `tap` only when redirected, so a `# pass` grep against a
 spec log matches nothing and looks clean); it corrects a
 `PLAYWRIGHT_BROWSERS_PATH` pointing at a sandbox cache that does not exist,
 which otherwise makes `test:env` report ~48 failures indistinguishable from an
-uninstalled browser; and it judges `test:env` by its ASSERTION TALLY rather than
-its exit code, because `--strict` with no `--host=` includes `cursor`, a
-`contract+manual-e2e` host that exits 1 with every assertion passing. It names
-every failing and every skipped test, and defers a red suite to the end rather
-than stopping, so one run answers whether a failure is a source defect or a
-stale generated layer. Logs land under `.tmp/verify-chain/`.
+uninstalled browser; and it judges `test:env` by its full ASSERTION TALLY
+(`PASS` / `FAIL` / `SKIP` / `INCONCLUSIVE` / `UNSUPPORTED`), requiring
+`PASS > 0` and the other four columns zero — not by the step's exit code
+alone. `--strict` with no `--host=` still includes `cursor`, a
+`contract+manual-e2e` host; exit 1 with a clean tally is accepted only when
+the log also carries `manual certifications: 0/1 certified`. Exit 2 is a
+cleanup failure and is always fatal. SKIP and UNSUPPORTED fail the chain
+the same way FAIL and INCONCLUSIVE do. It names every failing and every
+skipped test, and defers a red suite to the end rather than stopping, so
+one run answers whether a failure is a source defect or a stale generated
+layer. Logs land under `.tmp/verify-chain/`.
 
 Run the chain end to end with NOTHING ELSE EDITING `src/`. Both `gen` and
 `build` write their own `build-provenance.json`, and its `sourceHash` hashes
@@ -83,11 +88,14 @@ move and is worth investigating.
 `test:env --strict` drives complete post-onboarding runs for every supported
 project shape with scripted role writes against the real gates: no host CLI, no
 LLM, no spend. It builds `dist` first (materialization resolves rules and skills
-from the plugin root, with no `src/` fallback) and needs `go`, `pytest`, `ruff`
-and a Playwright Chromium at the runs root; a missing toolchain is reported
-INCONCLUSIVE rather than passing. Run it after any change to gates, the
-architecture compiler, the QA runner, or settlement — it is the only test that
-exercises their COMPOSITION.
+from the plugin root, with no `src/` fallback) and needs `go`, `pytest`, `ruff`,
+`cargo` (plus clippy and rustfmt) and a Playwright Chromium at the runs root;
+a missing toolchain is reported INCONCLUSIVE rather than passing. Scripted writes go through the same
+`check-plan-write` pipeline the host entry uses (`runPipeline` /
+`handlersForSubcommand`, not a force-cast `planWriteGate`), and every
+expect-deny row asserts `denyId !== 'pipeline-handler-crashed'`. That is
+how the gates, the architecture compiler, the QA runner and settlement
+compose — run it after any change to those.
 
 `tests/golden/generated-manifest.sha256` is a byte snapshot of the full emitted
 tree (additions-aware); `npm run golden:update` is the only supported way to

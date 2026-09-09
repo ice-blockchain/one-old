@@ -100,3 +100,8 @@ test('class does not have to match NEVER_OVERRIDABLE', () => {
   assert.equal(denyClassOf('pipeline-handler-crashed'), 'fault');
   assert.ok(NEVER_OVERRIDABLE_DENY_ID_SET.has('pipeline-handler-crashed'));
 });
+
+test('doctor-unblock-agent-mint is safety and never-overridable', () => {
+  assert.equal(denyClassOf('doctor-unblock-agent-mint'), 'safety');
+  assert.ok(NEVER_OVERRIDABLE_DENY_ID_SET.has('doctor-unblock-agent-mint'));
+});

@@ -44,7 +44,7 @@ async function withEnv(fn: (cwd: string) => Promise<void>): Promise<void> {
 
 test('windsurf entry: unauthenticated pre_run_command blocks with exit 2 stderr', async () => {
   await withEnv(async (cwd) => {
-    const stdin = JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { command_line: 'npm test', cwd } });
+    const stdin = JSON.stringify({ agent_action_name: 'pre_run_command', cwd, tool_info: { command_line: 'npm test' } });
     const out = await runWindsurfHook('pre_run_command', stdin);
     assert.equal(out.exitCode, 2);
     assert.match(out.stderr, /Traffic One/i);
@@ -61,9 +61,9 @@ test('windsurf entry: setup-required pre_user_prompt does not block native Devin
     writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'windsurf');
     const stdin = JSON.stringify({
       agent_action_name: 'pre_user_prompt',
+      cwd,
       tool_info: {
         user_prompt: 'create a modern learning platform with courses for web development',
-        cwd,
       },
     });
     const out = await runWindsurfHook('pre_user_prompt', stdin);
@@ -82,9 +82,9 @@ test('windsurf entry: ask-first pending pre_user_prompt asks the question and ne
     writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'windsurf');
     const stdin = JSON.stringify({
       agent_action_name: 'pre_user_prompt',
+      cwd,
       tool_info: {
         user_prompt: 'create a modern learning platform with courses for web development',
-        cwd,
       },
     });
     const out = await runWindsurfHook('pre_user_prompt', stdin);
@@ -98,7 +98,7 @@ test('windsurf entry: ask-first pending pre_user_prompt asks the question and ne
 
 test('windsurf entry: post hooks never block', async () => {
   await withEnv(async (cwd) => {
-    const stdin = JSON.stringify({ agent_action_name: 'post_run_command', tool_info: { command_line: 'npm test', cwd } });
+    const stdin = JSON.stringify({ agent_action_name: 'post_run_command', cwd, tool_info: { command_line: 'npm test' } });
     const out = await runWindsurfHook('post_run_command', stdin);
     assert.equal(out.exitCode, 0);
   });
@@ -110,7 +110,8 @@ test('windsurf entry: synthetic empty-trajectory Devin bridge payload is ignored
       agent_action_name: 'pre_run_command',
       trajectory_id: '',
       timestamp: '2026-07-12T09:00:00Z',
-      tool_info: { command_line: 'npm test', cwd },
+      cwd,
+      tool_info: { command_line: 'npm test' },
     });
     const out = await runWindsurfHook('pre_run_command', stdin);
     assert.deepEqual(out, { stdout: '', stderr: '', exitCode: 0 });
@@ -122,7 +123,8 @@ test('windsurf entry: genuine Cascade trajectory still runs Traffic One', async 
     const stdin = JSON.stringify({
       agent_action_name: 'pre_run_command',
       trajectory_id: 'cascade-trajectory-1',
-      tool_info: { command_line: 'npm test', cwd },
+      cwd,
+      tool_info: { command_line: 'npm test' },
     });
     const out = await runWindsurfHook('pre_run_command', stdin);
     assert.equal(out.exitCode, 2);
@@ -161,6 +163,19 @@ test('windsurf entry: empty pre-deny fallback is the calm sentence', () => {
   assert.notEqual(preDenyStderr({ kind: 'deny' }), 'traffic-one blocked this action');
 });
 
+test('windsurf entry: tool_info.cwd does not chdir the process', async () => {
+  await withEnv(async (cwd) => {
+    const before = process.cwd();
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_run_command',
+      cwd,
+      tool_info: { command_line: 'npm test', cwd: path.join(os.tmpdir(), 'definitely-not-session-cwd') },
+    });
+    await runWindsurfHook('pre_run_command', stdin);
+    assert.equal(process.cwd(), before);
+  });
+});
+
 test('windsurf entry: the wait command itself surfaces the setup banner on stdout (show_output)', async () => {
   await withEnv(async (cwd) => {
     process.env.TRAFFIC_ONE_AUTH = 'off';
@@ -169,7 +184,8 @@ test('windsurf entry: the wait command itself surfaces the setup banner on stdou
     const { onboardingWaitCommand } = await import('../../shared/onboarding-server/wait-command');
     const stdin = JSON.stringify({
       agent_action_name: 'pre_run_command',
-      tool_info: { command_line: onboardingWaitCommand(cwd, 'windsurf'), cwd },
+      cwd,
+      tool_info: { command_line: onboardingWaitCommand(cwd, 'windsurf') },
     });
     const out = await runWindsurfHook('pre_run_command', stdin);
     assert.equal(out.exitCode, 0, 'the waiter is never blocked');

@@ -60,7 +60,8 @@ import { ensureOnboardingWaitPermission } from '../../shared/onboarding-server/w
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isNewProjectMode, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
-import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyWritePatch, isStateFilePath, isTrafficOneDoctorCommand, isTrafficOneResetCommand, parsedToolInput } from '../../shared/tool-classify';
+import { doctorUnblockAgentMintDenial } from '../../shared/doctor-unblock-deny';
+import { canonicalToolName, isBrowserOpenCommand, isModelCaptureCommand, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyWritePatch, isStateFilePath, isTrafficOneDoctorCommand, isTrafficOneResetCommand, isTrafficOneWorkspaceCommand, parsedToolInput } from '../../shared/tool-classify';
 import { browserOpenDeniedReason } from '../../shared/onboarding-server/browser-open';
 import { prefsCapableRoot } from '../../shared/state/local-prefs';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
@@ -184,6 +185,13 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // (the onboarding wait command, read-only orientation) silently fail on Cursor.
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  // `--unblock` is a mint, not the read-only doctor this gate exempts. Ahead
+  // of isTrafficOneDoctorCommand (which never admits that flag) and of every
+  // stand-down, because the write lands in ~/.traffic-one/overrides — outside
+  // every project fence — including from an authoring root or a completed
+  // onboard. Shared with plan-write so a host that only runs one still denies.
+  const unblockMint = doctorUnblockAgentMintDenial(toolName, toolInput);
+  if (unblockMint) return unblockMint;
   // Doctor is the recovery command this gate's own deny prose prescribes, so it
   // must be callable from EVERY state a user can be stuck in — including the
   // pre-consent one, where the ask-first fence below denies unconditionally,
@@ -212,6 +220,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // re-derives every precondition itself from disk under the project state
   // lock; see the reset row in hooks/fail-closed.ts for the full argument.
   if (isTrafficOneResetCommand(toolName, toolInput)) return noop();
+  if (isTrafficOneWorkspaceCommand(toolName, toolInput)) return noop();
   const cwd = ctx.cwd;
 
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
@@ -463,11 +472,11 @@ export function onboardingGate(ctx: Ctx): HookResult {
       // host-independent and the carve-out is now unconditional.
       //
       // Deliberately NARROWER than the Windsurf line it replaces:
-      // isReadOnlyOrientationToolUse also admits every non-mutating SHELL
-      // command, and `node some-script.cjs` is arbitrary execution, not a read.
-      // Widening that to all hosts would, among other things, wave through the
-      // near-collision doctor copies the exact-argv doctor grammar above exists
-      // to refuse. Reads are reads.
+      // isReadOnlyOrientationToolUse admits named reads plus an allowlist of
+      // known orientation shell (unknown verbs fail closed). `node some-script.cjs`
+      // is still a script-file interpreter invocation, not a named read — widening
+      // the inspection carve-out to all hosts would wave through near-collision
+      // doctor copies the exact-argv doctor grammar above exists to refuse.
       if (isReadOnlyInspectionTool(toolName)) return noop();
       if (ctx.host === 'windsurf' && isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
       if (prepared.kind === 'start-timeout') {

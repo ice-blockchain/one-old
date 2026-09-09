@@ -392,7 +392,15 @@ test('with XDG_STATE_HOME pinned, no resolver lands anywhere near the real ~/.tr
     // Leg 2 — the pin ON, which is how every one of the suite's ~291 test-file
     // processes runs.
     const pinned = askResolvers({ preload: true, tmp });
-    assert.equal(pinned.HOME, realHome, 'the pin must not work by hiding HOME');
+    // The pin now remaps HOME as well as XDG_STATE_HOME: documentedBinDir is
+    // `$HOME/.traffic-one/bin` and ignored XDG, so a HOME-only pin left the
+    // suite writing the real bin directory. The child's TMPDIR is this case's
+    // scratch, so its scratch parent is not the suite's and HOME moves again.
+    assert.notEqual(pinned.HOME, realHome, 'the pin must remap an ambient HOME');
+    assert.ok(
+      pinned.HOME?.startsWith(path.join(tmp, 'traffic-one-test-state') + path.sep),
+      `expected pinned HOME under the child's scratch, got ${pinned.HOME}`,
+    );
     assert.ok(
       pinned.XDG_STATE_HOME?.startsWith(scratchParent + path.sep),
       `expected a scratch root under ${scratchParent}, got ${pinned.XDG_STATE_HOME}`,

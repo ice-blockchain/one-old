@@ -5,9 +5,11 @@
 import { obj, type Rec } from '../../obj';
 import * as fs from 'fs';
 import * as path from 'path';
-import { readOwnerEntry } from '../../bounded-read';
-import { trustworthyAgeSince } from '../../clock-skew';
 import { readJson } from '../../fsjson';
+import {
+  acquirePerUserDirLock,
+  releasePerUserDirLock,
+} from '../../per-user-dir-lock';
 import { dirOwnsProject, projectMembershipRoot } from '../../project-membership';
 import { sha256 } from '../../text';
 import {
@@ -25,51 +27,110 @@ import {
   canonicalHostKey,
   normalizeHostPrefs,
 } from './pref-schema';
-import { writeProjectRootSidecarAt } from './project-root-sidecar';
+import { readProjectRootSidecar, writeProjectRootSidecarAt } from './project-root-sidecar';
 
 // THE project bucket name. Three things key off it and they must agree:
 // per-project prefs (which is where the use-plugin CONSENT answer lives), the
 // operator override ledger (shared/override/paths.ts), and the OpenCode project
 // agent-name prefix (shared/materialize/opencode-assets.ts).
 //
-// KNOWN ASYMMETRY, deliberately left in place: `fs.realpathSync` resolves
-// symlinks but does NOT case-fold, while `fs.realpathSync.native` DOES (measured
-// on APFS — `.../MyProj` given as `.../myproj` comes back `myproj` from the JS
-// implementation and `MyProj` from the native one). So on a case-insensitive
-// volume `/Users/u/Proj` and `/Users/u/proj` are ONE directory that hashes to
-// TWO buckets: two consent records, two prefs files, two override ledgers for
-// one project. Symlink spellings are already folded together; only CASE splits.
-//
-// Do NOT "fix" this by switching to `.native`, and the reason is NOT the one
-// stated here and in shared/override/paths.ts until this round. MEASURED on
-// this machine (APFS, case-insensitive): the CANONICAL spelling comes back
-// identical from both implementations, so the swap does not move the bucket of
-// a project reached by its true spelling, and it does not invalidate an
-// override token minted there. What it moves is exactly the MISCASED buckets —
-// and that is the real cost, because a machine whose operator has always used
-// the miscased spelling has its one LIVE bucket there. Relocating it is
-// indistinguishable, to every reader, from the bucket having been deleted: the
-// consent answer and host prefs are gone (the project is re-asked the
-// use-plugin question, and writes are refused until it is answered), and the
-// override ledger AND its mint counter move together to a fresh empty pair,
-// which is a free erasure of an audit trail, performed by an upgrade, on a
-// machine that did nothing. A real fix has to READ BOTH SPELLINGS AND MIGRATE,
-// under a lock, once — for that reason rather than for the token one.
-//
-// Until that exists the asymmetry is the cheaper defect, and
-// shared/__tests__/path-spelling-contract.test.ts pins it so the swap cannot be
-// made silently.
-export function projectRootHash(cwd: string): string {
-  let root: string;
+// `fs.realpathSync.native` returns the on-disk case (measured on APFS:
+// `.../MyProj` given as `.../myproj` comes back `MyProj`). The JS
+// `fs.realpathSync` returns the caller's case, so a case-insensitive volume
+// used to hash `/Users/u/Proj` and `/Users/u/proj` to TWO buckets. The hash
+// now uses `.native`. A one-time rename (migrateMiscasedPrefsBucket) moves the
+// live miscased-hash folder onto the canonical name when that folder is
+// absent — consent, prefs and the override ledger stay put rather than
+// resetting. Tokens minted under the old hash keep matching via
+// projectRootHashAliases (the MAC still covers the original projectKey).
+function realpathNative(cwd: string): string {
   try {
-    root = fs.realpathSync(path.resolve(cwd));
+    return fs.realpathSync.native(path.resolve(cwd));
   } catch {
-    root = path.resolve(cwd);
+    return path.resolve(cwd);
   }
-  return sha256(root);
+}
+
+function realpathJs(cwd: string): string {
+  try {
+    return fs.realpathSync(path.resolve(cwd));
+  } catch {
+    return path.resolve(cwd);
+  }
+}
+
+export function projectRootHash(cwd: string): string {
+  return sha256(realpathNative(cwd));
+}
+
+/** The pre-native hash: JS realpath (symlinks folded, case preserved). */
+export function legacyProjectRootHash(cwd: string): string {
+  return sha256(realpathJs(cwd));
+}
+
+/** Native hash first, then the JS-realpath spelling when it differs. */
+export function projectRootHashAliases(cwd: string): string[] {
+  const native = projectRootHash(cwd);
+  const js = legacyProjectRootHash(cwd);
+  return native === js ? [native] : [native, js];
+}
+
+/** Rename parent/fromHash → parent/canonicalHash when dest is absent and src exists. */
+export function migrateHashNamedFolder(parentDir: string, canonicalHash: string, fromHash: string): boolean {
+  if (!fromHash || fromHash === canonicalHash) return false;
+  const dest = path.join(parentDir, canonicalHash);
+  const src = path.join(parentDir, fromHash);
+  try {
+    if (fs.existsSync(dest) || !fs.existsSync(src)) return false;
+    fs.renameSync(src, dest);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-time prefs-bucket move. Returns the hash it renamed FROM, or null.
+ * Looks at the JS-realpath spelling of `cwd` and at sibling buckets whose
+ * `root` sidecar names this same on-disk directory.
+ */
+export function migrateMiscasedPrefsBucket(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const canonical = projectRootHash(cwd);
+  const projects = path.join(globalTrafficOneDir(env), 'projects');
+  const dest = path.join(projects, canonical);
+  try {
+    if (fs.existsSync(dest)) return null;
+  } catch {
+    return null;
+  }
+
+  const candidates = new Set<string>([legacyProjectRootHash(cwd)]);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(projects);
+  } catch {
+    names = [];
+  }
+  const want = realpathNative(cwd);
+  for (const name of names) {
+    if (name === canonical) continue;
+    const recorded = readProjectRootSidecar(path.join(projects, name));
+    if (!recorded) continue;
+    try {
+      if (fs.realpathSync.native(path.resolve(recorded)) === want) candidates.add(name);
+    } catch {
+      /* sidecar names a path we cannot resolve */
+    }
+  }
+
+  for (const from of candidates) {
+    if (migrateHashNamedFolder(projects, canonical, from)) return from;
+  }
+  return null;
 }
 
 export function defaultProjectPrefsPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  migrateMiscasedPrefsBucket(cwd, env);
   return path.join(globalTrafficOneDir(env), 'projects', projectRootHash(cwd), 'preferences.json');
 }
 
@@ -82,178 +143,26 @@ export const PROJECT_PREFS_LOCK_TIMEOUT_MS = 1_000;
 const PROJECT_PREFS_LOCK_RETRY_MS = 10;
 const PROJECT_PREFS_LOCK_STALE_MS = 10_000;
 
-interface ProjectPrefsLock {
-  readonly dirPath: string;
-  readonly ownerPath: string;
-  readonly token: string;
+function acquireProjectPrefsLock(filePath: string) {
+  return acquirePerUserDirLock(filePath, {
+    timeoutMs: PROJECT_PREFS_LOCK_TIMEOUT_MS,
+    retryMs: PROJECT_PREFS_LOCK_RETRY_MS,
+    staleMs: PROJECT_PREFS_LOCK_STALE_MS,
+  });
 }
 
-interface ProjectPrefsLockOwner {
-  readonly ownerPath: string;
-  readonly token: string;
-  readonly pid: number;
-  readonly createdAt: number;
-}
-
-function sleepSync(ms: number): void {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms));
-  } catch {
-    // SharedArrayBuffer can be unavailable in constrained hook runtimes. The
-    // deadline still bounds the retry loop.
-  }
-}
-
-function observedProjectPrefsLockOwner(lockPath: string): ProjectPrefsLockOwner | null {
-  try {
-    const entries = fs.readdirSync(lockPath).filter((name) => /^owner-[a-f0-9]+\.json$/.test(name));
-    if (entries.length !== 1) return null;
-    const ownerName = entries[0]!;
-    const ownerPath = path.join(lockPath, ownerName);
-    // BOUNDED (shared/bounded-read.ts) — the fourth port of
-    // state/project-state-lock.ts's `observedLockOwner`, and the property that
-    // did not travel with the other three is the one that bounds the read.
-    // Anything but a regular file is not a record this protocol wrote; the
-    // abandoned arm then decides on presence plus age.
-    const bytes = readOwnerEntry(ownerPath);
-    if (bytes === null) return null;
-    const raw = JSON.parse(bytes) as Record<string, unknown>;
-    const token = typeof raw.token === 'string' ? raw.token : '';
-    const pid = typeof raw.pid === 'number' ? raw.pid : Number.NaN;
-    const createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : Number.NaN;
-    if (!token || !Number.isInteger(pid) || pid <= 0 || !Number.isFinite(createdAt)
-      || ownerName !== `owner-${token}.json`) return null;
-    return { ownerPath, token, pid, createdAt };
-  } catch {
-    return null;
-  }
-}
-
-// Remove only the exact owner file we observed. If another process replaced the
-// stale lock in the meantime, unlink/rmdir cannot remove its fresh owner.
-function reapObservedProjectPrefsLock(lockPath: string, owner: ProjectPrefsLockOwner): boolean {
-  try {
-    fs.unlinkSync(owner.ownerPath);
-  } catch {
-    return false;
-  }
-  try {
-    fs.rmdirSync(lockPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function reapAbandonedEmptyProjectPrefsLock(lockPath: string, now: number): boolean {
-  try {
-    if (fs.readdirSync(lockPath).length !== 0) return false;
-    // Left as a raw subtraction on purpose; see the same note in
-    // one-mcp/cache-lock.ts. `rename(dir, EMPTY dir)` succeeds, so an empty
-    // canonical lock is overwritten rather than contended and this reap is not
-    // on the acquisition path. A negative age here costs a retry, not a wedge.
-    if (now - fs.statSync(lockPath).mtimeMs <= PROJECT_PREFS_LOCK_STALE_MS) return false;
-    fs.rmdirSync(lockPath);
-    return true;
-  } catch {
-    // A legacy publisher or another recovery contender won the race.
-    return false;
-  }
-}
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-function acquireProjectPrefsLock(filePath: string): ProjectPrefsLock {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const lockPath = `${filePath}.lock`;
-  const token = `${process.pid.toString(16)}${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
-  const ownerName = `owner-${token}.json`;
-  const pendingPath = `${lockPath}.${token}.pending`;
-  const deadline = Date.now() + PROJECT_PREFS_LOCK_TIMEOUT_MS;
-
-  // Publish a fully formed lock directory with one atomic rename. No contender
-  // can observe the canonical path in the gap between mkdir and owner creation.
-  try {
-    fs.mkdirSync(pendingPath, { mode: 0o700 });
-    fs.writeFileSync(
-      path.join(pendingPath, ownerName),
-      JSON.stringify({ pid: process.pid, token, createdAt: Date.now() }),
-      { encoding: 'utf8', mode: 0o600, flag: 'wx' },
-    );
-  } catch (error) {
-    try { fs.rmSync(pendingPath, { recursive: true, force: true }); } catch { /* best-effort */ }
-    throw error;
-  }
-
-  let acquired = false;
-  try {
-    while (true) {
-      try {
-        fs.renameSync(pendingPath, lockPath);
-        acquired = true;
-        return { dirPath: lockPath, ownerPath: path.join(lockPath, ownerName), token };
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        const contended = code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'ENOTDIR'
-          || (code === 'EPERM' && fs.existsSync(lockPath));
-        if (!contended) throw error;
-        const now = Date.now();
-        const owner = observedProjectPrefsLockOwner(lockPath);
-        // A future-stamped sentinel makes this age negative, i.e. never stale,
-        // so a dead owner's lock wedged every prefs write for the full timeout
-        // (measured: 1002ms and a throw, against 0.93ms past-stamped). An age no
-        // clock could produce does not veto the reap; `processAlive` still does,
-        // so a live owner is never evicted on the strength of its stamp.
-        const ownerAgeMs = owner ? trustworthyAgeSince(owner.createdAt, now) : null;
-        if (owner && (ownerAgeMs === null || ownerAgeMs > PROJECT_PREFS_LOCK_STALE_MS)
-          && !processAlive(owner.pid) && reapObservedProjectPrefsLock(lockPath, owner)) continue;
-        if (!owner && reapAbandonedEmptyProjectPrefsLock(lockPath, now)) continue;
-        if (now >= deadline) {
-          throw new Error(`traffic-one project preferences lock timed out after ${PROJECT_PREFS_LOCK_TIMEOUT_MS}ms`);
-        }
-        sleepSync(Math.min(PROJECT_PREFS_LOCK_RETRY_MS, deadline - now));
-      }
-    }
-  } finally {
-    if (!acquired) {
-      try { fs.rmSync(pendingPath, { recursive: true, force: true }); } catch { /* best-effort */ }
-    }
-  }
-}
-
-function releaseProjectPrefsLock(lock: ProjectPrefsLock): void {
-  const releasedPath = `${lock.dirPath}.${lock.token}.released`;
-  try {
-    // BOUNDED: the ownership proof reads a path inside the lock directory, so a
-    // shape that never answers can be substituted for our own owner file and
-    // hang the release with the work already done and the lease still held.
-    const bytes = readOwnerEntry(lock.ownerPath);
-    if (bytes === null) return;
-    const raw = JSON.parse(bytes) as Record<string, unknown>;
-    if (raw.token !== lock.token) return;
-    // Atomically vacate the canonical lock path before best-effort cleanup, so
-    // an interrupted release cannot leave an empty directory that wedges prefs.
-    fs.renameSync(lock.dirPath, releasedPath);
-  } catch {
-    // Already removed or replaced. Never remove a lock we cannot prove we own.
-    return;
-  }
-  try { fs.rmSync(releasedPath, { recursive: true, force: true }); } catch { /* best-effort */ }
-}
-
-export function withProjectPrefsLock<T>(filePath: string, body: () => T): T {
+/**
+ * Run `body` while holding the per-user prefs lock. Returns undefined when
+ * the lock times out — a refusal, not a throw — so a contended prefs write
+ * cannot abort a hook.
+ */
+export function withProjectPrefsLock<T>(filePath: string, body: () => T): T | undefined {
   const lock = acquireProjectPrefsLock(filePath);
+  if (!lock) return undefined;
   try {
     return body();
   } finally {
-    releaseProjectPrefsLock(lock);
+    releasePerUserDirLock(lock);
   }
 }
 
@@ -361,7 +270,11 @@ function persistCodeGraphAcknowledged(prefs: Rec): Rec {
 export function writeProjectPrefs(cwd: string, prefs: unknown, env: NodeJS.ProcessEnv = process.env): Rec {
   const normalized = persistCodeGraphAcknowledged(normalizeProjectPrefs(prefs));
   const prefsPath = projectPrefsPath(cwd, env);
-  withProjectPrefsLock(prefsPath, () => writeProjectPrefsFile(prefsPath, normalized));
+  const wrote = withProjectPrefsLock(prefsPath, () => {
+    writeProjectPrefsFile(prefsPath, normalized);
+    return true;
+  });
+  if (!wrote) return readProjectPrefs(cwd, env);
   writeProjectRootSidecarAt(prefsPath, cwd);
   return normalized;
 }
@@ -414,6 +327,7 @@ export function updateProjectPrefs(
     writeProjectPrefsFile(prefsPath, normalized);
     return normalized;
   });
+  if (next === undefined) return readProjectPrefs(cwd, env);
   writeProjectRootSidecarAt(prefsPath, cwd);
   return next;
 }

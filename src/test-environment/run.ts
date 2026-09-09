@@ -13,7 +13,7 @@ import type { CaseRunResult, HostId, RootTestConfig } from './core/types';
 import { defaultConfig } from './config/test-config';
 import { UsageError, applyFlags, excludedHostNotes, parseFlags, type Flags } from './core/flags';
 import { ALL_CASES } from './config/cases';
-import { caseSelectedByRun } from './core/case-selection';
+import { caseSelectedByRun, usageIfNoCases } from './core/case-selection';
 import { discoverAssertions } from './assertions/registry';
 import { preflight } from './core/preflight';
 import { buildAndInstall, cleanupBuildInstall, type BuildResult } from './core/build-and-install';
@@ -185,6 +185,11 @@ async function main(): Promise<number> {
   if (flags.reassert) return reassertRun(flags.reassert, config, caseById, startedAt);
 
   const planned = selectRuns(config);
+  const emptyPlanned = usageIfNoCases(planned);
+  if (emptyPlanned !== null) {
+    console.error('test:env: no cases selected — --case/--category/--host/--e2e produced an empty run');
+    return emptyPlanned;
+  }
   const anyE2E = planned.some((p) => p.targets.some((t) => t !== 'pure-node'));
   const e2eHosts = new Set<HostId>();
   for (const p of planned) for (const t of p.targets) if (t !== 'pure-node') e2eHosts.add(t);
@@ -355,6 +360,12 @@ async function main(): Promise<number> {
         console.log(f > 0 ? `FAIL (${f})` : 'ok');
         results.push(r);
       }
+    }
+
+    const emptyResults = usageIfNoCases(results);
+    if (emptyResults !== null) {
+      console.error('test:env: no cases ran — the selected set produced an empty result list');
+      return emptyResults;
     }
 
     const summary = writeReport(

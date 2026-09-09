@@ -55,6 +55,15 @@ function onboardedProject(dir: string): string {
   return dir;
 }
 
+/** Leftover mode-bearing state with no project evidence — the sweep may still heal this. */
+function leftoverProject(dir: string): string {
+  write(path.join(dir, 'package.json'), `${JSON.stringify({ name: path.basename(dir) }, null, 2)}\n`);
+  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+  write(path.join(dir, '.traffic-one', '.one.json'),
+    `${JSON.stringify({ mode: 'existing-codebase' }, null, 2)}\n`);
+  return dir;
+}
+
 /** What the SessionStart sweep would delete, relative to `container`. */
 function plannedLeaks(container: string): string[] {
   return sweepTrafficOneRetention(container, { dryRun: true }).actions
@@ -307,13 +316,28 @@ test('workspace membership: the packages/ui incident does not regress — a CLAI
     declarePkg(root, ['packages/*']);
     write(path.join(root, '.traffic-one', '.one.json'),
       `${JSON.stringify({ mode: 'new-project', onboardingComplete: true }, null, 2)}\n`);
-    const ui = onboardedProject(path.join(root, 'packages', 'ui'));
+    const ui = leftoverProject(path.join(root, 'packages', 'ui'));
 
     assert.equal(workspaceClaimsDescendant(root, ui), true, 'packages/* claims packages/ui');
     assert.equal(resolveProjectRoot(ui, undefined, { workspaceAuthority: 'membership' }), root,
       'a claimed member still climbs to the workspace root under the STRICTER authority');
     assert.deepEqual(plannedLeaks(root), [path.join('packages', 'ui', '.traffic-one')],
-      'and is still planned for deletion');
+      'leftover debris inside a claimed member is still planned for deletion');
+  });
+});
+
+test('workspace membership: an onboarded claimed member is a project, not debris', () => {
+  withRoot((root) => {
+    declarePkg(root, ['packages/*']);
+    write(path.join(root, '.traffic-one', '.one.json'),
+      `${JSON.stringify({ mode: 'new-project', onboardingComplete: true }, null, 2)}\n`);
+    const ui = onboardedProject(path.join(root, 'packages', 'ui'));
+
+    assert.equal(workspaceClaimsDescendant(root, ui), true, 'packages/* claims packages/ui');
+    assert.equal(resolveProjectRoot(ui, undefined, { workspaceAuthority: 'membership' }), root,
+      'resolution still climbs — the keep is evidence, not a new root');
+    assert.deepEqual(plannedLeaks(root), [],
+      'onboardingComplete is project evidence, so SessionStart does not delete it');
   });
 });
 
@@ -323,7 +347,7 @@ test('workspace membership: a stray INSIDE a claimed member is claimed too', () 
     write(path.join(root, '.traffic-one', '.one.json'),
       `${JSON.stringify({ mode: 'new-project', onboardingComplete: true }, null, 2)}\n`);
     write(path.join(root, 'packages', 'ui', 'package.json'), '{"name":"ui"}\n');
-    const sub = onboardedProject(path.join(root, 'packages', 'ui', 'sub'));
+    const sub = leftoverProject(path.join(root, 'packages', 'ui', 'sub'));
 
     assert.equal(workspaceClaimsDescendant(root, sub), true,
       'no pattern matches packages/ui/sub itself, but packages/* matches its ancestor packages/ui');
@@ -336,8 +360,8 @@ test('workspace membership: a NEGATED member is excluded from deletion authority
     declarePkg(root, ['*', '!ledger-api']);
     write(path.join(root, '.traffic-one', '.one.json'),
       `${JSON.stringify({ mode: 'new-project', onboardingComplete: true }, null, 2)}\n`);
-    const kept = onboardedProject(path.join(root, 'ledger-api'));
-    onboardedProject(path.join(root, 'storefront-web'));
+    const kept = leftoverProject(path.join(root, 'ledger-api'));
+    leftoverProject(path.join(root, 'storefront-web'));
 
     assert.equal(workspaceClaimsDescendant(root, kept), false, 'the negation wins over the `*` that also matches');
     assert.deepEqual(plannedLeaks(root), [path.join('storefront-web', '.traffic-one')],
@@ -376,7 +400,7 @@ test('workspace membership: stray state inside a real repo is still a leak, decl
       const strategies = path.join(root, 'strategies');
       write(path.join(strategies, 'x.go'), 'package strategies\n');
       write(path.join(strategies, '.traffic-one', '.one.json'),
-        `${JSON.stringify({ mode: 'new-project', onboardingComplete: true }, null, 2)}\n`);
+        `${JSON.stringify({ mode: 'new-project' }, null, 2)}\n`);
 
       assert.equal(resolveProjectRoot(strategies, undefined, { workspaceAuthority: 'membership' }), root,
         'a marker-less dir inside a repo belongs to the repo — no declaration is involved');

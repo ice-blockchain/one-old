@@ -46,7 +46,7 @@ import * as path from 'path';
 import { stableContractJson } from '../architecture-contract';
 import { readJsonResult } from '../fsjson';
 import { createPaidFallbackCompletion } from '../maintenance/fallback-proof';
-import { qaReportV2Path } from '../qa-report-v2';
+import { qaReportV2Path, recordStackResolution } from '../qa-report-v2';
 import { sha256 } from '../text';
 import {
   DEFAULT_LIGHTHOUSE_THRESHOLDS,
@@ -145,6 +145,11 @@ function writeStrictVerificationEvidence(cwd: string): void {
   }), 'utf8');
   digest(cwd, 'reviewer.md', '# Reviewer\nverdict: APPROVED\n');
   digest(cwd, 'tester.md', '# Tester\nverdict: TESTS_GREEN\n');
+  const resolved: Record<string, { declared: 'declared'; executed: 'passed' }> = {};
+  for (const id of withoutHash.requiredChecks) resolved[id] = { declared: 'declared', executed: 'passed' };
+  if (!recordStackResolution(cwd, 'R', resolved)) {
+    throw new Error('fixture guard: runtime passed record must persist');
+  }
 }
 
 // ── reconcile: run.json ──────────────────────────────────────────────────────

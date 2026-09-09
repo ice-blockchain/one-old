@@ -280,7 +280,7 @@ test('the OS table names the runners the generate-check matrix actually runs on'
     assert.ok(row, `PLATFORMS.md has no OS table row for ${os}`);
     return row as string;
   };
-  for (const [os, runner] of [['macOS', 'macos-latest'], ['Linux', 'ubuntu-latest']] as const) {
+  for (const [os, runner] of [['macOS', 'macos-latest'], ['Linux', 'ubuntu-latest'], ['Windows', 'windows-latest']] as const) {
     assert.ok(runners.includes(runner), `${GENERATE_CHECK}'s matrix no longer includes ${runner}, which PLATFORMS.md's ${os} row cites`);
     assert.ok(
       rowFor(os).includes(`\`${runner}\``),
@@ -308,23 +308,38 @@ test('the Linux row states as many Linux-only jobs as the workflow declares', ()
   );
 });
 
-// The Windows row's load-bearing word is "no": no automated coverage. A Windows
-// runner appearing anywhere in CI makes that sentence false, and the sentence is
-// the reason a reader does not plan around Windows.
-test('no workflow runs on Windows, which is what the Windows row claims', () => {
-  assert.ok(WORKFLOWS.length >= 1, 'no workflows found — "no automated coverage" is unfalsifiable');
-  for (const file of WORKFLOWS) {
-    const yml = read(path.posix.join('.github', 'workflows', file));
-    const runners = [...yml.matchAll(/runs-on:\s*(.+)/g)].map((match) => (match[1] as string).trim());
-    const matrices = [...yml.matchAll(/os:\s*\[([^\]]+)\]/g)].flatMap((match) => (match[1] as string).split(','));
-    for (const runner of [...runners, ...matrices]) {
-      assert.doesNotMatch(
-        runner.toLowerCase(),
-        /windows/,
-        `.github/workflows/${file} runs on ${runner.trim()}; PLATFORMS.md's Windows row says nothing in CI exercises Windows`,
-      );
-    }
-  }
+// Windows is on the generate-check matrix for typecheck + npm test only.
+// test:env and the other POSIX-only jobs must stay off windows-latest, and the
+// row must not claim Job Object teardown is covered.
+test('generate-check includes windows-latest; test:env stays POSIX', () => {
+  const yml = read(GENERATE_CHECK);
+  const matrix = /os:\s*\[([^\]]+)\]/.exec(yml);
+  assert.ok(matrix, `${GENERATE_CHECK} no longer declares an os matrix`);
+  const runners = (matrix![1] as string).split(',').map((entry) => entry.trim()).filter(Boolean);
+  assert.ok(runners.includes('windows-latest'), `${GENERATE_CHECK}'s matrix does not include windows-latest`);
+  const row = DOC.split('\n').find((line) => line.startsWith('| Windows '));
+  assert.ok(row, 'PLATFORMS.md has no Windows OS-table row');
+  assert.ok(
+    (row as string).includes('`windows-latest`'),
+    `PLATFORMS.md's Windows row does not cite windows-latest: ${row}`,
+  );
+  assert.match(
+    row as string,
+    /Job Object teardown is not claimed fixed/,
+    'PLATFORMS.md Windows row must keep the Job Object residual, not claim it fixed',
+  );
+  assert.ok(
+    /test:env/.test(row as string) && /POSIX/.test(row as string),
+    'PLATFORMS.md Windows row must keep test:env on POSIX',
+  );
+
+  const testEnvJob = yml.split(/^  [A-Za-z0-9_-]+:/m).find((block) => block.includes('test:env --strict'));
+  assert.ok(testEnvJob, `${GENERATE_CHECK} has no test:env --strict job`);
+  assert.doesNotMatch(
+    testEnvJob,
+    /windows/i,
+    `${GENERATE_CHECK} test:env job must stay POSIX`,
+  );
 });
 
 // A count taken by hand has a date, not permanence: this one read 27 while the
@@ -415,28 +430,56 @@ test('the surfaces the document lists are the ProjectSurface union, in order', (
   );
 });
 
-// An ABSENCE claim, and the direction the word-boundary trap runs here is worth
-// naming: an unanchored /rust|cargo/i matches the English word "trust", which a
-// release check has already been failed by. For a claim that nothing drives Rust,
-// over-matching produces a FALSE RED on an innocent case file, so the boundaries
-// below are load-bearing in the opposite direction from the usual one.
+// A PRESENCE claim. An unanchored /rust|cargo/i matches the English word
+// "trust", which a release check has already been failed by. Over-matching
+// would count an innocent case as "driving Rust" and let the document's
+// exercised claim rest on a false positive, so the boundaries below stay
+// load-bearing.
 const RUST_TOKEN = /\brust\b|\bcargo\b/i;
 
-test('no release-harness case drives Rust, which is what the stacks section says', () => {
+test('a release-harness case drives Rust, which is what the stacks section says', () => {
   assert.equal(RUST_TOKEN.test('the codex hook trust store is verified'), false, 'the Rust pattern matches the word "trust" — anchor it');
   assert.equal(RUST_TOKEN.test('a trusted marketplace'), false, 'the Rust pattern matches "trusted" — anchor it');
   assert.equal(RUST_TOKEN.test('cargo build'), true, 'the Rust pattern no longer matches an actual Rust invocation');
   const cases = walk(path.posix.join('src', 'test-environment', 'config', 'cases'), (file) => file.endsWith('.ts'));
   assert.ok(cases.length >= 5, `found ${cases.length} harness case file(s) — a claim about all of them certifies nothing`);
   const driving = cases.filter((rel) => RUST_TOKEN.test(read(rel)));
-  assert.deepEqual(
-    driving,
-    [],
-    `PLATFORMS.md says no case drives a Rust project; ${JSON.stringify(driving)} now mention(s) Rust — either the claim or the case list is stale`,
+  assert.ok(
+    driving.length >= 1,
+    'PLATFORMS.md says a case drives a Rust project; no harness case file mentions Rust — either the claim or the case list is stale',
   );
   assert.ok(
-    FLAT.includes('**Rust is not exercised by the release harness.**'),
-    'PLATFORMS.md no longer carries the Rust caveat this test exists to keep honest',
+    driving.some((rel) => /backend:\s*'rust'/.test(read(rel))),
+    `a case file mentions Rust but none declare backend: 'rust': ${JSON.stringify(driving)}`,
+  );
+  const stacks = /## Project stacks[\s\S]*?(?=\n## )/.exec(DOC)?.[0] ?? '';
+  assert.ok(stacks.includes('## Project stacks'), 'PLATFORMS.md no longer has a Project stacks section');
+  const stacksFlat = stacks.replace(/\s+/g, ' ');
+  assert.ok(
+    /Rust is exercised by the release harness/i.test(stacksFlat),
+    'PLATFORMS.md no longer states that Rust IS exercised by the release harness',
+  );
+  assert.equal(
+    /Rust is not exercised/i.test(stacksFlat),
+    false,
+    'PLATFORMS.md still claims Rust is not exercised',
+  );
+  assert.equal(
+    /Treat Rust support as untested/i.test(stacksFlat),
+    false,
+    'PLATFORMS.md still tells the reader to treat Rust as untested',
+  );
+  const rustClaim = sentenceWith('Rust is exercised');
+  for (const token of ['cargo', 'clippy', 'rustfmt', 'INCONCLUSIVE'] as const) {
+    assert.ok(
+      rustClaim.includes(token),
+      `the Rust-exercised sentence no longer names ${token}: "${rustClaim}"`,
+    );
+  }
+  assert.match(
+    rustClaim,
+    /INCONCLUSIVE.{0,80}(never a pass|rather than passing|not a pass)/i,
+    `the Rust-exercised sentence no longer says a missing cargo/clippy/rustfmt is INCONCLUSIVE rather than a pass: "${rustClaim}"`,
   );
 });
 

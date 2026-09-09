@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { readUnknownAuthGate401, recordUnknownAuthGate401 } from '../../../shared/auth/auth-gate-drift';
 import { machineSidecarPath } from '../../../shared/auth/machine-sidecar';
 import { readSimpleAuth } from '../../../shared/auth/simple-auth';
 import { readRevalidationState, revalidationStatePath } from '../../../shared/auth/revalidation-state';
@@ -160,6 +161,20 @@ test('a confirmed key is re-stamped, and the feed that rode along is persisted',
     assert.deepEqual(readUpdatesStore(fx.env).items.map((item) => item.id), ['1', '2']);
     assert.equal(readUpdatesStore(fx.env).cursor, 'cur1');
     assert.deepEqual(readRevalidationState(fx.env)?.outcome, 'confirmed');
+    assert.equal(readUnknownAuthGate401(fx.env), null);
+  } finally { fx.dispose(); }
+});
+
+test('a later understood probe clears a previously recorded unknown 401 code', async () => {
+  const fx = fixture();
+  try {
+    assert.equal(recordUnknownAuthGate401('some_future_code', fx.env, VALIDATED_AT_MS), true);
+    assert.equal(readUnknownAuthGate401(fx.env)?.code, 'some_future_code');
+    await runAuthRevalidation(fx.env, {
+      probe: probing(fx, confirmed([])),
+      nowMs: () => VALIDATED_AT_MS + HOUR_MS,
+    });
+    assert.equal(readUnknownAuthGate401(fx.env), null, 'a confirmation this client understood retires the drift record');
   } finally { fx.dispose(); }
 });
 

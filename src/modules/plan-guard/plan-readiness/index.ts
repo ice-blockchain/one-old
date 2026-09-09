@@ -215,7 +215,8 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     violations.push(block('runtime-sidecar-owner-gate',
       `Runtime sidecar gate: \`${filePath}\` is published by the runtime. Do not create, edit, delete, or repair it.
 Read it if you need the contents. To change run state, change the semantic input or invoke the owning runtime transition.
-Write/Edit/apply_patch of this path are refused. Unrecognised shell that names this path is refused.`,
+Write/Edit/apply_patch of this path are refused. Unrecognised shell that names this path is refused.
+A \`cat > .traffic-one/digests/<runId>/reviewer.md <<'EOF'\` heredoc is also refused here (the ordinary reviewer-digest write); use the Write tool for digest files.`,
       { TARGET: filePath }));
   }
 
@@ -513,7 +514,7 @@ Write/Edit/apply_patch of this path are refused. Unrecognised shell that names t
   }
 
   const architectDigest = ARCHITECT_DIGEST_RE.exec(filePath);
-  if (architectDigest && digestClaimsVerdict(content, 'PLAN_READY')) {
+  if (architectDigest && digestClaimsVerdict(content, 'PLAN_READY', { allowBareWord: false })) {
     const runId = architectDigest[2] || '';
     const missingMemory = missingProjectMemoryBaseline(projectRoot, state);
     if (missingMemory.length > 0) {

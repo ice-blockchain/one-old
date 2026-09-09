@@ -8,6 +8,11 @@ import { effectiveLegacyRunStatus } from '../../shared/run-settlement';
 import { legacyCustomBackendMigration } from '../../shared/architecture-contract';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { OPENCODE_MCP_SERVER_KEY } from '../../config/opencode-mcp';
+import { hybridUiTargetAsk, type HybridUiTargetAsk } from '../../shared/capabilities/hybrid-target';
+import {
+  registryEnclosureOf,
+  workspaceMemberRegistryOf,
+} from '../../shared/hook/workspace-members';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
 import { NODE_FLOOR_MAJOR } from '../../shared/node-floor';
 import { managedNpmBin } from '../../shared/toolchain-paths';
@@ -205,6 +210,14 @@ export interface ProjectProbe {
   artefacts: { gitnexus: { mtimeMs: number } | null; graphify: { mtimeMs: number } | null };
   runState: RunIdProbe;
   nestedTrafficOneRoots: string[];
+  /**
+   * Per-nested-root state read: a dir whose `.one.json` is a workspace
+   * container, or which is a member of one, so findings can keep it off
+   * NESTED_TRAFFIC_ONE_ROOTS. Absent on crafted probes that predate this field.
+   */
+  nestedRootRelations?: NestedRootRelation[];
+  /** Both UI surfaces detected and no architectureTarget chosen. */
+  hybridUiTarget?: HybridUiTargetAsk | null;
   // How a delegation run would resolve the OpenCode CLI right now: the managed
   // install, a PATH binary (unpinned version), or nothing.
   openCodeCli: 'managed' | 'path' | 'missing';
@@ -212,6 +225,74 @@ export interface ProjectProbe {
     status: 'not-applicable' | 'auto-correctable' | 'ambiguous';
     message: string | null;
   };
+}
+
+export interface NestedRootRelation {
+  readonly dir: string;
+  readonly role: 'workspace-container' | 'workspace-member' | 'membership-unknown';
+  readonly why?: string;
+}
+
+function readNestedOneJson(dir: string): Rec | null {
+  const raw = safeRead(path.join(dir, '.traffic-one', '.one.json'));
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Rec : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * State read per nested root: which of those directories is a workspace
+ * container, a member of one, or under a container whose registry cannot be
+ * read. Findings uses this so a workspace sitting inside an ordinary project
+ * does not have its members reported as strays.
+ */
+export function classifyNestedTrafficOneRoots(
+  _cwd: string,
+  nested: readonly string[],
+): NestedRootRelation[] {
+  const relations: NestedRootRelation[] = [];
+  const seen = new Map<string, NestedRootRelation>();
+  const remember = (row: NestedRootRelation): void => {
+    const existing = seen.get(row.dir);
+    if (existing?.role === 'workspace-container') return;
+    seen.set(row.dir, row);
+  };
+
+  const containers: { dir: string; registry: ReturnType<typeof workspaceMemberRegistryOf> }[] = [];
+  for (const dir of nested) {
+    const registry = workspaceMemberRegistryOf(readNestedOneJson(dir));
+    if (registry.kind === 'none') continue;
+    if (registry.kind === 'opaque' || registry.kind === 'illegible') {
+      remember({ dir, role: 'workspace-container', why: registry.why });
+      containers.push({ dir, registry });
+      continue;
+    }
+    remember({ dir, role: 'workspace-container' });
+    containers.push({ dir, registry });
+  }
+
+  for (const { dir: containerDir, registry } of containers) {
+    for (const dir of nested) {
+      if (dir === containerDir) continue;
+      const rel = path.relative(containerDir, dir);
+      if (!rel || rel === '.' || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+      if (registry.kind === 'opaque' || registry.kind === 'illegible') {
+        remember({ dir, role: 'membership-unknown', why: registry.why });
+        continue;
+      }
+      if (registry.kind !== 'members') continue;
+      if (registryEnclosureOf(containerDir, registry, dir).kind !== 'none') {
+        remember({ dir, role: 'workspace-member' });
+      }
+    }
+  }
+
+  for (const row of seen.values()) relations.push(row);
+  return relations;
 }
 
 function listNestedTrafficOneRoots(cwd: string): string[] {
@@ -258,6 +339,7 @@ export function probeProject(cwd: string): ProjectProbe {
   const graphifyOut = safeStat(path.join(cwd, GRAPHIFY_REPORT_REL));
   const runState = probeRunId(cwd, normalizedState || state);
   const migration = legacyCustomBackendMigration(cwd, state || {});
+  const nestedTrafficOneRoots = listNestedTrafficOneRoots(cwd);
   return {
     cwd,
     hasState: !!state,
@@ -273,7 +355,9 @@ export function probeProject(cwd: string): ProjectProbe {
       graphify: graphifyOut ? { mtimeMs: graphifyOut.mtimeMs } : null,
     },
     runState,
-    nestedTrafficOneRoots: listNestedTrafficOneRoots(cwd),
+    nestedTrafficOneRoots,
+    nestedRootRelations: classifyNestedTrafficOneRoots(cwd, nestedTrafficOneRoots),
+    hybridUiTarget: hybridUiTargetAsk(cwd, normalizedState || state || {}),
     openCodeCli: fs.existsSync(managedNpmBin('opencode', 'opencode'))
       ? 'managed'
       : (which('opencode') ? 'path' : 'missing'),

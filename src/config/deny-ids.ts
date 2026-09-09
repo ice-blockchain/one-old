@@ -427,8 +427,19 @@ export const DENY_IDS = [
   'codegraph-ignore-mutate',
   'registry-probe-gate',
   'state-mode-downgrade',
+  'state-writer-identity',
+  // Shell/staticCheck-false writes of `.traffic-one/.one.json`. Write/Edit/
+  // apply_patch stay on the static identity and mode checks above; this id is
+  // the channel those checks cannot see.
+  'state-file-shell-write',
 
   // ── modules/onboarding-gate/handler.ts ───────────────────────────────────
+  // An agent-issued `doctor --unblock` (including expect/script/pty/bash -c
+  // wrappers). The mint writes ~/.traffic-one/overrides, outside every project
+  // fence. Never the read-only doctor grammar — `--unblock` stays absent from
+  // isTrafficOneDoctorCommand. Shared helper: shared/doctor-unblock-deny.ts,
+  // also called from plan-write so a host that only runs one still denies.
+  'doctor-unblock-agent-mint',
   'team-mode-marker-guard',
   'team-mode-downgrade-guard',
   'claude-wait-background-denied',
@@ -739,6 +750,9 @@ export const DENY_ID_CLASS = {
   'codegraph-ignore-mutate': 'briefing',
   'registry-probe-gate': 'briefing',
   'state-mode-downgrade': 'sequencing',
+  'state-writer-identity': 'safety',
+  'state-file-shell-write': 'safety',
+  'doctor-unblock-agent-mint': 'safety',
   'team-mode-marker-guard': 'sequencing',
   'team-mode-downgrade-guard': 'sequencing',
   'claude-wait-background-denied': 'briefing',
@@ -801,7 +815,7 @@ export function isDenyClass(value: unknown): value is DenyClass {
 // needs it lifted is "fix the cause, or settle the run".
 //
 // A gate NOT listed here is overridable. That is the deliberate default: the
-// 174 remaining ids (211 declared, less the 37 below) are ordinary
+// 176 remaining ids (214 declared, less the 38 below) are ordinary
 // process/sequencing refusals whose worst case is a lower-quality run, and that
 // run is already marked ineligible for `verified`/`shipped` the moment a token is
 // minted for it (run-settlement/io.ts).
@@ -857,6 +871,12 @@ export const NEVER_OVERRIDABLE_DENY_IDS = [
   // The plugin's own source tree / a machine-config root. Same argument, plus:
   // an override that admits a write HERE can rewrite the override primitive.
   'authoring-guard',
+
+  // An agent minting its own override is a bypass, not a recovery. Lifting
+  // this would let a denied agent emit `doctor --unblock` (or a TTY wrapper
+  // around it) and proceed; the token lands in ~/.traffic-one/overrides and
+  // every later gate honours it.
+  'doctor-unblock-agent-mint',
 
   // The apply_patch envelope did not parse into per-file operations. Shared by
   // workspace-boundary-guard, authoring-guard and plan-write, so it is reached
@@ -1077,7 +1097,7 @@ void _codexChildFamilyIsNeverOverridable;
 // severe it is, and severity is what makes the escalation worth reading.
 //
 // An id NOT listed here escalates from the third byte-identical attempt. That
-// is the deliberate default: the remaining 182 ids are refusals with an
+// is the deliberate default: the remaining 185 ids are refusals with an
 // in-session remedy the deny text already names, which is the whole 17cl
 // failure (seven identical refusals, 25 minutes, the fix in the text).
 export const NEVER_ESCALATED_DENY_IDS = [

@@ -13,8 +13,9 @@ import { windsurfSetupReason } from '../shared/onboarding-server/windsurf-setup'
 import { resolveProjectRoot } from '../shared/hook/paths';
 import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
-import { devinPreToolDeny, hasValidPreToolPayload, isFailClosedRecoveryExemption, isGatePreToolSubcommand } from './fail-closed';
-import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
+import { devinPreToolDeny, hasValidPreToolPayload, isGatePreToolSubcommand, safeFailClosedRecoveryExemption } from './fail-closed';
+import { authFallbackMessage, safeHookFallbackStandsDown } from './auth-fallback';
+import { guardedMain } from './entry-guard';
 import { localFallbackSection } from '../shared/onboarding-server/wizard-links';
 import { onboardingSetTechCommandTemplate, onboardingSyncSessionId } from '../shared/onboarding-server/wait-command';
 import { techClassifyHints, techClassifyRequiredReason } from '../shared/onboarding-server/tech-classify-setup';
@@ -72,7 +73,7 @@ export async function runDevinHook(
   if (!subcommand) return { stdout: '', exitCode: 0 };
   if (isGatePreToolSubcommand(subcommand)
     && !hasValidPreToolPayload(stdin, subcommand, 'nested')
-    && !isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) {
+    && !safeFailClosedRecoveryExemption(stdin, subcommand, 'nested')) {
     return { stdout: devinPreToolDeny(), exitCode: 0 };
   }
   try {
@@ -87,7 +88,7 @@ export async function runDevinHook(
     const stdout = await dispatchSubcommand(makeDevinAdapter(), handlers, subcommand, { stdin, argv: [subcommand, '--host=windsurf'] });
     return { stdout, exitCode: 0 };
   } catch {
-    if (hookFallbackStandsDown(stdin, env)) return { stdout: '', exitCode: 0 };
+    if (safeHookFallbackStandsDown(stdin, env)) return { stdout: '', exitCode: 0 };
     if (subcommand === 'session-start' || subcommand === 'user-prompt-submit') {
       const message = authFallbackMessage(stdin, env);
       if (!message) return { stdout: '', exitCode: 0 };
@@ -102,7 +103,7 @@ export async function runDevinHook(
       };
     }
     if (isGatePreToolSubcommand(subcommand)) {
-      if (isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) return { stdout: '', exitCode: 0 };
+      if (safeFailClosedRecoveryExemption(stdin, subcommand, 'nested')) return { stdout: '', exitCode: 0 };
       return { stdout: devinPreToolDeny(), exitCode: 0 };
     }
     return { stdout: '', exitCode: 0 };
@@ -121,10 +122,35 @@ function readStdin(): Promise<string> {
 }
 
 export async function main(): Promise<number> {
-  const stdin = await readStdin();
-  const result = await runDevinHook(process.argv[2], stdin);
-  if (result.stdout) process.stdout.write(result.stdout);
-  return result.exitCode;
+  const subcommand = process.argv[2];
+  try {
+    const stdin = await readStdin();
+    const out = await guardedMain({
+      subcommand,
+      stdin,
+      isPreTool: isGatePreToolSubcommand(subcommand),
+      surface: 'nested',
+      deny: { stdout: devinPreToolDeny(), exitCode: 0 },
+      noop: { stdout: '', exitCode: 0 },
+      run: () => runDevinHook(subcommand, stdin),
+    });
+    if (out.stdout) process.stdout.write(out.stdout);
+    return out.exitCode;
+  } catch {
+    try {
+      if (isGatePreToolSubcommand(subcommand)) process.stdout.write(devinPreToolDeny());
+    } catch { /* last-ditch write must not reject */ }
+    return 0;
+  }
 }
 
-if (require.main === module) void main().then((code) => { process.exitCode = code; });
+if (require.main === module) {
+  void main()
+    .then((code) => { process.exitCode = code; })
+    .catch(() => {
+      try {
+        if (isGatePreToolSubcommand(process.argv[2])) process.stdout.write(devinPreToolDeny());
+      } catch { /* */ }
+      process.exitCode = 0;
+    });
+}

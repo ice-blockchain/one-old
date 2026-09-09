@@ -803,6 +803,8 @@ const CONSTANT_LITERALS: Readonly<Record<string, string>> = {
   'tester-qa-v2-gate': '~/.traffic-one/bin/qa-evidence-runner.cjs',
   'tester-qa-build-identity-missing': '~/.traffic-one/bin/qa-evidence-runner.cjs',
   'tester-qa-build-identity-mismatch': '~/.traffic-one/bin/qa-evidence-runner.cjs',
+  'doctor-unblock-agent-mint': '~/.traffic-one/overrides',
+  'state-file-shell-write': '~/.traffic-one/bin/security-check-runner.cjs',
   // The tilde here is an ILLUSTRATION rather than the setting: the sentence
   // shows that an unreadable literal which does NOT spell the runs tree stays
   // permitted, and a tilde is the shortest unreadable head there is. A home
@@ -975,6 +977,7 @@ const VOLATILE_PRODUCER_SITES: Readonly<Record<string, string>> = {
   'shared/onboarding-server/windsurf-setup.ts': 'same carriers, currently non-escalatable ids; link folded',
   // Builds the install-rooted wait command the onboarding denies quote.
   'shared/onboarding-server/bootstrap.ts': 'the wait command, folded as the install location',
+  'shared/doctor-unblock-deny.ts': 'tilde-spelled ~/.traffic-one/overrides; constant prose, folded as CONSTANT_LITERALS',
 };
 
 // Anything that can put THIS MACHINE's install location, or a LIVE LOCAL

@@ -116,7 +116,7 @@ import {
   oneSettingsSchemaError,
   updateOneSettings,
 } from '../one-settings';
-import { projectRootHash } from '../state/local-prefs/prefs-store';
+import { projectRootHash, projectRootHashAliases } from '../state/local-prefs/prefs-store';
 import { OVERRIDE_MINT_COUNTER_MAC_DOMAIN, overrideMac, overrideMacMatches, readOverrideKey } from './keys';
 
 export const OVERRIDE_MINT_COUNTER_VERSION = 1 as const;
@@ -215,15 +215,33 @@ export function readOverrideMintCounter(
   if (section === 'unreadable') return { state: 'unreadable', count: null, writable };
   if (section === null) return { state: 'absent', count: null, writable };
   const projectKey = projectRootHash(projectRoot);
-  const raw = section[projectKey];
+  const aliases = projectRootHashAliases(projectRoot);
+  let raw: unknown;
+  let matchedKey = projectKey;
+  if (section[projectKey] !== undefined && section[projectKey] !== null) {
+    raw = section[projectKey];
+  } else {
+    raw = undefined;
+    for (const alias of aliases) {
+      if (section[alias] !== undefined && section[alias] !== null) {
+        raw = section[alias];
+        matchedKey = alias;
+        break;
+      }
+    }
+  }
   if (raw === undefined || raw === null) return { state: 'absent', count: null, writable };
   const entry = asRecord(raw);
   if (!entry) return { state: 'unverifiable', count: null, writable };
   const count = countOf(entry);
   const key = readOverrideKey(env);
+  const accepted = new Set(aliases);
+  accepted.add(projectKey);
+  accepted.add(matchedKey);
   if (!key
     || entry.v !== OVERRIDE_MINT_COUNTER_VERSION
-    || entry.projectKey !== projectKey
+    || typeof entry.projectKey !== 'string'
+    || !accepted.has(entry.projectKey)
     || count === null
     || !overrideMacMatches(entry, key, entry.mac, OVERRIDE_MINT_COUNTER_MAC_DOMAIN)) {
     return { state: 'unverifiable', count, writable };

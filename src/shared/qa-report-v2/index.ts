@@ -28,7 +28,7 @@ import {
   type QaV2ValidationRejected,
   type QaV2ValidationResult,
 } from './schema';
-import { stackCommandUndeclared } from './stack-resolution';
+import { stackCheckRuntimePassed, stackCommandUndeclared } from './stack-resolution';
 import { qaDimensions } from './dimensions';
 import {
   PERFORMANCE_GATE_ID,
@@ -299,6 +299,11 @@ function evaluateQaReportV2(
     );
   }
   const checks = new Map(report.checks.map((check) => [check.id, check]));
+  // Stack-only contracts (none/nonvisual): every required id is a stack check
+  // and `runStackChecks` records its executed outcome. Browser/native answer
+  // `stack-build` from served-build / adapter evidence and do not record every
+  // stack id, so a matching runtime `passed` is required only here.
+  const stackProducer = !contract.browserRequired && contract.uiImpact !== 'native-ui';
   // Which required checks settled on the exemption rather than on evidence. The
   // product decision this carries is DISCLOSE, NOT REFUSE: a project with a
   // build script and no test script may still settle, and the absence must be
@@ -392,7 +397,14 @@ function evaluateQaReportV2(
       && notApplicableDisposition(check.notApplicable) === 'excusable'
       && stackCommandUndeclared(projectRoot, runId, required)
       && !inconclusiveCheckSummary(check.summary);
-    if (check?.status !== 'passed' && !justifiedNoStackCommand) {
+    // A `passed` claim on a stack-producer contract is only accepted when the
+    // runtime sidecar records `executed: passed`. The report is author-writable;
+    // the sidecar is not. Legacy records that carry only `declared` /
+    // `no-command-declared` parse, and then fail closed here.
+    const claimedPassedUnwitnessed = check?.status === 'passed'
+      && stackProducer
+      && !stackCheckRuntimePassed(projectRoot, runId, required);
+    if (claimedPassedUnwitnessed || (check?.status !== 'passed' && !justifiedNoStackCommand)) {
       const claimedButUnwitnessed = check?.status === 'not-applicable'
         && notApplicableDisposition(check.notApplicable) === 'excusable'
         && !stackCommandUndeclared(projectRoot, runId, required);
@@ -400,7 +412,13 @@ function evaluateQaReportV2(
         projectRoot,
         runId,
         'required-check-failed',
-        claimedButUnwitnessed
+        claimedPassedUnwitnessed
+          ? `Required check ${required} claims passed, but this run's runtime record does not `
+            + 'say the runner executed it as passed. That record is written by the QA evidence '
+            + `runner at the moment it resolves each command (.traffic-one/runs/${runId}/`
+            + 'qa-stack-resolution-v1.json) and cannot be produced by editing the report. Re-run '
+            + 'the canonical runner for this run id.'
+          : claimedButUnwitnessed
           // The forgery's own deny, and it is separated from the ordinary one
           // because the two remedies are opposite: an ordinary red is fixed by
           // fixing the code, and this one is fixed by running the canonical
@@ -493,9 +511,18 @@ function evaluateQaReportV2(
     return reject(projectRoot, runId, 'functional-failure', 'QA report contains a failed check.', report, contract);
   }
 
-  const requiresBuildIdentity = contract.buildIdentityRequired
+  // Build identity is a served-listener fact. Visual/behavioral already set
+  // `browserRequired` (and `buildIdentityRequired`); OR-ing `performance.required`
+  // or a Lighthouse path in unconditionally made a web none/nonvisual contract
+  // with a page-speed budget demand a live build probe the `stack` producer
+  // never starts. Skip the probe when there is no browser. Performance
+  // measurement itself is unchanged: `performance.required` still requires
+  // Lighthouse evidence below.
+  const requiresBuildIdentity = contract.browserRequired && (
+    contract.buildIdentityRequired
     || contract.performance.required
-    || Boolean(report.lighthouse?.evidencePath);
+    || Boolean(report.lighthouse?.evidencePath)
+  );
   let machineEvidence: QaMachineEvidenceV1 | null = null;
   if (contract.browserRequired) {
     const machine = validateMachineEvidence(report, contract, source.hash, projectRoot);
@@ -777,7 +804,10 @@ export {
   qaStackResolutionPath,
   readStackResolution,
   recordStackResolution,
+  stackCheckRuntimePassed,
   stackCommandUndeclared,
+  type QaStackExecutedOutcome,
   type QaStackResolutionOutcome,
   type QaStackResolutionV1,
+  type QaStackResolvedCheckV1,
 } from './stack-resolution';

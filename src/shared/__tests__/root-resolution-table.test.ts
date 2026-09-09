@@ -113,7 +113,7 @@ interface Row {
 const ROWS: readonly Row[] = [
   {
     id: 'kilo-rootless-target',
-    incident: 'paths.ts:21-23 — Kilo\'s OpenCode bridge drops the leading slash from an absolute macOS path',
+    incident: 'paths.ts:32-48 — Kilo\'s OpenCode bridge drops the leading slash from an absolute macOS path',
     guard: 'normalizeHookTargetPath',
     build: (root) => {
       // The enclosing dir is deliberately NOT onboarded: if it were, dropping the
@@ -132,6 +132,38 @@ const ROWS: readonly Row[] = [
           ['the target path handed in is rootless', () => path.isAbsolute(target.slice(1)), false],
           ['the cwd is NOT onboarded', () => fs.existsSync(path.join(root, '.traffic-one')), false],
           ['only the nested project is', () => JSON.parse(fs.readFileSync(path.join(proj, '.traffic-one', '.one.json'), 'utf8')).mode, 'new-project'],
+        ],
+      };
+    },
+  },
+  {
+    id: 'cwd-segment-prefix-relative',
+    incident: 'paths.ts:35-48 — do not treat a relative path as rootless-absolute when cwd segments prefix it (/app + app/x) and the relative join exists',
+    guard: 'normalizeHookTargetPath existsSync relative',
+    build: (root) => {
+      // Same prefix collision as /app + app/x, using the temp root's own
+      // rootless spelling so path.resolve('/', rel) lands inside cwd.
+      const nested = path.join(root, 'nested');
+      writeState(root, { mode: 'new-project' });
+      writeState(nested, { mode: 'existing-codebase' });
+      const mistaken = path.join(nested, 'a.ts');
+      writeFile(mistaken);
+      const rel = path.relative(path.sep, mistaken).replace(/\\/g, '/');
+      const intended = path.join(root, rel);
+      writeFile(intended);
+      return {
+        cwd: root,
+        file: rel,
+        expected: root,
+        readback: [
+          ['the relative join exists', () => fs.existsSync(intended), true],
+          ['the rootless-absolute also exists (the file the old repair would pick)', () => fs.existsSync(mistaken), true],
+          ['the target path handed in is rootless-shaped', () => path.isAbsolute(rel), false],
+          ['rootless-absolute is within cwd', () => {
+            const d = path.resolve(path.sep, rel);
+            const r = path.resolve(root);
+            return d === r || d.startsWith(r + path.sep);
+          }, true],
         ],
       };
     },

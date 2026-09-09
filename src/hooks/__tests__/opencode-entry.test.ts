@@ -64,3 +64,26 @@ test('before-tool-use authed fresh project denies in OpenCode wrapper protocol',
     assert.match(out.reason || '', /setup wizard|Traffic One/i);
   });
 });
+
+test('runOpenCodeHook still denies when hookFallbackStandsDown would throw', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-opencode-stand-down-'));
+  try {
+    const stdin = JSON.stringify({
+      event: 'tool.execute.before',
+      cwd: dir,
+      workspaceRoot: dir,
+      tool_name: 'bash',
+      tool_input: { command: 'echo hi' },
+    });
+    const hostile = new Proxy({} as NodeJS.ProcessEnv, {
+      get() { throw new Error('hostile env'); },
+      set() { throw new Error('hostile env'); },
+    });
+    const result = await runOpenCodeHook('before-tool-use', stdin, hostile);
+    assert.equal(result.exitCode, 0);
+    const out = JSON.parse(result.stdout) as { kind?: string };
+    assert.equal(out.kind, 'deny');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -24,11 +24,13 @@ import {
   describePluginInstall,
   discoverInstallResidue,
   discoverPluginInstalls,
+  hostStep,
   isRemovableResidueDir,
   isRemovableStateDir,
   run,
   runUninstall,
 } from '../index';
+import { codexMcpServerBlock } from '../../../shared/codex-mcp';
 
 // Every path this runner touches is user-level, so each case gets its own fake
 // HOME. CODEX_HOME is pinned too: the Codex MCP removal resolves its config from
@@ -123,12 +125,33 @@ test('the plan reports what is actually installed, not the install recipe', () =
     assert.match(line('OpenCode wrapper'), /would remove it/);
     assert.match(line('Windsurf integration (stable)'), /not present/);
     assert.match(line('Codex MCP block'), /not present/);
+    assert.match(line('Codex opencode-worker MCP block'), /not present/);
 
     writeFile(path.join(home, '.codeium', 'windsurf', 'hooks.json'), '{}');
     writeFile(path.join(home, '.codex', 'config.toml'), '# config\n');
     const after = run(['--dry-run'], env).stdout.split('\n');
     assert.match(after.find((l) => l.includes('Windsurf integration (stable)')) || '', /would remove/);
     assert.match(after.find((l) => l.includes('Codex MCP block')) || '', /byte-exact/);
+    assert.match(after.find((l) => l.includes('Codex opencode-worker MCP block')) || '', /BEGIN\.\.END/);
+  });
+});
+
+test('--yes removes a marked Codex opencode-worker block and leaves an unmarked same-name table', () => {
+  withHome((home, env) => {
+    const cfgPath = path.join(home, '.codex', 'config.toml');
+    const prefix = '# user config\nmodel = "gpt-5"\n';
+    writeFile(cfgPath, prefix + codexMcpServerBlock('/opt/traffic-one/scripts/opencode-mcp.cjs', '/usr/bin/node'));
+    const result = run(['--yes', '--keep-plugin'], env);
+    assert.equal(result.code, 0, result.stdout + (result.stderr || ''));
+    assert.match(result.stdout, /Codex opencode-worker MCP block/);
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), prefix);
+    assert.doesNotMatch(fs.readFileSync(cfgPath, 'utf8'), /opencode-worker/);
+
+    const userOwned = '[mcp_servers.opencode-worker]\ncommand = "custom"\n';
+    writeFile(cfgPath, userOwned);
+    const second = run(['--yes', '--keep-plugin'], env);
+    assert.equal(second.code, 0, second.stdout + (second.stderr || ''));
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
   });
 });
 
@@ -417,6 +440,33 @@ test('removeResidue still checks containment before it deletes anything', () => 
   assert.deepEqual(discarded, [],
     'the containment answer must be consumed, not called for its own sake — a bare call statement leaves the '
     + `delete below it ungoverned (line${discarded.length === 1 ? '' : 's'} ${discarded.join(', ')})`);
+});
+
+test('hostStep records a throw as FAILED so later steps can still run', () => {
+  const failed = hostStep('Windsurf integration (stable)', () => {
+    throw new Error('hooks.json must contain a JSON object');
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.detail, /must contain a JSON object/);
+  const later = hostStep('plugin bundle', () => ({ code: 0, stdout: 'kept (--keep-plugin)\n' }));
+  assert.equal(later.ok, true);
+  assert.match(later.detail, /kept/);
+});
+
+test('a malformed Windsurf config is left untouched and does not abort later uninstall steps', () => {
+  withHome((home, env) => {
+    seedMachine(home);
+    const hooks = path.join(home, '.codeium', 'windsurf', 'hooks.json');
+    writeFile(hooks, '{not json');
+
+    const result = run(['--yes', '--keep-plugin'], env);
+    assert.match(result.stdout, /left untouched/);
+    assert.equal(fs.readFileSync(hooks, 'utf8'), '{not json', 'malformed Windsurf hooks stay byte-identical');
+    assert.equal(fs.existsSync(path.join(home, '.config', 'kilo', 'plugin', 'traffic-one.js')), false,
+      'Kilo still uninstalls after a Windsurf failure');
+    assert.equal(fs.existsSync(path.join(home, '.traffic-one')), false,
+      'the state dir still goes last after a Windsurf failure');
+  });
 });
 
 test('a machine with nothing installed reports cleanly', () => {

@@ -3,6 +3,7 @@
 // 1:1 from scripts/doctor/buildFindings.cjs. Pure: derives messages from probe
 // data; never reads the filesystem itself except via the toolchain spec.
 
+import { splitHybridOfferText } from '../../shared/capabilities/hybrid-target';
 import { registryEnclosureOf, workspaceMemberRegistryOf } from '../../shared/hook/workspace-members';
 import { isNewProjectMode } from '../../shared/state/lifecycle';
 import { toolStatus } from '../toolchain';
@@ -272,13 +273,11 @@ function runDiagnosticFindings(runDiagnostic: RunDiagnosticProbe): Finding[] {
  * the finding is derived from, so trusting it is no weaker than trusting the
  * `mode` that decided this is a workspace at all.
  *
- * IT CANNOT SEE A NESTED WORKSPACE, and that limit is structural rather than an
- * oversight. The registry read is `project.state` — the state of the directory
- * the doctor was run in — so a Traffic One workspace sitting INSIDE an ordinary
- * project has every one of its members reported as a stray, with the cleanup
- * advice attached. Closing it needs a state read per nested root, which this
- * module has no business doing; the probe is where it belongs. Recorded in
- * KNOWN-ISSUES.md with the measurement rather than half-fixed here.
+ * A NESTED WORKSPACE is classified by the probe (a state read per nested
+ * root). A dir whose `.one.json` is a workspace container, or which is a
+ * member of one, is dropped from the stray list here. An unreadable nested
+ * registry names its descendants under MEMBERSHIP_UNKNOWN and offers no
+ * cleanup advice — the same withhold the sweep uses.
  */
 interface NestedRootVerdict {
   /** Directories no entry reaches: reported, with the deletion advice. */
@@ -290,17 +289,31 @@ interface NestedRootVerdict {
 
 function strayNestedTrafficOneRoots(project: ProjectProbe): NestedRootVerdict {
   const nested = Array.isArray(project.nestedTrafficOneRoots) ? project.nestedTrafficOneRoots : [];
+  const relations = Array.isArray(project.nestedRootRelations) ? project.nestedRootRelations : [];
+  const exempt = new Set(relations.map((row) => row.dir));
+  const nestedUnknown = relations.filter((row) => row.role === 'membership-unknown');
   const registry = workspaceMemberRegistryOf(project.state);
   if (registry.kind === 'opaque' || registry.kind === 'illegible') {
     return { strays: [], unknown: nested.length > 0 ? { why: registry.why, roots: nested } : null };
   }
-  // `members` is the only arm that can EXEMPT anything; `none` is the positive
-  // finding that this is not a workspace, so everything nested is a leak.
-  if (registry.kind !== 'members') return { strays: nested, unknown: null };
-  return {
-    strays: nested.filter((dir) => registryEnclosureOf(project.cwd, registry, dir).kind === 'none'),
-    unknown: null,
-  };
+  // `members` is the only cwd-registry arm that can EXEMPT anything; `none` is
+  // the positive finding that THIS directory is not a workspace. Nested
+  // containers and their members are still exempted via the probe's per-root
+  // state read.
+  const fromCwd = registry.kind === 'members'
+    ? nested.filter((dir) => registryEnclosureOf(project.cwd, registry, dir).kind === 'none')
+    : nested;
+  const strays = fromCwd.filter((dir) => !exempt.has(dir));
+  if (nestedUnknown.length > 0) {
+    return {
+      strays,
+      unknown: {
+        why: nestedUnknown[0]?.why || 'a nested workspace registry could not be read',
+        roots: nestedUnknown.map((row) => row.dir),
+      },
+    };
+  }
+  return { strays, unknown: null };
 }
 
 /**
@@ -363,7 +376,7 @@ function describeIllegibleLedger(kind: OverrideProbe['ledger']): string {
 }
 
 export function buildFindings({
-  node, nvm, gitnexus, project, codexHooks = null, oneMcp = null, openCodeMcp = null, sessionDiagnostics = null, pluginRoot = null,
+  node, nvm, gitnexus, project, codexHooks = null, auth = null, oneMcp = null, openCodeMcp = null, sessionDiagnostics = null, pluginRoot = null,
   runDiagnostic = null, overrides = null, cursorEdges = null,
 }: BuildFindingsInput): Finding[] {
   const findings: Finding[] = [];
@@ -477,6 +490,33 @@ export function buildFindings({
       });
     }
   }
+
+  if (auth?.unknown401Code) {
+    findings.push({
+      severity: 'info',
+      code: 'AUTH_GATE_401_CODE_UNKNOWN',
+      message: `The auth endpoint answered 401 with error.code ${JSON.stringify(auth.unknown401Code)}`
+        + `${auth.unknown401At ? ` at ${auth.unknown401At}` : ''}, which is not one of the four codes `
+        + 'this client understands (`invalid_token` rejects the key; the other three say nothing about it). '
+        + 'The key was granted the offline grace window — deliberate, because an unparseable revocation '
+        + 'must not lock you out. If this persists, the server renamed a code and revocation may be silent.',
+    });
+  }
+
+  if (project.hybridUiTarget) {
+    const hybrid = project.hybridUiTarget;
+    const split = hybrid.split ? splitHybridOfferText(hybrid.split) : '';
+    findings.push({
+      severity: 'fix-needed',
+      code: 'HYBRID_UI_TARGET_REQUIRED',
+      message: `Both a web UI (${hybrid.webFramework}) and a native UI (${hybrid.nativeFramework}) were detected, `
+        + 'so Traffic One will not compile an architecture until you pick one surface. '
+        + 'Set architectureTarget to web-ui or native-ui — Traffic One still drives one surface per project. '
+        + 'Re-open the setup wizard to answer.'
+        + split,
+    });
+  }
+
   const rawState = project.state && typeof project.state === 'object' ? project.state : null;
   const state = normalizedProjectState(project as unknown as Rec);
   const provider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
@@ -749,7 +789,7 @@ export function buildFindings({
     findings.push({
       severity: 'info',
       code: 'NESTED_TRAFFIC_ONE_ROOTS_MEMBERSHIP_UNKNOWN',
-      message: `This directory declares a workspace, but its member registry cannot be read (${nestedRoots.unknown.why}), so whether these nested Traffic One state roots belong to registered members is unknown: ${nestedRoots.unknown.roots.join(', ')}. No cleanup advice is offered for them, deliberately — the automatic sweep also withholds deletion under a registry it cannot enumerate, and a report that told you to delete by hand what the sweep spares would be the trap. Repair \`.one.json\` here (or restore it) and re-run doctor; the question is answerable once the registry parses.`,
+      message: `A Traffic One workspace member registry cannot be read (${nestedRoots.unknown.why}), so whether these nested Traffic One state roots belong to registered members is unknown: ${nestedRoots.unknown.roots.join(', ')}. No cleanup advice is offered for them, deliberately — the automatic sweep also withholds deletion under a registry it cannot enumerate, and a report that told you to delete by hand what the sweep spares would be the trap. Repair the workspace \`.one.json\` (here or in the nested container) and re-run doctor; the question is answerable once the registry parses.`,
     });
   }
 

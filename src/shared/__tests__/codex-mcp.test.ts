@@ -12,6 +12,7 @@ import {
   codexStablePluginRoot,
   ensureCodexMcpServerRegistered,
   ensureCodexOneMcpServerRegistered,
+  removeCodexMcpServerRegistration,
   removeCodexOneMcpServerRegistration,
 } from '../codex-mcp';
 
@@ -454,5 +455,64 @@ test('Codex One MCP removal leaves edited and user-owned blocks byte-identical',
     fs.writeFileSync(cfgPath, userOwned, 'utf8');
     assert.equal(removeCodexOneMcpServerRegistration(env), 'absent');
     assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
+  });
+});
+
+test('Codex opencode-worker MCP removal slices the unique BEGIN..END span', () => {
+  withCodexHome((home, env) => {
+    const cfgPath = codexConfigPath(env);
+    const prefix = '# before\nmodel = "gpt-5"\n';
+    const suffix = '# after\n';
+    const foreignNode = path.join(home, 'other-runtime', 'node');
+    const serverPath = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one', 'scripts', 'opencode-mcp.cjs');
+    // Inner bytes need not match this process's execPath — the unique markers
+    // are the ownership proof (SessionStart refreshes the Node path in place).
+    fs.writeFileSync(cfgPath, prefix + codexMcpServerBlock(serverPath, foreignNode) + suffix, 'utf8');
+    assert.equal(removeCodexMcpServerRegistration(env), 'removed');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), prefix + suffix);
+    assert.equal(removeCodexMcpServerRegistration(env), 'absent');
+  });
+});
+
+test('Codex opencode-worker MCP removal leaves unmarked and non-unique marked tables', () => {
+  withCodexHome((_home, env) => {
+    const cfgPath = codexConfigPath(env);
+    const userOwned = '[mcp_servers.opencode-worker]\ncommand = "custom"\n';
+    fs.writeFileSync(cfgPath, userOwned, 'utf8');
+    assert.equal(removeCodexMcpServerRegistration(env), 'absent');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), userOwned);
+
+    const unmatched = '# >>> traffic-one managed opencode-worker MCP\n[mcp_servers.opencode-worker]\ncommand = "x"\n';
+    fs.writeFileSync(cfgPath, unmatched, 'utf8');
+    assert.equal(removeCodexMcpServerRegistration(env), 'modified');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), unmatched);
+
+    const serverPath = '/opt/traffic-one/scripts/opencode-mcp.cjs';
+    const once = codexMcpServerBlock(serverPath);
+    const duplicated = `${once}${once}`;
+    fs.writeFileSync(cfgPath, duplicated, 'utf8');
+    assert.equal(removeCodexMcpServerRegistration(env), 'modified');
+    assert.equal(fs.readFileSync(cfgPath, 'utf8'), duplicated);
+  });
+});
+
+test('Codex public and opencode-worker removers each leave the other block', () => {
+  withCodexHome((_home, env) => {
+    const cfgPath = codexConfigPath(env);
+    assert.equal(ensureCodexMcpServerRegistered(env), 'registered');
+    assert.equal(ensureCodexOneMcpServerRegistered(env), 'registered');
+    const both = fs.readFileSync(cfgPath, 'utf8');
+    assert.match(both, /# >>> traffic-one managed opencode-worker MCP/);
+    assert.match(both, /# >>> traffic-one managed public MCP \(disabled\)/);
+
+    assert.equal(removeCodexOneMcpServerRegistration(env), 'removed');
+    const afterPublic = fs.readFileSync(cfgPath, 'utf8');
+    assert.match(afterPublic, /# >>> traffic-one managed opencode-worker MCP/);
+    assert.doesNotMatch(afterPublic, /# >>> traffic-one managed public MCP \(disabled\)/);
+
+    assert.equal(removeCodexMcpServerRegistration(env), 'removed');
+    const afterWorker = fs.readFileSync(cfgPath, 'utf8');
+    assert.doesNotMatch(afterWorker, /# >>> traffic-one managed opencode-worker MCP/);
+    assert.doesNotMatch(afterWorker, /# >>> traffic-one managed public MCP \(disabled\)/);
   });
 });

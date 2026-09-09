@@ -35,7 +35,7 @@
 // through real product writers (`writeState`, `ensureRunLedger`,
 // `recordScanBoundHit`), each of which refuses outright on a non-project root,
 // so `writersHonoured` is a third, independent stand-down control.
-import * as assert from 'assert';
+import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

@@ -273,9 +273,10 @@ const MACHINE_OWNED_ENTRIES = {
   // for a session rooted at $HOME, which is the deadlock this carve-out exists
   // to prevent in the first place.
   //
-  // `auth-revalidation.json` and `auth-updates.json` are one.json's own
-  // sidecars (shared/auth/machine-sidecar.ts): the revalidation cadence and the
-  // update-feed cursor for the credential stored INSIDE the exempt one.json.
+  // `auth-revalidation.json`, `auth-updates.json` and `auth-gate-401-drift.json`
+  // are one.json's own sidecars (shared/auth/machine-sidecar.ts): the
+  // revalidation cadence, the update-feed cursor, and the last unknown auth-gate
+  // 401 code for the credential stored INSIDE the exempt one.json.
   // They are split out of the envelope only because its `auth` record is
   // validated by an exact key set and because a cadence stamp does not belong
   // in the 0600 secret file — not because they belong to any project. Listed
@@ -290,6 +291,7 @@ const MACHINE_OWNED_ENTRIES = {
     'windsurf-plugin-root',
     'auth-revalidation.json',
     'auth-updates.json',
+    'auth-gate-401-drift.json',
   ],
   // Directories: exact match only.
   //

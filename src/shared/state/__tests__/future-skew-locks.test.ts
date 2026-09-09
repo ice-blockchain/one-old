@@ -8,7 +8,7 @@
 // as long as the sentinel sits on disk. The holder is provably dead; the lock
 // outlives it anyway.
 
-import * as assert from 'assert';
+import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -60,6 +60,13 @@ test('a dead owner stamped in the PAST is reclaimed (the control)', () => {
   const lockDir = plantDeadOwner(-60_000);
   const { held, ran } = tryAcquire(lockDir);
   assert.equal(held, true, 'a lock 60s stale with a dead owner must be reclaimable');
+  assert.equal(ran, true, 'the mutation must actually run under the reclaimed lock');
+});
+
+test('a dead owner stamped FRESH is reclaimed at once', () => {
+  const lockDir = plantDeadOwner(-100);
+  const { held, ran } = tryAcquire(lockDir);
+  assert.equal(held, true, 'a SIGKILLed holder must not deny the next acquirer for staleMs');
   assert.equal(ran, true, 'the mutation must actually run under the reclaimed lock');
 });
 

@@ -204,8 +204,9 @@ test('one-mcp cache lock: a future-stamped dead owner is reclaimed instead of bu
     const filePath = path.join(dir, 'cache.json');
     seedOwnerDirLock(`${filePath}.lock`, deadPid(), FUTURE());
     const lock = acquireCacheLock(filePath);
+    assert.ok(lock, 'acquisition must succeed rather than refuse at the deadline');
     assert.equal(typeof lock.token, 'string');
-    assert.ok(lock.token.length > 0, 'acquisition must succeed rather than throw at the deadline');
+    assert.ok(lock.token.length > 0, 'acquisition must succeed rather than refuse at the deadline');
   } finally {
     cleanup(dir);
   }
@@ -441,7 +442,8 @@ test('an empty canonical lock is overwritten by the rename handshake, not conten
     const filePath = path.join(dir, 'cache.json');
     seedEmptyDirLock(`${filePath}.lock`, FUTURE());
     const started = Date.now();
-    assert.ok(acquireCacheLock(filePath).token.length > 0);
+    const lock = acquireCacheLock(filePath);
+    assert.ok(lock && lock.token.length > 0);
     assert.ok(
       Date.now() - started < 200,
       'an empty lock directory must not cost a single retry, let alone the reap',
@@ -461,9 +463,9 @@ test('a LIVE owner keeps its lock regardless of stamp direction (cache lock)', (
     for (const [label, createdAt] of [['future', FUTURE()], ['past', PAST()]] as const) {
       const filePath = path.join(dir, `${label}.json`);
       seedOwnerDirLock(`${filePath}.lock`, process.pid, createdAt);
-      assert.throws(
-        () => acquireCacheLock(filePath),
-        /timed out/,
+      assert.equal(
+        acquireCacheLock(filePath),
+        null,
         `a live owner's lock must not be stolen on a ${label} stamp`,
       );
     }
@@ -478,9 +480,9 @@ test('a LIVE owner keeps its lock regardless of stamp direction (prefs lock)', (
     for (const [label, createdAt] of [['future', FUTURE()], ['past', PAST()]] as const) {
       const filePath = path.join(dir, `${label}.json`);
       seedOwnerDirLock(`${filePath}.lock`, process.pid, createdAt);
-      assert.throws(
-        () => withProjectPrefsLock(filePath, () => 'ran'),
-        /timed out/,
+      assert.equal(
+        withProjectPrefsLock(filePath, () => 'ran'),
+        undefined,
         `a live owner's lock must not be stolen on a ${label} stamp`,
       );
     }

@@ -17,6 +17,13 @@ import {
   validateQaReportV2,
   type QaReportV2,
 } from '../../shared/qa-report-v2';
+import {
+  parentRunnerReportMismatch,
+  resolveLighthouseArtifact,
+  stackLighthouseBuildIdentity,
+  stackLighthouseReportUpdate,
+  writeConvertedLighthouseEvidence,
+} from './lighthouse-artifact';
 
 import {
   spawnPlan,
@@ -36,11 +43,9 @@ import {
 } from './types';
 import {
   type LoadedRun,
+  type LoadedStackRun,
   outputPath,
   publishQaReportV2,
-  qaDir,
-  safeProjectRelative,
-  strictRelative,
 } from './run-context';
 import { isConcreteRoutePath, loadScenario } from './scenario';
 
@@ -251,7 +256,10 @@ export function runBoundedCommand(
  * per route for exactly this reason, so prefer it; `/` wins when present because
  * it is the page a performance budget is actually about.
  */
-export function lighthouseProbePath(args: RunnerArgs, loaded: LoadedRun): string {
+export function lighthouseProbePath(
+  args: RunnerArgs,
+  loaded: { contract: LoadedRun['contract'] },
+): string {
   const candidates: string[] = [];
   const scenario = loadScenario(args, loaded.contract);
   for (const route of scenario?.routes || []) {
@@ -261,6 +269,32 @@ export function lighthouseProbePath(args: RunnerArgs, loaded: LoadedRun): string
     if (isConcreteRoutePath(route)) candidates.push(route);
   }
   return candidates.find((candidate) => candidate === '/') || candidates[0] || '/';
+}
+
+/**
+ * Origin / time-window / probe-path. The live audit and `--artifact`
+ * conversion share this so a swapped raw JSON cannot pass conversion after
+ * an honest browser run.
+ *
+ * `new URL` throws on an unparseable `finalUrl` or `owned.url` — the live
+ * path's outer catch already treats that as a failed audit.
+ */
+export function ownedListenerArtifactFailure(
+  summary: { finalUrl: string; generatedAt: string },
+  owned: Pick<OwnedServer, 'url' | 'startedAt'>,
+  probe: string,
+): string | null {
+  const finalUrl = new URL(summary.finalUrl);
+  if (finalUrl.origin !== new URL(owned.url).origin
+    || Date.parse(summary.generatedAt) < Date.parse(owned.startedAt)
+    || Date.parse(summary.generatedAt) > Date.now() + 1_000) {
+    return 'Lighthouse artifact does not belong to the runner-owned live build listener.';
+  }
+  if (finalUrl.pathname !== probe) {
+    return `Lighthouse measured ${finalUrl.pathname} instead of the intended ${probe}; `
+      + 'the target must be a concrete route, never a catch-all.';
+  }
+  return null;
 }
 
 export async function runLighthouseOnOwnedServer(
@@ -308,25 +342,13 @@ export async function runLighthouseOnOwnedServer(
         blockerSummary: 'Project-local Lighthouse did not write a complete four-category JSON artifact.',
       };
     }
-    const finalUrl = new URL(summary.finalUrl);
-    if (finalUrl.origin !== new URL(owned.url).origin
-      || Date.parse(summary.generatedAt) < Date.parse(owned.startedAt)
-      || Date.parse(summary.generatedAt) > Date.now() + 1_000) {
-      return {
-        status: 'failed',
-        blockerSummary: 'Lighthouse artifact does not belong to the runner-owned live build listener.',
-      };
-    }
     // Origin alone let a 404 pass. The catch-all route resolved to the literal
     // path `/*`, which every SPA serves as its not-found page, so the single
     // canonical performance and SEO measurement described a page no user visits
     // (observed 9co: perf 88 / SEO 66 on `/*` while the real home scored 98/100).
-    if (finalUrl.pathname !== probe) {
-      return {
-        status: 'failed',
-        blockerSummary: `Lighthouse measured ${finalUrl.pathname} instead of the intended ${probe}; `
-          + 'the target must be a concrete route, never a catch-all.',
-      };
+    const listenerFailure = ownedListenerArtifactFailure(summary, owned, probe);
+    if (listenerFailure) {
+      return { status: 'failed', blockerSummary: listenerFailure };
     }
     const evidence = createQaLighthouseEvidence({
       runId: args.runId,
@@ -373,88 +395,105 @@ export async function runLighthouseOnOwnedServer(
   }
 }
 
-export function lighthouseCommand(
-  args: RunnerArgs,
+function isLoadedRun(loaded: LoadedRun | LoadedStackRun): loaded is LoadedRun {
+  return 'manifest' in loaded && 'fingerprint' in loaded;
+}
+
+function browserConversionIdentityFailure(
+  report: QaReportV2,
   loaded: LoadedRun,
-): number {
-  if (!args.artifact) {
-    process.stderr.write('qa-evidence: --artifact is required for Lighthouse conversion.\n');
-    return 2;
-  }
-  const rel = safeProjectRelative(args.projectRoot, args.artifact);
-  const out = outputPath(args, 'lighthouse-evidence-v1.json');
-  if (!rel || !out) {
-    process.stderr.write('qa-evidence: Lighthouse artifact/output path is unsafe.\n');
-    return 2;
-  }
-  const artifactAbsolute = path.join(args.projectRoot, rel);
-  const qaRoot = qaDir(args.projectRoot, args.runId);
-  const artifactRel = path.relative(qaRoot, artifactAbsolute).replace(/\\/g, '/');
-  const safeArtifactRel = strictRelative(artifactRel);
-  let realArtifact = '';
-  try {
-    const realQa = fs.realpathSync(qaRoot);
-    realArtifact = fs.realpathSync(artifactAbsolute);
-    const boundary = path.relative(realQa, realArtifact);
-    if (boundary.startsWith('..') || path.isAbsolute(boundary)) throw new Error('outside QA root');
-  } catch {
-    // handled by the common unsafe-artifact response below
-  }
-  if (!safeArtifactRel || !realArtifact) {
-    process.stderr.write('qa-evidence: raw Lighthouse JSON must be inside this run QA directory.\n');
-    return 2;
-  }
-  const summary = readLighthouseArtifact(realArtifact);
-  if (!summary) {
-    process.stderr.write('qa-evidence: raw Lighthouse JSON is incomplete or lacks the four standard categories.\n');
-    return 1;
-  }
-  if (Date.parse(summary.generatedAt) > Date.now() + 1_000) {
-    process.stderr.write('qa-evidence: raw Lighthouse JSON has a future fetchTime.\n');
-    return 1;
-  }
-  const evidence = createQaLighthouseEvidence({
-    runId: args.runId,
-    verificationContractHash: loaded.contract.contractHash,
-    sourceHash: loaded.sourceHash,
-    buildHash: loaded.manifest.manifestHash,
-    buildFingerprint: loaded.fingerprint,
-    generatedAt: summary.generatedAt,
-    artifactPath: safeArtifactRel,
-    artifactHash: summary.artifactHash,
-    finalUrl: summary.finalUrl,
-    performance: summary.performance,
-    accessibility: summary.accessibility,
-    bestPractices: summary.bestPractices,
-    seo: summary.seo,
-    lcpMs: summary.lcpMs,
-    cls: summary.cls,
-    ...(summary.inpMs === undefined ? {} : { inpMs: summary.inpMs }),
-    ...(summary.fcpMs === undefined ? {} : { fcpMs: summary.fcpMs }),
-    ...(summary.tbtMs === undefined ? {} : { tbtMs: summary.tbtMs }),
-  });
-  writeJson(out.absolute, evidence);
-  const existing = readQaReportV2(args.projectRoot, args.runId);
-  const report = existing.report;
-  if (!report
-    || report.producer !== 'parent-runner'
-    || report.runId !== args.runId
-    || report.verificationContractHash !== loaded.contract.contractHash
-    || report.sourceHash !== loaded.sourceHash
-    || report.build?.outputRoot !== loaded.manifest.outputRoot
+): boolean {
+  return report.build?.outputRoot !== loaded.manifest.outputRoot
     || report.build.buildHash !== loaded.manifest.manifestHash
     || report.build.fingerprint !== loaded.fingerprint
-    || (loaded.contract.browserRequired && !report.machineEvidencePath)) {
+    || !report.build?.url
+    || !report.build?.startedAt
+    || (loaded.contract.browserRequired && !report.machineEvidencePath);
+}
+
+export function lighthouseCommand(
+  args: RunnerArgs,
+  loaded: LoadedRun | LoadedStackRun,
+): number {
+  const resolved = resolveLighthouseArtifact(args);
+  if (!resolved.ok) {
+    process.stderr.write(`qa-evidence: ${resolved.message}\n`);
+    return resolved.code;
+  }
+  const { summary } = resolved;
+  // Conversion has no live OwnedServer. A browser report already recorded the
+  // listener identity (`build.url`, `build.startedAt`); without that identity
+  // there is nothing to check against, so THAT path fails closed. A stack
+  // report never starts a listener — skip those checks only when there is no
+  // `build.url`. A report that HAS `build.url` always takes the L130 path.
+  const existing = readQaReportV2(args.projectRoot, args.runId);
+  const report = existing.report;
+  const ownedUrl = report?.build?.url;
+  const ownedStartedAt = report?.build?.startedAt;
+  const stackOnly = !loaded.contract.browserRequired
+    && loaded.contract.uiImpact !== 'native-ui'
+    && !ownedUrl;
+  if (parentRunnerReportMismatch(report, loaded, args.runId) || !report) {
+    process.stderr.write(
+      stackOnly
+        ? 'qa-evidence: Lighthouse conversion requires the matching report-v2 produced by the stack runner.\n'
+        : 'qa-evidence: Lighthouse conversion requires the matching report-v2 produced by the browser runner.\n',
+    );
+    return 1;
+  }
+  if (ownedUrl) {
+    if (isLoadedRun(loaded) && browserConversionIdentityFailure(report, loaded)) {
+      process.stderr.write(
+        'qa-evidence: Lighthouse conversion requires the matching report-v2 produced by the browser runner.\n',
+      );
+      return 1;
+    }
+    if (!ownedStartedAt) {
+      process.stderr.write(
+        'qa-evidence: Lighthouse conversion requires the matching report-v2 produced by the browser runner.\n',
+      );
+      return 1;
+    }
+    let listenerFailure: string | null;
+    try {
+      listenerFailure = ownedListenerArtifactFailure(
+        summary,
+        { url: ownedUrl, startedAt: ownedStartedAt },
+        lighthouseProbePath(args, loaded),
+      );
+    } catch {
+      listenerFailure = 'Lighthouse artifact does not belong to the runner-owned live build listener.';
+    }
+    if (listenerFailure) {
+      process.stderr.write(`qa-evidence: ${listenerFailure}\n`);
+      return 1;
+    }
+  } else if (!stackOnly) {
     process.stderr.write(
       'qa-evidence: Lighthouse conversion requires the matching report-v2 produced by the browser runner.\n',
     );
     return 1;
   }
-  const updated: QaReportV2 = {
-    ...report,
-    generatedAt: new Date(Math.max(Date.now(), Date.parse(summary.generatedAt))).toISOString(),
-    lighthouse: { evidencePath: out.relative },
-  };
+  const buildFields = isLoadedRun(loaded) && ownedUrl
+    ? { buildHash: loaded.manifest.manifestHash, buildFingerprint: loaded.fingerprint }
+    : stackLighthouseBuildIdentity(args.runId, loaded.sourceHash);
+  const evidencePath = writeConvertedLighthouseEvidence(resolved, {
+    runId: args.runId,
+    verificationContractHash: loaded.contract.contractHash,
+    sourceHash: loaded.sourceHash,
+    ...buildFields,
+  });
+  if (!evidencePath) {
+    process.stderr.write('qa-evidence: could not persist converted Lighthouse evidence — the write was refused.\n');
+    return 1;
+  }
+  const updated: QaReportV2 = stackOnly
+    ? stackLighthouseReportUpdate(report, evidencePath, summary.generatedAt)
+    : {
+      ...report,
+      generatedAt: new Date(Math.max(Date.now(), Date.parse(summary.generatedAt))).toISOString(),
+      lighthouse: { evidencePath },
+    };
   // A refused re-publish leaves the PREVIOUS report on disk, still without the
   // `lighthouse` section — so certifying `updated` here would report a performance
   // budget as measured against a sidecar that never records it.
@@ -462,7 +501,7 @@ export function lighthouseCommand(
     process.stderr.write(`qa-evidence: could not persist ${qaReportV2Path(args.projectRoot, args.runId)} — the write was refused.\n`);
     process.stdout.write(`${JSON.stringify({
       ok: false,
-      lighthouse: { evidencePath: out.relative },
+      lighthouse: { evidencePath },
       reportPath: qaReportV2Path(args.projectRoot, args.runId),
       validation: { ok: false, code: 'report-missing', message: 'the Lighthouse-updated QA report could not be written' },
     })}\n`);
@@ -476,7 +515,7 @@ export function lighthouseCommand(
   );
   process.stdout.write(`${JSON.stringify({
     ok: validation.ok,
-    lighthouse: { evidencePath: out.relative },
+    lighthouse: { evidencePath },
     reportPath: qaReportV2Path(args.projectRoot, args.runId),
     validation: validation.ok
       ? { ok: true, advisories: validation.advisories }

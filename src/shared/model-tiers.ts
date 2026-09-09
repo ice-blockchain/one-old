@@ -69,7 +69,7 @@ export function modelMatchesExpected(passed: unknown, expected: unknown): boolea
   const e = typeof expected === 'string' ? expected.trim() : '';
   const p = typeof passed === 'string' ? passed.trim() : '';
   if (!e || !p) return false;
-  return p === e || p.startsWith(`${e}-`);
+  return p === e || p.startsWith(`${e}-`) || p.startsWith(`${e} `);
 }
 
 // Build the bundled/runtime applied catalog. Every tier is ordered preferred-first.

@@ -18,6 +18,7 @@ import {
   uninstallWrapper,
   wrapperSource,
 } from '../index';
+import { PRE_TOOL_REMEDIATION, preToolFailureReason } from '../../../hooks/fail-closed';
 
 function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-opencode-host-'));
@@ -131,14 +132,21 @@ test('uninstall removes only Traffic One-owned wrappers unless forced', () => {
     const configFile = opencodeGlobalConfigPath(env);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'export default {};', 'utf8');
-    assert.equal(uninstallWrapper(env, ['uninstall']).code, 1);
+    const refused = uninstallWrapper(env, ['uninstall']);
+    assert.equal(refused.code, 2);
+    assert.match(refused.stderr || '', /uninstall --yes/);
     assert.equal(fs.existsSync(file), true);
-    assert.equal(uninstallWrapper(env, ['uninstall', '--force']).code, 0);
+    assert.equal(uninstallWrapper(env, ['uninstall', '--yes']).code, 1);
+    assert.equal(fs.existsSync(file), true);
+    assert.equal(uninstallWrapper(env, ['uninstall', '--force']).code, 2);
+    assert.equal(uninstallWrapper(env, ['uninstall', '--yes', '--force']).code, 0);
     assert.equal(fs.existsSync(file), false);
 
     assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
     assert.deepEqual((JSON.parse(fs.readFileSync(configFile, 'utf8')) as { plugin?: string[] }).plugin, [pathToFileURL(file).href]);
-    assert.equal(uninstallWrapper(env, ['uninstall']).code, 0);
+    assert.equal(uninstallWrapper(env, ['uninstall']).code, 2);
+    assert.equal(fs.existsSync(file), true);
+    assert.equal(uninstallWrapper(env, ['uninstall', '--yes']).code, 0);
     assert.equal(fs.existsSync(file), false);
     assert.deepEqual((JSON.parse(fs.readFileSync(configFile, 'utf8')) as { plugin?: string[] }).plugin, []);
   });
@@ -163,8 +171,10 @@ test('install preserves existing OpenCode config keys and avoids duplicate plugi
     const installed = installWrapper(env, ['install', '--yes']);
     assert.equal(installed.code, 0);
     const raw = fs.readFileSync(configFile, 'utf8');
+    assert.match(raw, /\/\/ user setting/);
     assert.match(raw, /"model": "opencode\/big-pickle"/);
     assert.equal(raw.split(pathToFileURL(file).href).length - 1, 1);
+    assert.equal(fs.existsSync(`${configFile}.traffic-one-bak`), false);
   });
 });
 
@@ -250,7 +260,7 @@ test('wrapper invokes runtime for a pristine OpenCode workspace without a projec
     assert.equal(activeOutput.parts[0]?.id, 'p1');
     assert.match(String(activeOutput.parts[0]?.text || ''), /build me an app/);
     assert.match(String(activeOutput.parts[0]?.text || ''), /user-prompt-submit --host=opencode/);
-    assert.match(String(activeOutput.parts[0]?.text || ''), new RegExp(JSON.stringify(project).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(String(activeOutput.parts[0]?.text || ''), new RegExp(JSON.stringify(fs.realpathSync(project)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }
@@ -293,9 +303,62 @@ test('wrapper noops for exact home sessions and explicit project opt-outs', asyn
   }
 });
 
+function nvmSortFromWrapper(source: string): (left: string, right: string) => number {
+  const match = source.match(/function nvmNodeCandidates\(\) \{[\s\S]*?\.sort\(\(left, right\) => \{([\s\S]*?)\n      \}\)/);
+  assert.ok(match?.[1], 'nvm sort comparator is present in the emitted wrapper');
+  return new Function('left', 'right', match[1]) as (left: string, right: string) => number;
+}
+
+test('wrapper nvm candidates sort by numeric version, not lexicographic', () => {
+  const source = wrapperSource('/plugin', '2026-01-01T00:00:00Z');
+  assert.match(source, /Number\(match\[1\]\)/);
+  assert.doesNotMatch(source, /\.sort\(\)\.reverse\(\)/);
+  const cmp = nvmSortFromWrapper(source);
+  assert.deepEqual(
+    ['v9.0.0', 'v22.9.0', 'v22.11.0', 'v20.0.0'].sort(cmp),
+    ['v22.11.0', 'v22.9.0', 'v20.0.0', 'v9.0.0'],
+  );
+});
+
+test('wrapper home-dir stop follows a symlinked HOME', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-opencode-home-link-'));
+  const previousHome = process.env.HOME;
+  const previousProfile = process.env.USERPROFILE;
+  try {
+    const pluginRoot = path.join(base, 'plugin');
+    const realHome = path.join(base, 'real-home');
+    const linkHome = path.join(base, 'link-home');
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(realHome, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(realHome, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+    fs.symlinkSync(realHome, linkHome);
+    fs.writeFileSync(path.join(base, 'package.json'), '{"type":"module"}\n', 'utf8');
+    fs.writeFileSync(path.join(pluginRoot, 'scripts', 'opencode-hook-runtime.cjs'), [
+      '#!/usr/bin/env node',
+      "process.stdout.write(JSON.stringify({ kind: 'context', context: 'ran-from-home' }));",
+      '',
+    ].join('\n'), 'utf8');
+    const wrapperFile = path.join(base, 'traffic-one.js');
+    fs.writeFileSync(wrapperFile, wrapperSource(pluginRoot, '2026-01-01T00:00:00Z'), 'utf8');
+    process.env.HOME = linkHome;
+    process.env.USERPROFILE = linkHome;
+    const mod = await import(pathToFileURL(wrapperFile).href);
+    const hooks = await mod.default.server({ directory: fs.realpathSync(realHome) });
+    const output = { parts: [{ type: 'text', text: 'hello' }] as Array<Record<string, unknown>> };
+    await hooks['chat.message']({}, output);
+    assert.equal(output.parts[0]?.text, 'hello', 'a session whose cwd is the realpath of HOME must not activate');
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('wrapper source uses host-stamped runtime hooks and throws only on before-tool deny', () => {
   const source = wrapperSource('/plugin', '2026-01-01T00:00:00Z');
   assert.match(source, /findTrafficOneRoot/);
+  assert.match(source, /resolveNodeExecutable/);
+  assert.doesNotMatch(source, /spawnSync\(process\.execPath, \[TRAFFIC_ONE_RUNTIME/);
   assert.match(source, /validTrafficOneActivationRoot/);
   assert.match(source, /trafficOneRootFor/);
   assert.match(source, /throw new Error/);
@@ -313,6 +376,76 @@ test('wrapper source uses host-stamped runtime hooks and throws only on before-t
   assert.match(source, /TRAFFIC_ONE_MANAGED_MCP_TOOLS/);
   assert.match(source, /function userDenyLine/);
   assert.match(source, /throw new Error\(userDenyLine\(result\)/);
+});
+
+test('generated wrapper carries the shared fail-closed prose and denies before-tool-use on spawn or parse failure', () => {
+  const source = wrapperSource('/plugin', '2026-01-01T00:00:00Z');
+  assert.ok(source.includes(JSON.stringify(preToolFailureReason('OpenCode'))));
+  assert.ok(source.includes(PRE_TOOL_REMEDIATION));
+  assert.match(source, /Traffic One OpenCode pre-tool gate could not find a Node\.js runtime/);
+  assert.match(source, /debugLog\('spawn-fail'[\s\S]*?if \(subcommand === 'before-tool-use'\) \{\s+return \{ kind: 'deny', reason:/);
+  assert.match(source, /debugLog\('parse-fail'[\s\S]*?if \(subcommand === 'before-tool-use'\) \{\s+return \{ kind: 'deny', reason:/);
+});
+
+test('wrapper throws on before-tool-use when the runtime spawn fails or stdout is not JSON', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-opencode-fail-closed-'));
+  const previousHome = process.env.HOME;
+  try {
+    const home = path.join(base, 'home');
+    const pluginRoot = path.join(base, 'plugin');
+    const project = path.join(base, 'project');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(base, 'package.json'), '{"type":"module"}\n', 'utf8');
+
+    const writeRuntime = (body: string) => {
+      fs.writeFileSync(path.join(pluginRoot, 'scripts', 'opencode-hook-runtime.cjs'), [
+        '#!/usr/bin/env node',
+        body,
+        '',
+      ].join('\n'), 'utf8');
+    };
+
+    writeRuntime('process.exit(1);');
+    const spawnFailWrapper = path.join(base, 'spawn-fail.js');
+    fs.writeFileSync(spawnFailWrapper, wrapperSource(pluginRoot, '2026-01-01T00:00:00Z'), 'utf8');
+    process.env.HOME = home;
+    const spawnMod = await import(pathToFileURL(spawnFailWrapper).href);
+    const spawnHooks = await spawnMod.default.server({ directory: project });
+    await assert.rejects(
+      () => spawnHooks['tool.execute.before']({ tool: 'bash', output: { args: { command: 'true' } } }, {}),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal(err.message, preToolFailureReason('OpenCode'));
+        return true;
+      },
+    );
+    await assert.doesNotReject(
+      () => spawnHooks['tool.execute.after']({ tool: 'bash', output: { args: { command: 'true' } } }, {}),
+    );
+
+    writeRuntime("process.stdout.write('not-json');");
+    const parseFailWrapper = path.join(base, 'parse-fail.js');
+    fs.writeFileSync(parseFailWrapper, wrapperSource(pluginRoot, '2026-01-01T00:00:00Z'), 'utf8');
+    const parseMod = await import(pathToFileURL(parseFailWrapper).href);
+    const parseHooks = await parseMod.default.server({ directory: project });
+    await assert.rejects(
+      () => parseHooks['tool.execute.before']({ tool: 'bash', output: { args: { command: 'true' } } }, {}),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal(err.message, preToolFailureReason('OpenCode'));
+        return true;
+      },
+    );
+    await assert.doesNotReject(
+      () => parseHooks['chat.message']({}, { parts: [{ type: 'text', text: 'hi' }] }),
+    );
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test('wrapper denies managed MCP tools before project lookup or runtime spawn', async () => {

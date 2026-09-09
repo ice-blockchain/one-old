@@ -82,6 +82,14 @@ function visibleLiteral(value: string): boolean {
   return /[\p{L}]/u.test(normalized) && normalized.length > 1;
 }
 
+function jsxChildLiteral(token: string): string | undefined {
+  const quoted = /^\{\s*(["'])([\s\S]*?)\1\s*\}$/.exec(token)?.[2];
+  if (quoted !== undefined) return quoted;
+  const template = /^\{\s*`([\s\S]*?)`\s*\}$/.exec(token)?.[1];
+  if (template === undefined) return undefined;
+  return template.replace(/\$\{[\s\S]*?\}/g, '');
+}
+
 function exactBrand(value: string, brands: readonly string[]): boolean {
   const normalized = normalizeDisplayText(value);
   return brands.some((brand) => normalized === normalizeDisplayText(brand));
@@ -348,7 +356,7 @@ function reactSourceAnalysis(
     const transEntry = [...stack].reverse().find((entry) => entry.trans);
     if (token.startsWith('{')) {
       if (transEntry) {
-        const literalFallback = /^\{\s*(["'])([\s\S]*?)\1\s*\}$/.exec(token)?.[2];
+        const literalFallback = jsxChildLiteral(token);
         if (literalFallback && visibleLiteral(literalFallback)) {
           transEntry.fallback = true;
           if (transEntry.reference && !transEntry.reference.fallback) {
@@ -366,7 +374,7 @@ function reactSourceAnalysis(
         });
         continue;
       }
-      const literal = /^\{\s*(["'])([\s\S]*?)\1\s*\}$/.exec(token)?.[2];
+      const literal = jsxChildLiteral(token);
       if (literal && visibleLiteral(literal) && !exactBrand(literal, brands)) {
         findings.push({
           id: 'STRUCT_HARDCODED_COPY',

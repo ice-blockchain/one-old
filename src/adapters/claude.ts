@@ -4,7 +4,7 @@
 // exec_command/apply_patch) into one set of tool classes — so one adapter serves
 // both nested hosts. Cursor (flat JSON) is the separate outlier.
 
-import { toolClassForRawName } from '../core/events';
+import { classifyTool } from '../core/events';
 import type { CanonicalEvent, HostId, ToolInput } from '../core/types';
 import { patchTextFromToolInput } from '../shared/apply-patch';
 import { codexHookEvidenceMarker, isCodexHookEvent, markCodexHookContext } from '../shared/codex-hook-evidence';
@@ -52,13 +52,19 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
         // command-text scanner treat patch content as shell (observed 3co).
         const command = isPatchTool ? '' : asString(toolInput.command ?? toolInput.cmd);
         const workdir = asString(toolInput.workdir ?? toolInput.cwd);
-        const filePath = asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
-        const content = asString(toolInput.content ?? toolInput.new_content ?? toolInput.newContent);
+        const filePath = asString(
+          toolInput.file_path ?? toolInput.filePath ?? toolInput.path
+          ?? toolInput.notebook_path ?? toolInput.notebookPath,
+        );
+        const content = asString(
+          toolInput.content ?? toolInput.new_content ?? toolInput.newContent
+          ?? toolInput.new_source ?? toolInput.newSource,
+        );
         const patchText = isPatchTool
           ? patchTextFromToolInput(rawToolInput, data)
           : '';
         tool = {
-          class: toolClassForRawName(rawName),
+          class: classifyTool(rawName, toolInput),
           rawName,
           ...(command ? { command } : {}),
           ...(workdir ? { workdir } : {}),

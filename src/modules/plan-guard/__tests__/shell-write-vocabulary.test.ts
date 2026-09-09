@@ -275,6 +275,48 @@ test('the same vocabulary answers in the sidecar detector', () => {
   }
 });
 
+test('sidecar heredoc strip is by span, and a hyphen delimiter still yields a body', () => {
+  const project = sidecarProject();
+  try {
+    const line = `rm -rf .traffic-one/runs`;
+    const collision = `${line}\ncat > .traffic-one/digests/R/reviewer.md <<'EOF'\n${line}\nEOF`;
+    const collided = shellRuntimeSidecarDestruction(
+      collision, project.dir, project.dir, heredocBodies(collision), 2, 'run-1',
+    );
+    assert.ok(
+      collided.includes(SIDECAR),
+      'a body line equal to a real command must not drop the command',
+    );
+    const hyphen = `python3 <<'PY-1'\nimport os\nos.unlink('${SIDECAR}')\nPY-1`;
+    assert.deepEqual(
+      shellRuntimeSidecarDestruction(hyphen, project.dir, project.dir, heredocBodies(hyphen), 2, 'run-1'),
+      [SIDECAR],
+    );
+    const quoted = "echo 'see <<EOF'";
+    assert.deepEqual(
+      shellRuntimeSidecarDestruction(quoted, project.dir, project.dir, heredocBodies(quoted), 2, 'run-1'),
+      [],
+    );
+    // Data `<<` must not swallow the next command as a heredoc body (fail-open).
+    const quotedThenRm = "echo 'see <<EOF'\nrm -rf .traffic-one/runs";
+    assert.ok(
+      shellRuntimeSidecarDestruction(
+        quotedThenRm, project.dir, project.dir, heredocBodies(quotedThenRm), 2, 'run-1',
+      ).includes(SIDECAR),
+      'quoted << must not drop the following rm',
+    );
+    const commentThenRm = '# <<EOF\nrm -rf .traffic-one/runs';
+    assert.ok(
+      shellRuntimeSidecarDestruction(
+        commentThenRm, project.dir, project.dir, heredocBodies(commentThenRm), 2, 'run-1',
+      ).includes(SIDECAR),
+      'comment << must not drop the following rm',
+    );
+  } finally {
+    project.cleanup();
+  }
+});
+
 // THE GENERATED DIFFERENTIAL. Not a list of rows somebody remembered: one row
 // per cell of the shared capability table, driven through both judgements. A
 // divergence injected into either private vocabulary now reddens this — which is

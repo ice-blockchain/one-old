@@ -3,19 +3,20 @@
 // runPipeline → adapter.serialize. The host entry scripts pick an adapter
 // (adapters/select) and a handler set (registry) and call this.
 
-import type { Handler } from './types';
+import type { Handler, HookResult } from './types';
 import type { HostAdapter, RawInvocation } from '../adapters/types';
+import { splitCopilotAdmittedInvocations } from '../adapters/copilot';
 import { buildContext } from './context';
 import { runPipeline } from './pipeline';
 import { maybeTraceHook } from '../shared/hook/trace';
 import { observeCurrentRunHostCapabilityFromHook } from '../shared/host/capabilities';
 import { resolveToolStateRoot } from '../shared/tool-scope';
 
-export async function dispatch(
+async function dispatchOne(
   adapter: HostAdapter,
   handlers: readonly Handler[],
   raw: RawInvocation,
-): Promise<string> {
+): Promise<{ stdout: string; result: HookResult }> {
   const input = adapter.parse(raw);
   // Off-by-default; armed by TRAFFIC_ONE_HOOK_TRACE or the per-user marker file.
   // Records the payload's key/type SHAPE, never its values — see shared/hook/trace.ts.
@@ -55,7 +56,33 @@ export async function dispatch(
       result.kind === 'deny' ? 'denied' : 'allowed',
     );
   }
-  return adapter.serialize(result, input);
+  return { stdout: adapter.serialize(result, input), result };
+}
+
+export async function dispatch(
+  adapter: HostAdapter,
+  handlers: readonly Handler[],
+  raw: RawInvocation,
+): Promise<string> {
+  // Copilot can batch several admitted tools in one payload. Gate each call
+  // (selectToolCall would keep only the first) and emit the first deny. A
+  // batch of N denies records N denyRepeat entries — do not drop records.
+  if (adapter.id === 'copilot') {
+    const parts = splitCopilotAdmittedInvocations(raw);
+    if (parts && parts.length > 1) {
+      let firstDeny: string | undefined;
+      let firstContext: string | undefined;
+      for (const part of parts) {
+        const { stdout, result } = await dispatchOne(adapter, handlers, part);
+        if (result.kind === 'deny' && firstDeny === undefined) firstDeny = stdout;
+        else if (result.kind === 'context' && firstContext === undefined) firstContext = stdout;
+      }
+      if (firstDeny !== undefined) return firstDeny;
+      if (firstContext !== undefined) return firstContext;
+      return adapter.serialize({ kind: 'noop' }, adapter.parse(raw));
+    }
+  }
+  return (await dispatchOne(adapter, handlers, raw)).stdout;
 }
 
 // The handlers a given hook subcommand invokes — those that declared the

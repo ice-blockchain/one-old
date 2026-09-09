@@ -12,9 +12,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { runPipeline } from '../../../core/pipeline';
+import { dispatch } from '../../../core/dispatch';
 import { buildContext } from '../../../core/context';
 import { deny, askUser } from '../../../core/result';
 import { toolClassForRawName } from '../../../core/events';
+import { makeCopilotAdapter } from '../../../adapters/copilot';
 import type { Handler, HookInput, HookResult } from '../../../core/types';
 import {
   DENY_IDS,
@@ -489,4 +491,39 @@ test('the never-escalated and never-overridable sets are different sets, in both
     // override a narrower, better instruction.
     'codex-child-model-claim-persist-failed',
   ].sort(), 'the two sets intersect only where a refusal is genuinely both');
+});
+
+// Copilot can batch several admitted tools in one payload. Each denied call
+// goes through the pipeline chokepoint, so denyRepeat records N times. The
+// escalate threshold is DENY_REPEAT_ESCALATE_AT (3): a 2-call batch of the
+// same refusal counts 2 and does NOT escalate on that first payload.
+test('a Copilot tool_calls batch records denyRepeat once per denied call (2 < escalate-at 3)', async () => {
+  const cwd = freshProject();
+  const adapter = makeCopilotAdapter('cli');
+  const handler: Handler = {
+    id: 'g', event: 'PreToolUse', tools: ['file-write', 'shell'], priority: 20,
+    run: () => deny(
+      'traffic-one — workspace boundary: this path is outside the opened workspace.',
+      { denyId: 'workspace-boundary-guard', denyTarget: 'src/x.ts' },
+    ),
+  };
+  const raw = {
+    stdin: JSON.stringify({
+      cwd,
+      workspace_roots: [cwd],
+      tool_calls: [
+        { name: 'write', args: { path: path.join(cwd, 'a.ts'), content: 'a' } },
+        { name: 'write', args: { path: path.join(cwd, 'b.ts'), content: 'b' } },
+      ],
+    }),
+    argv: ['before-tool-use'],
+  };
+  const out = JSON.parse(await dispatch(adapter, [handler], raw));
+  assert.equal(out.permissionDecision, 'deny');
+  assert.doesNotMatch(String(out.permissionDecisionReason), /STOP RETRYING/,
+    'a 2-call batch of one signature is below DENY_REPEAT_ESCALATE_AT=3');
+  const counts = JSON.parse(fs.readFileSync(counterFile(cwd), 'utf8')) as Record<string, number>;
+  const values = Object.values(counts);
+  assert.equal(values.reduce((sum, n) => sum + n, 0), 2, `two denied calls → two records: ${JSON.stringify(counts)}`);
+  assert.equal(Math.max(...values), 2, 'same reason+target shares one signature counted twice');
 });

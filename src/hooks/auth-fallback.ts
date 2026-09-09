@@ -73,11 +73,31 @@ export function hookFallbackStandsDown(
   return isNonProjectRoot(cwd) || pluginUseDeclined(cwd, env);
 }
 
+// Entry catch bodies must never throw: if stand-down itself throws, treat that
+// as "does not stand down" and continue to the host's session-start / pre-tool
+// fallbacks. An escaped exception here is exit 1, which is non-blocking on
+// Claude/Codex/Windsurf — so a throw is an allow.
+export function safeHookFallbackStandsDown(
+  stdin: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  try {
+    return hookFallbackStandsDown(stdin, env);
+  } catch {
+    return false;
+  }
+}
+
 // Hook crashes still fail closed for projects using Traffic One, but a durable
 // pluginUse decline and non-project roots remain completely silent.
 export function authFallbackMessage(
   stdin: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return hookFallbackStandsDown(stdin, env) ? '' : authRequiredMessage(env);
+  if (safeHookFallbackStandsDown(stdin, env)) return '';
+  try {
+    return authRequiredMessage(env);
+  } catch {
+    return '';
+  }
 }

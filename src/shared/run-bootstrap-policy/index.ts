@@ -31,6 +31,7 @@ import {
   resolvedRoleMaterials,
 } from './materials';
 import {
+  maintenancePhaseFromState,
   workUnitForRole,
 } from './work-unit';
 import {
@@ -75,7 +76,10 @@ export function ensureRunBootstrap(
   });
   if (!hostCapability) return null;
   const hostAgentType = options.hostAgentType || null;
-  const workUnit = workUnitForRole(cwd, runId, role, hostAgentType, resolved, snapshot, options);
+  const workUnit = workUnitForRole(cwd, runId, role, hostAgentType, resolved, snapshot, {
+    ...options,
+    maintenancePhase: options.maintenancePhase ?? maintenancePhaseFromState(state),
+  });
   if (!workUnit) return null;
   if (!fallbackContractMatches(cwd, runId, role, workUnit)) return null;
   const roleSource = options.hostAgentType

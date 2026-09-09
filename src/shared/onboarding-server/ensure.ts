@@ -12,6 +12,7 @@ import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
 import { trustworthyAgeSince } from '../clock-skew';
+import { ownerLiveness } from '../per-user-dir-lock';
 import { agentOnboardingUrls } from '../../config/dashboard';
 import type { HostId } from '../../core/types';
 import { detectHost } from '../host';
@@ -56,6 +57,11 @@ const LOCK_STALE_MS = 15000;
 // where a longer one would only buy a slower hook. Worst-case total is 6s.
 const LOCK_WAIT_TIMEOUT_MS = 2000;
 const READY_TIMEOUT_MS = 4000;
+
+// A server.json whose startedAt is older than this is not reused even if the
+// recorded pid still answers kill(pid, 0): the pid may have been recycled onto
+// an unrelated process. Onboarding wizards are session-scoped, not daemons.
+const SERVER_REUSE_MAX_MS = 24 * 60 * 60 * 1000;
 
 // The launcher timed out — a fact about TIME, not about the installation. Carried
 // as an errno-shaped `code` so bootstrap.ts can tell it apart from the genuine
@@ -120,13 +126,15 @@ export function formatWizardBanner(
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // ESRCH ⇒ no such process; EPERM ⇒ exists but not ours (still alive).
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
+  // 0700 per-user root: EPERM is not-ours, not a holder of this lock/record.
+  return ownerLiveness(pid) === 'alive';
+}
+
+function recordReusable(rec: { pid: number; startedAt: string }, isAlive: (pid: number) => boolean): boolean {
+  if (!isAlive(rec.pid)) return false;
+  const ageMs = trustworthyAgeSince(Date.parse(rec.startedAt), Date.now());
+  if (ageMs === null) return false;
+  return ageMs <= SERVER_REUSE_MAX_MS;
 }
 
 function sleepSync(ms: number): void {
@@ -265,7 +273,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // Reuse a live server (its pid is alive) — no spawn.
   const reuseIfLive = (): EnsureResult | null => {
     const rec = readServerRecord(cwd, env, host);
-    return rec && isAlive(rec.pid)
+    return rec && recordReusable(rec, isAlive)
       ? finalize({ port: rec.port, token: rec.token, started: false })
       : null;
   };
@@ -318,7 +326,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
       // posts to the user. What it is actually for is the microsecond race, and
       // that record is live.
       const late = readServerRecord(cwd, env, host);
-      if (late && isAlive(late.pid)) {
+      if (late && recordReusable(late, isAlive)) {
         return finalize({ port: late.port, token: late.token, started: true });
       }
       throw startTimeoutError('traffic-one onboarding server did not become ready (another launcher holds the lock)');
@@ -339,7 +347,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
         // A record belonging to someone ELSE (rec.pid !== childPid). Worth
         // surfacing, but only while its process is actually alive — same reason
         // as the lock-contention branch above.
-        if (rec && isAlive(rec.pid)) return finalize({ port: rec.port, token: rec.token, started: true });
+        if (rec && recordReusable(rec, isAlive)) return finalize({ port: rec.port, token: rec.token, started: true });
         throw startTimeoutError('traffic-one onboarding server did not become ready');
       }
       sleepSync(50);

@@ -56,10 +56,12 @@ export function readOverrideKey(env: NodeJS.ProcessEnv = process.env): string | 
 }
 
 /**
- * Read the key, creating it on first mint. ONLY the mint path calls this — a
- * gate that created a key would turn "no override has ever been minted on this
- * machine" (the common case, and one that should cost a single failed stat)
- * into a write from inside a pre-tool hook.
+ * Read the key, creating it when this install first needs to sign. Three
+ * callers are allowed: the mint, the reconciliation writer, and a `verified`
+ * settlement (settlement-mac.ts). A gate that created a key would turn "no
+ * override has ever been minted on this machine" (the common case, and one
+ * that should cost a single failed stat) into a write from inside a pre-tool
+ * hook.
  *
  * `wx` + mode 0600, the same exclusive-create idiom local-prefs/prefs-store.ts
  * uses for its lock owner file: two doctors racing the first mint means one
@@ -99,8 +101,9 @@ export function ensureOverrideKey(env: NodeJS.ProcessEnv = process.env): string 
  * Values must be scalars or ARRAYS of scalars, never nested objects: an array
  * serializes in its own order, which JSON preserves, while an object's key
  * order is guaranteed by nothing, so a record carrying one could verify here
- * and fail after a round trip through a different writer. The token and the
- * mint counter are all-scalar; the reconciliation's run list is the one array.
+ * and fail after a round trip through a different writer. The token, the mint
+ * counter and the settlement MAC are all-scalar; a legacy v1 reconciliation's
+ * run list is the one array (v2 signs a digest).
  */
 function macPayload(record: Record<string, unknown>): string {
   return Object.keys(record)
@@ -125,6 +128,10 @@ export const OVERRIDE_MINT_COUNTER_MAC_DOMAIN = 'traffic-one/override-mint-count
 // FORGIVES a finding, so a counter or a token replayable into that slot would
 // be a forgiveness nobody signed.
 export const OVERRIDE_RECONCILIATION_MAC_DOMAIN = 'traffic-one/override-reconciliation/v1\n';
+// Fourth domain: a verified settlement this install wrote. Distinct so a
+// token or acknowledgement cannot be replayed as a certificate that locks
+// `--unblock` out (and the reverse).
+export const OVERRIDE_SETTLEMENT_MAC_DOMAIN = 'traffic-one/settlement/v1\n';
 
 export function overrideMac(
   record: Record<string, unknown>,

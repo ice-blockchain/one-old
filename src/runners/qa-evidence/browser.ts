@@ -484,11 +484,16 @@ export async function browserCommand(
     : failed
       ? 'failed' as const
       : 'passed' as const;
-  const blockerSummary = blocker
+  const rawBlocker = blocker
     || lighthouse?.blockerSummary
     || (servedAssetHashes.length === 0
       ? 'Served responses did not match the build output manifest.'
       : undefined);
+  // Playwright's boxed "Executable doesn't exist" error carries newlines and
+  // box-drawing; QaReportV2.blockerSummary is a safeString (no controls, max 500).
+  const blockerSummary = rawBlocker
+    ? rawBlocker.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500) || undefined
+    : undefined;
   const evidence = createQaMachineEvidence({
     runnerVersion: pluginVersion(),
     playwrightVersion: playwright.version,

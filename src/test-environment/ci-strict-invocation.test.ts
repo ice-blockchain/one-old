@@ -19,8 +19,9 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { assertion as delegationAssertion } from './assertions/opencode-delegation.assert';
+import { ALL_CASE_IDS } from './config/cases';
 import { ALL_HOSTS, defaultConfig } from './config/test-config';
-import { casesRunningAssertion } from './core/case-selection';
+import { casesRunningAssertion, usageIfNoCases } from './core/case-selection';
 import { UsageError, applyFlags, excludedHostNotes, parseFlags } from './core/flags';
 import { releaseResultFailed } from './core/result-policy';
 import {
@@ -174,6 +175,30 @@ test('an unknown host, category or flag is a usage error, never a silent fall-th
   assert.deepEqual(parseFlags(['--strict', '--host=claude,codex']).hosts, ['claude', 'codex']);
   assert.deepEqual(parseFlags(['--category=run-sim']).categories, ['run-sim']);
   assert.equal(parseFlags(['--dry-run']).dryRun, true);
+});
+
+// `--case=` used to silently filter: empty → [], unknown ids → a list that
+// selectRuns then matched against nothing. requireKnown throws first, so an
+// unknown id never becomes an empty planned set. run.ts still guards
+// planned.length === 0 / results.length === 0 via usageIfNoCases (a real
+// `--category=` + host/layer combination can still select nothing).
+test('--case= rejects empty and unknown ids, and accepts a real ALL_CASE_IDS entry', () => {
+  assert.throws(() => parseFlags(['--case=']), UsageError);
+  assert.throws(() => parseFlags(['--case']), UsageError);
+  assert.throws(() => parseFlags(['--case=not-a-real-case']), UsageError);
+  assert.throws(() => parseFlags(['--case=not-a-real-case']), (err: unknown) => {
+    assert.ok(err instanceof UsageError);
+    assert.match(err.message, /unknown --case value "not-a-real-case"/);
+    return true;
+  });
+  const known = ALL_CASE_IDS[0];
+  assert.ok(known, 'ALL_CASE_IDS must not be empty');
+  assert.deepEqual(parseFlags([`--case=${known}`]).cases, [known]);
+});
+
+test('usageIfNoCases is exit 2 on an empty planned set and silent otherwise', () => {
+  assert.equal(usageIfNoCases([]), 2);
+  assert.equal(usageIfNoCases([{ caseId: 'x', targets: ['pure-node'] }]), null);
 });
 
 // Lives here because this is the file that reads committed workflow command

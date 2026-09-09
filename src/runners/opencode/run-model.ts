@@ -18,6 +18,9 @@ import {
   T1_DIR,
   which,
 } from './types';
+
+/** `opencode run` streams NDJSON; Node's spawnSync default is 1 MiB. */
+export const OPENCODE_RUN_MAX_BUFFER = 16 * 1024 * 1024;
 import {
   clearOpenCodeApplyInProgress,
   markOpenCodeApplyInProgress,
@@ -239,6 +242,7 @@ export function runModel(cwd: string, bin: string, baseSha: string, model: strin
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: timeoutMs,
+        maxBuffer: OPENCODE_RUN_MAX_BUFFER,
         env: { ...process.env, ...OPENCODE_RUN_ENV, PWD: wt },
       });
       if (run.error || run.status === null) {

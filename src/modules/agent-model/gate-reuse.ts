@@ -19,7 +19,9 @@ import {
   retireUnverifiedCodexRunAgent,
   subagentContinuationAvailable,
   validateCodexLiveRunAgent,
+  validateHostLiveRunAgent,
   verdictAgentConflict,
+  type HostLiveAgentValidation,
 } from '../../shared/state';
 import {
   correlatedCursorFailureGate,
@@ -87,6 +89,10 @@ export function reuseReplaceGates(g: GateContext): HookResult | null {
         if (ctx.host === 'codex' && live) {
           codexValidation = validateCodexLiveRunAgent(cwd, state, raw, runId, role, live);
           return codexValidation.status === 'verified-match' ? codexValidation.entry : null;
+        }
+        if (live && (ctx.host === 'opencode' || ctx.host === 'kilo' || ctx.host === 'windsurf')) {
+          const hostValidation: HostLiveAgentValidation | null = validateHostLiveRunAgent(ctx.host, live, raw);
+          return hostValidation?.status === 'verified-match' ? hostValidation.entry : null;
         }
         if (ctx.host !== 'cursor') return live;
         const resumeId = live ? continuationAgentId(live, ctx.host) : '';

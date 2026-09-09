@@ -533,7 +533,7 @@ test('materializeProjectFromState: a fold is REPORTED in the outcome the agent r
 
     const out = materializeProjectFromState(dir, { trigger: 'unit' });
 
-    assert.match(out.context, /Legacy `architecture\.md` folded into `\.traffic-one\/plan\.md` and removed: `architecture\.md`\./);
+    assert.match(out.context, /Legacy `architecture\.md` folded into `\.traffic-one\/plan\.md` under the heading `### architecture\.md` and removed\./);
     assert.equal(fs.existsSync(path.join(dir, 'architecture.md')), false);
     assert.ok(fs.readFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'utf8').includes('Module map from the old file.'));
   });
@@ -568,7 +568,7 @@ test('materializeProjectIfNeeded: the notice survives the paths that return an o
     const out = materializeProjectIfNeeded(dir, { trigger: 'unit' });
 
     assert.notEqual(out, null, 'an unknown stack with onboardingComplete delegates rather than going quiet');
-    assert.match(out!.context, /folded into `\.traffic-one\/plan\.md` and removed: `architecture\.md`\./);
+    assert.match(out!.context, /folded into `\.traffic-one\/plan\.md` under the heading `### architecture\.md` and removed\./);
     assert.ok(fs.readFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'utf8').includes('Carried through the delegate.'));
   });
 });

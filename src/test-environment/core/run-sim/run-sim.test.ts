@@ -181,6 +181,64 @@ test('the root manifest declares every tool its scripts name', () => {
   }
 });
 
+test('sourceFor authors a Cargo crate that does not collide with src/lib.rs', () => {
+  const rustArch = {
+    profile: {
+      profileId: 'backend-only',
+      framework: 'none',
+      router: 'none',
+      backendFramework: 'rust',
+      roles: ['senior-backend'],
+      entrypoints: ['src/main.rs'],
+      sourceRoots: ['src'],
+      layerRoots: { pages: [], components: [], features: [], lib: [] },
+      qaAdapters: [],
+      surfaces: [],
+      skillBuckets: [],
+    },
+    modules: [
+      {
+        id: 'products-service',
+        kind: 'service',
+        name: 'Products Service',
+        output: 'src/products_service.rs',
+        ownerRole: 'senior-backend',
+      },
+      { id: 'store', kind: 'store', name: 'Store', output: 'src/store.rs', ownerRole: 'senior-backend' },
+    ],
+    routes: [],
+  } as unknown as CompiledArchitectureV1;
+  const ctx = buildImplementContext('R', rustArch, {
+    assignments: [{
+      role: 'senior-backend',
+      summary: 'api',
+      scope: {
+        include: [
+          'Cargo.toml',
+          'rustfmt.toml',
+          'src/lib.rs',
+          'src/main.rs',
+          'src/products_service.rs',
+          'src/store.rs',
+        ],
+      },
+    }],
+  }, '/nonexistent-sim-root');
+  const cargo = sourceFor('Cargo.toml', ctx) || '';
+  assert.match(cargo, /name = "api"/);
+  assert.match(cargo, /edition = "2021"/);
+  const lib = sourceFor('src/lib.rs', ctx) || '';
+  assert.match(lib, /pub mod products_service;/);
+  assert.match(lib, /pub mod store;/);
+  const main = sourceFor('src/main.rs', ctx) || '';
+  assert.match(main, /fn main\(\)/);
+  assert.match(main, /api::products_service::list_products_service/);
+  const service = sourceFor('src/products_service.rs', ctx) || '';
+  assert.match(service, /#\[cfg\(test\)\]/);
+  assert.match(service, /&'static str/);
+  assert.equal(sourceFor('migrations', ctx), null);
+});
+
 test('roleSpawnIndex omits parent writes (no role)', () => {
   // Runtime spawnIndex is 1-based; parent writes without a role omit the field
   // so the tally can apply the first-of-(host, denyId) rule instead.

@@ -1,0 +1,13 @@
+{
+  "id": "ses_recorded_architect",
+  "slug": "recorded-architect",
+  "projectID": "proj-fixture",
+  "directory": "/workspace/app",
+  "parentID": "ses_recorded_parent",
+  "title": "senior-architect",
+  "version": "1.0.0",
+  "time": {
+    "created": 1700000000000,
+    "updated": 1700000005000
+  }
+}

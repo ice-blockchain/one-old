@@ -1,12 +1,15 @@
 // src/test-environment/core/run-sim/write.ts
 // The primitive the whole tier rests on: put one scripted write through the REAL
-// plan-write gate, record the verdict, and only then let the write land.
+// check-plan-write pipeline, record the verdict, and only then let the write land.
 //
-// Why the gate and not the readiness function directly: planWriteGate is the
-// production dispatcher (plan-write/index.ts:57), so going through it also
-// exercises materializeProjectIfNeeded convergence, runIdPathViolation,
-// runTeamEnforcementViolation (where the claim/spawnIndex machinery lives) and
-// planStaticViolations — and it returns the exact deny STRING a model would read.
+// Why the pipeline and not planWriteGate directly: the host entry
+// (hooks/claude-entry.ts) loads every module handler and routes
+// `check-plan-write` through dispatchSubcommand → handlersForSubcommand →
+// runPipeline. That set is session.auth, session.workspace-boundary,
+// session.authoring-guard, then plan-guard.write — not the write gate alone.
+// Going through the same handler set also exercises stampDeny (gateId / denyId)
+// so a thrown handler becomes `pipeline-handler-crashed` instead of looking like
+// correct enforcement.
 //
 // The gate is PreToolUse: it never writes. In production the host applies the
 // tool after the hook allows it, so this module reproduces that order exactly —
@@ -16,16 +19,38 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
-import { planWriteGate } from '../../../modules/plan-guard/plan-write';
+import { buildContext } from '../../../core/context';
+import { handlersForSubcommand } from '../../../core/dispatch';
+import { runPipeline } from '../../../core/pipeline';
+import { collectHandlers, defaultModulesDir, loadModules } from '../../../core/registry';
+import type { Ctx, Handler, HookInput, HostId, ToolClass } from '../../../core/types';
 import { readEffectiveState } from '../../../shared/state';
 import { claimThreadRole } from '../../../shared/state/run-agent';
 import { listClaimedAgents, nextSpawnIndex } from '../../../shared/state/run-agent/claims-store';
 
+import { expectDenyGap } from './expect-deny';
 import type { RunSimTranscript, ScriptedWrite, WriteOutcome } from './types';
 
-// Mirrors src/modules/plan-guard/__tests__/plan-write.test.ts:68-84 — the
-// established way to invoke the dispatcher without a live host.
+const CHECK_PLAN_WRITE = 'check-plan-write';
+
+// Same handler objects the host entry would pass to dispatchSubcommand for
+// this subcommand. Cached: loadModules require()s are already module-cached,
+// and a run-sim issues dozens of writes.
+let cachedPlanWriteHandlers: Handler[] | undefined;
+
+export function checkPlanWriteHandlers(): readonly Handler[] {
+  if (!cachedPlanWriteHandlers) {
+    cachedPlanWriteHandlers = handlersForSubcommand(
+      collectHandlers(loadModules(defaultModulesDir(), { strict: true })),
+      CHECK_PLAN_WRITE,
+    );
+  }
+  return cachedPlanWriteHandlers;
+}
+
+// Real Ctx via buildContext — the force-cast `{ input, host, cwd, now }` is
+// what the host never hands a handler. filePath/content are populated the way
+// adapters/claude.ts parse() does, so gates that read ctx.input.tool see them.
 export function writeCtx(
   cwd: string,
   rawName: string,
@@ -34,14 +59,25 @@ export function writeCtx(
   rawExtra: Record<string, unknown> = {},
   host: HostId = 'claude',
 ): Ctx {
+  const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path
+    : typeof toolInput.filePath === 'string' ? toolInput.filePath
+      : '';
+  const content = typeof toolInput.content === 'string' ? toolInput.content
+    : typeof toolInput.new_string === 'string' ? toolInput.new_string
+      : '';
   const input: HookInput = {
     event: 'PreToolUse',
     host,
     cwd,
     raw: { ...rawExtra, tool_name: rawName, tool_input: toolInput },
-    tool: { class: cls, rawName },
+    tool: {
+      class: cls,
+      rawName,
+      ...(filePath ? { filePath } : {}),
+      ...(content ? { content } : {}),
+    },
   };
-  return { input, host, cwd, now: () => 'run-sim' } as unknown as Ctx;
+  return buildContext(input);
 }
 
 // Bind a role the way a real spawned child does: a per-agent run claim keyed by
@@ -79,6 +115,10 @@ function resultDenyId(result: { kind: string; denyId?: string }): string | undef
   return typeof result.denyId === 'string' && result.denyId ? result.denyId : undefined;
 }
 
+function resultGateId(result: { kind: string; gateId?: string }): string | undefined {
+  return typeof result.gateId === 'string' && result.gateId ? result.gateId : undefined;
+}
+
 // The bound role's current spawn index, read the same way index.ts
 // `claimSnapshot` does (listClaimedAgents + nextSpawnIndex).
 //
@@ -110,14 +150,14 @@ export function nextRoleSpawnIndex(cwd: string, role: string): number | undefine
   return nextSpawnIndex(cwd, readEffectiveState(cwd), runId, role);
 }
 
-export function applyScriptedWrite(
+export async function applyScriptedWrite(
   cwd: string,
   phase: string,
   role: string | null,
   write: ScriptedWrite,
   transcript: RunSimTranscript,
   host: HostId = 'claude',
-): WriteOutcome {
+): Promise<WriteOutcome> {
   const toolName = write.tool ?? 'Write';
   const toolClass: ToolClass = toolName === 'Edit' ? 'file-edit' : 'file-write';
   const toolInput = toolName === 'Edit'
@@ -127,9 +167,12 @@ export function applyScriptedWrite(
   // real host hook payload carries it.
   const rawExtra = role ? { session_id: sessionIdFor(role) } : {};
 
-  const result = planWriteGate(writeCtx(cwd, toolName, toolClass, toolInput, rawExtra, host));
+  const result = await runPipeline(checkPlanWriteHandlers(), writeCtx(
+    cwd, toolName, toolClass, toolInput, rawExtra, host,
+  ));
   const denied = result.kind === 'deny';
   const denyId = resultDenyId(result);
+  const gateId = resultGateId(result);
   const spawnIndex = roleSpawnIndex(cwd, role);
   const outcome: WriteOutcome = {
     ordinal: transcript.writes.length + 1,
@@ -142,7 +185,9 @@ export function applyScriptedWrite(
     ...(denied ? { reason: (result as { reason: string }).reason } : {}),
     ...(write.expectDeny ? { expected: true } : {}),
     ...(write.denyMatch ? { denyMatch: write.denyMatch } : {}),
+    ...(write.expectHandler ? { expectHandler: write.expectHandler } : {}),
     ...(denyId ? { denyId } : {}),
+    ...(gateId ? { gateId } : {}),
     ...(spawnIndex !== undefined ? { spawnIndex } : {}),
   };
   transcript.writes.push(outcome);
@@ -155,19 +200,25 @@ export function applyScriptedWrite(
   return outcome;
 }
 
-// Apply a sequence, stopping at the first UNEXPECTED deny. Returns the offending
-// outcome so the caller can name the phase in `transcript.failure`.
-export function applyAll(
+function scriptedWriteFailed(write: ScriptedWrite, outcome: WriteOutcome): boolean {
+  if (write.expectDeny) return expectDenyGap(outcome) !== null;
+  return outcome.denied;
+}
+
+// Apply a sequence, stopping at the first UNEXPECTED deny, unexpected allow,
+// crash-deny, or unnamed/mismatched handler. Returns the offending outcome so
+// the caller can name the phase in `transcript.failure`.
+export async function applyAll(
   cwd: string,
   phase: string,
   role: string | null,
   writes: readonly ScriptedWrite[],
   transcript: RunSimTranscript,
   host: HostId = 'claude',
-): WriteOutcome | null {
+): Promise<WriteOutcome | null> {
   for (const write of writes) {
-    const outcome = applyScriptedWrite(cwd, phase, role, write, transcript, host);
-    if (outcome.denied !== Boolean(write.expectDeny)) return outcome;
+    const outcome = await applyScriptedWrite(cwd, phase, role, write, transcript, host);
+    if (scriptedWriteFailed(write, outcome)) return outcome;
   }
   return null;
 }

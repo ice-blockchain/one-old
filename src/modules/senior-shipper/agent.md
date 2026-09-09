@@ -92,7 +92,8 @@ You don't need to re-read implementer digests; the verifier digests are your con
    node ~/.traffic-one/bin/security-check-runner.cjs --strict --stamp
    ```
    This writes `lastSecurityCheckAt`, `lastSecurityCheckStatus`,
-   `lastSecurityCheckFingerprint`, and `lastSecurityCheckReport` to
+   `lastSecurityCheckFingerprint`, `lastSecurityCheckReport`, and
+   `lastSecurityCheckStrict` to
    `.traffic-one/.one.json`. If it fails, stop and route fixes back to the
    implementer/reviewer loop. If it fails because `gitleaks` or `trufflehog`
    is missing, ask the user to install the missing scanners, explain the

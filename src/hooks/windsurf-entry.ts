@@ -12,8 +12,9 @@ import { pluginUseDeclined } from '../shared/state/plugin-use';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from '../adapters/coerce';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
-import { hasValidPreToolPayload, isFailClosedRecoveryExemption, isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
-import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
+import { hasValidPreToolPayload, isWindsurfPreToolAction, preToolFailureReason, safeFailClosedRecoveryExemption } from './fail-closed';
+import { authFallbackMessage, safeHookFallbackStandsDown } from './auth-fallback';
+import { guardedMain } from './entry-guard';
 import { isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
@@ -54,8 +55,7 @@ function isManagedWindsurfMcpInvocation(stdin: string): boolean {
 
 function cwdFrom(stdin: string): string {
   const data = asRecord(parseJson<Record<string, unknown>>(stdin, {}));
-  const info = asRecord(data.tool_info ?? data.toolInfo ?? data.input);
-  return firstString(info.cwd, info.working_directory, info.workingDirectory, data.cwd, data.workspace_root, data.workspaceRoot) || process.cwd();
+  return firstString(data.cwd, data.workspace_root, data.workspaceRoot, data.root_workspace_path) || process.cwd();
 }
 
 // Devin Local currently also forwards each native lifecycle event through the
@@ -135,13 +135,12 @@ export async function runWindsurfHook(
   if (!action) return { stdout: '', stderr: '', exitCode: 0 };
   if (isWindsurfPreToolAction(action)
     && !hasValidPreToolPayload(stdin, action, 'windsurf')
-    && !isFailClosedRecoveryExemption(stdin, action, 'windsurf')) {
+    && !safeFailClosedRecoveryExemption(stdin, action, 'windsurf')) {
     return { stdout: '', stderr: preToolFailureReason('Windsurf'), exitCode: 2 };
   }
   try {
     const cwd = cwdFrom(stdin);
     initializeTrafficOneEnv(cwd, 'windsurf', env);
-    try { process.chdir(cwd); } catch { /* Cascade usually sets cwd; best-effort */ }
     const adapter = makeWindsurfAdapter();
     const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const rawOut = await dispatch(adapter, handlers, { stdin, argv: [action, '--host=windsurf'] });
@@ -174,7 +173,7 @@ export async function runWindsurfHook(
 
     return { stdout: '', stderr: '', exitCode: 0 };
   } catch {
-    if (hookFallbackStandsDown(stdin, env)) {
+    if (safeHookFallbackStandsDown(stdin, env)) {
       return { stdout: '', stderr: '', exitCode: 0 };
     }
     if (action === 'pre_user_prompt') {
@@ -184,22 +183,63 @@ export async function runWindsurfHook(
         : { stdout: '', stderr: '', exitCode: 0 };
     }
     if (isWindsurfPreToolAction(action)) {
-      if (isFailClosedRecoveryExemption(stdin, action, 'windsurf')) return { stdout: '', stderr: '', exitCode: 0 };
+      if (safeFailClosedRecoveryExemption(stdin, action, 'windsurf')) return { stdout: '', stderr: '', exitCode: 0 };
       return { stdout: '', stderr: preToolFailureReason('Windsurf'), exitCode: 2 };
     }
     return { stdout: '', stderr: '', exitCode: 0 };
   }
 }
 
+const WINDSURF_PRE_TOOL_DENY: HookOutput = {
+  stdout: '',
+  stderr: preToolFailureReason('Windsurf'),
+  exitCode: 2,
+};
+const WINDSURF_NOOP: HookOutput = { stdout: '', stderr: '', exitCode: 0 };
+
+function writeWindsurfOutput(out: HookOutput): void {
+  if (out.stdout) process.stdout.write(out.stdout);
+  if (out.stderr) process.stderr.write(out.stderr);
+}
+
 export async function main(): Promise<number> {
   const subcommand = process.argv[2];
-  const stdin = await readStdin();
-  const { stdout, stderr, exitCode } = await runWindsurfHook(subcommand, stdin);
-  if (stdout) process.stdout.write(stdout);
-  if (stderr) process.stderr.write(stderr);
-  return exitCode;
+  try {
+    const stdin = await readStdin();
+    const action = actionName(stdin, subcommand);
+    const out = await guardedMain({
+      subcommand: action || subcommand,
+      stdin,
+      isPreTool: isWindsurfPreToolAction(action),
+      surface: 'windsurf',
+      deny: WINDSURF_PRE_TOOL_DENY,
+      noop: WINDSURF_NOOP,
+      run: () => runWindsurfHook(subcommand, stdin),
+    });
+    writeWindsurfOutput(out);
+    return out.exitCode;
+  } catch {
+    try {
+      if (isWindsurfPreToolAction(subcommand)) {
+        writeWindsurfOutput(WINDSURF_PRE_TOOL_DENY);
+        return 2;
+      }
+    } catch { /* last-ditch write must not reject */ }
+    return 0;
+  }
 }
 
 if (require.main === module) {
-  void main().then((code) => { process.exitCode = code; });
+  void main()
+    .then((code) => { process.exitCode = code; })
+    .catch(() => {
+      try {
+        if (isWindsurfPreToolAction(process.argv[2])) {
+          writeWindsurfOutput(WINDSURF_PRE_TOOL_DENY);
+          process.exitCode = 2;
+          return;
+        }
+      } catch { /* */ }
+      process.exitCode = 0;
+    });
 }

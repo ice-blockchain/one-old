@@ -61,15 +61,53 @@ const QA_STACK_RESOLUTION_SCHEMA_VERSION = 1 as const;
  */
 export type QaStackResolutionOutcome = 'no-command-declared' | 'declared';
 
+/**
+ * What `runStackChecks` observed after it resolved the command.
+ *
+ * Distinct from `QaStackResolutionOutcome`: a command can be declared and still
+ * fail, hang, or never start. A `passed` claim on the author-writable report
+ * is only accepted when this field is the literal `'passed'`.
+ */
+export type QaStackExecutedOutcome = 'passed' | 'failed' | 'not-applicable';
+
+/**
+ * One check's runtime record. `declared` is what `resolveStackCommand` answered;
+ * `executed` is the check status `runStackChecks` produced.
+ *
+ * `executed` is optional so records written before this field existed still
+ * parse. Absence is not a matching runtime `passed` — fail-closed, not a throw.
+ */
+export interface QaStackResolvedCheckV1 {
+  declared: QaStackResolutionOutcome;
+  executed?: QaStackExecutedOutcome;
+}
+
 export interface QaStackResolutionV1 {
   schemaVersion: typeof QA_STACK_RESOLUTION_SCHEMA_VERSION;
   runId: string;
-  /** Check id -> what `resolveStackCommand` answered for it, in this run. */
-  resolved: Record<string, QaStackResolutionOutcome>;
+  /** Check id -> declaration plus executed outcome, in this run. */
+  resolved: Record<string, QaStackResolvedCheckV1>;
 }
 
 export function qaStackResolutionPath(projectRoot: string, runId: string): string {
   return path.join(projectRoot, '.traffic-one', 'runs', runId, 'qa-stack-resolution-v1.json');
+}
+
+function parseResolvedEntry(value: unknown): QaStackResolvedCheckV1 | null {
+  // Legacy on-disk shape: a bare declared token. Parse it; do not invent
+  // `executed`. A later `passed` claim then fails closed.
+  if (value === 'no-command-declared' || value === 'declared') {
+    return { declared: value };
+  }
+  if (!isRecord(value)) return null;
+  if (value.declared !== 'no-command-declared' && value.declared !== 'declared') return null;
+  if (value.executed === undefined) return { declared: value.declared };
+  if (
+    value.executed !== 'passed'
+    && value.executed !== 'failed'
+    && value.executed !== 'not-applicable'
+  ) return null;
+  return { declared: value.declared, executed: value.executed };
 }
 
 function parse(value: unknown, runId: string): QaStackResolutionV1 | null {
@@ -77,10 +115,11 @@ function parse(value: unknown, runId: string): QaStackResolutionV1 | null {
     || value.schemaVersion !== QA_STACK_RESOLUTION_SCHEMA_VERSION
     || value.runId !== runId
     || !isRecord(value.resolved)) return null;
-  const resolved: Record<string, QaStackResolutionOutcome> = {};
+  const resolved: Record<string, QaStackResolvedCheckV1> = {};
   for (const [id, outcome] of Object.entries(value.resolved)) {
-    if (outcome !== 'no-command-declared' && outcome !== 'declared') return null;
-    resolved[id] = outcome;
+    const entry = parseResolvedEntry(outcome);
+    if (!entry) return null;
+    resolved[id] = entry;
   }
   return { schemaVersion: QA_STACK_RESOLUTION_SCHEMA_VERSION, runId, resolved };
 }
@@ -112,7 +151,7 @@ export function readStackResolution(projectRoot: string, runId: string): QaStack
 export function recordStackResolution(
   projectRoot: string,
   runId: string,
-  resolved: Readonly<Record<string, QaStackResolutionOutcome>>,
+  resolved: Readonly<Record<string, QaStackResolvedCheckV1>>,
 ): boolean {
   const existing = readStackResolution(projectRoot, runId);
   const record: QaStackResolutionV1 = {
@@ -140,5 +179,20 @@ export function stackCommandUndeclared(
   runId: string,
   checkId: string,
 ): boolean {
-  return readStackResolution(projectRoot, runId)?.resolved[checkId] === 'no-command-declared';
+  return readStackResolution(projectRoot, runId)?.resolved[checkId]?.declared === 'no-command-declared';
+}
+
+/**
+ * Did THE RUNNER execute this check as `passed`, in this run?
+ *
+ * Absence, a legacy declared-only token, and any executed value other than
+ * `passed` are all `false`. That is the fail-closed answer to a hand-edited
+ * report that claims `status: passed` without a matching runtime record.
+ */
+export function stackCheckRuntimePassed(
+  projectRoot: string,
+  runId: string,
+  checkId: string,
+): boolean {
+  return readStackResolution(projectRoot, runId)?.resolved[checkId]?.executed === 'passed';
 }

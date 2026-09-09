@@ -134,10 +134,18 @@ function disabledTrafficOneRoot(dir) {
   return Boolean(marker && marker.enabled === false);
 }
 
-function findTrafficOneRoot(start) {
-  let current = path.resolve(start || process.cwd());
+function resolvedPath(value) {
+  try { return nodeFs.realpathSync(value); } catch { return path.resolve(value); }
+}
+
+function resolvedHomeRoot() {
   const home = firstString(process.env.HOME, process.env.USERPROFILE);
-  const homeRoot = home ? path.resolve(home) : '';
+  return home ? resolvedPath(home) : '';
+}
+
+function findTrafficOneRoot(start) {
+  let current = resolvedPath(start || process.cwd());
+  const homeRoot = resolvedHomeRoot();
   for (let i = 0; i < 40; i += 1) {
     if (homeRoot && current === homeRoot) return '';
     if (disabledTrafficOneRoot(current)) return '';
@@ -150,9 +158,8 @@ function findTrafficOneRoot(start) {
 }
 
 function trafficOneDisabledFor(start) {
-  let current = path.resolve(start || process.cwd());
-  const home = firstString(process.env.HOME, process.env.USERPROFILE);
-  const homeRoot = home ? path.resolve(home) : '';
+  let current = resolvedPath(start || process.cwd());
+  const homeRoot = resolvedHomeRoot();
   for (let i = 0; i < 40; i += 1) {
     if (homeRoot && current === homeRoot) return false;
     if (disabledTrafficOneRoot(current)) return true;
@@ -167,9 +174,8 @@ function trafficOneDisabledFor(start) {
 function fallbackWorkspaceRoot(start) {
   const raw = firstString(start);
   if (!raw) return '';
-  const current = path.resolve(raw);
-  const home = firstString(process.env.HOME, process.env.USERPROFILE);
-  const homeRoot = home ? path.resolve(home) : '';
+  const current = resolvedPath(raw);
+  const homeRoot = resolvedHomeRoot();
   if (homeRoot && current === homeRoot) return '';
   return current;
 }
@@ -340,8 +346,15 @@ function nvmNodeCandidates() {
   try {
     return readdirSync(versionsDir)
       .filter((name) => name && !name.startsWith('.'))
-      .sort()
-      .reverse()
+      .sort((left, right) => {
+        const parse = (name) => {
+          const match = /^v?(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?/.exec(name);
+          return match ? [Number(match[1]), Number(match[2] || 0), Number(match[3] || 0)] : [0, 0, 0];
+        };
+        const a = parse(left);
+        const b = parse(right);
+        return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
+      })
       .map((name) => path.join(versionsDir, name, 'bin', process.platform === 'win32' ? 'node.exe' : 'node'));
   } catch {
     return [];
@@ -428,6 +441,9 @@ function runTrafficOne(subcommand, payload) {
     return parsed;
   } catch {
     debugLog('parse-fail', { subcommand, projectRoot, stdout: String(result.stdout || '').slice(0, 500) });
+    if (subcommand === 'before-tool-use') {
+      return { kind: 'deny', reason: ${JSON.stringify(preToolFailureReason('Kilo'))} };
+    }
     return { kind: 'noop' };
   }
 }

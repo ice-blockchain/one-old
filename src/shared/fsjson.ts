@@ -368,6 +368,11 @@ function withinExactly(parent: string, child: string): boolean {
  * the same rules can be asked as a question (`stateWritePermitted`) without
  * recording a refusal that never happened. Returns the reason when it refuses;
  * the recording wrapper turns that into the reported outcome.
+ *
+ * These primitives do not contain arbitrary paths: classifyStateWrite returns
+ * `plain` (permitted) for any path `path.join` has already carried out of
+ * `.traffic-one`. Containment is the caller's job — sanitize path segments
+ * (see `safePathSegment`) before joining.
  */
 function classifyStateWrite(target: string): 'plain' | 'state' | RefusalReason {
   const root = pluginUse().projectRootForStatePath(target);

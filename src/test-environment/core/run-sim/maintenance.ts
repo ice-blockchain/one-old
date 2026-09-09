@@ -50,6 +50,7 @@ import { digestBody } from './content';
 import { runBrowserEvidence, runStackEvidence } from './qa';
 import { sourceFor } from './sources';
 import type { MaintenanceLegFact, RunSimTranscript, ScriptedWrite, SpawnOutcome } from './types';
+import { expectDenyGap } from './expect-deny';
 import { applyAll, applyScriptedWrite, bindRole, nextRoleSpawnIndex } from './write';
 
 // The parent session id every leg's prompt rides in on. Deliberately NOT a
@@ -159,13 +160,13 @@ function modelPolicyFrozen(cwd: string, runId: string): boolean {
 // Rotate + plan + implement, leaving the run wherever the caller wants it. The
 // REAL rotation is beginFreshMaintenanceRun; the REAL transaction is the
 // architect's PLAN_READY digest write.
-function startMaintenanceRun(
+async function startMaintenanceRun(
   cwd: string,
   label: string,
   brief: string,
   architecture: unknown,
   transcript: RunSimTranscript,
-): { failure: string } | { runId: string; architecture: CompiledArchitectureV1; verification: VerificationContractV2 } {
+): Promise<{ failure: string } | { runId: string; architecture: CompiledArchitectureV1; verification: VerificationContractV2 }> {
   const state = readEffectiveState(cwd) as Rec;
   // A rotation whose state write was refused leaves the PREVIOUS run id in
   // `state`, so the `!runId` check below cannot see it and every leg after this
@@ -178,7 +179,7 @@ function startMaintenanceRun(
   if (!runId) return { failure: `${label} the maintenance rotation minted no run id` };
 
   if (!bindRole(cwd, 'senior-architect')) return { failure: `${label} could not bind the architect` };
-  const planned = applyAll(cwd, `${label}:architect`, 'senior-architect', [
+  const planned = await applyAll(cwd, `${label}:architect`, 'senior-architect', [
     {
       path: `.traffic-one/runs/${runId}/architecture-input-v1.json`,
       content: `${JSON.stringify(architecture, null, 2)}\n`,
@@ -214,11 +215,11 @@ function startMaintenanceRun(
     }
     authored.set(role, writes.map((write) => write.path));
     if (!bindRole(cwd, role)) return { failure: `${label} could not bind ${role}` };
-    const denied = applyAll(cwd, `${label}:implement:${role}`, role, writes, transcript);
+    const denied = await applyAll(cwd, `${label}:implement:${role}`, role, writes, transcript);
     if (denied) return { failure: `${label} ${role} denied on ${denied.path}: ${denied.reason}` };
   }
   for (const role of implementers) {
-    const denied = applyAll(cwd, `${label}:digest:${role}`, role, [{
+    const denied = await applyAll(cwd, `${label}:digest:${role}`, role, [{
       path: `.traffic-one/digests/${runId}/${role.replace(/^senior-/, '')}.md`,
       content: digestBody({
         role,
@@ -272,7 +273,7 @@ async function verifyAndSettleMaintenanceRun(
     ['senior-tester', 'TESTS_GREEN'],
   ] as const) {
     if (!bindRole(cwd, role)) return `${label} could not bind ${role}`;
-    const denied = applyAll(cwd, `${label}:digest:${role}`, role, [{
+    const denied = await applyAll(cwd, `${label}:digest:${role}`, role, [{
       path: `.traffic-one/digests/${runId}/${role.replace(/^senior-/, '')}.md`,
       content: digestBody({
         role,
@@ -296,7 +297,7 @@ export async function runMaintenancePass(
   phase2: NonNullable<RunSimSpec['phase2']>,
   transcript: RunSimTranscript,
 ): Promise<string | null> {
-  const started = startMaintenanceRun(cwd, 'phase-7', phase2.brief, phase2.architecture, transcript);
+  const started = await startMaintenanceRun(cwd, 'phase-7', phase2.brief, phase2.architecture, transcript);
   if ('failure' in started) return started.failure;
   transcript.facts.phase2RunId = started.runId;
   transcript.facts.phase2UiImpact = started.verification.uiImpact;
@@ -332,12 +333,12 @@ function routePrompt(cwd: string, promptText: string): {
 // parent publishes the bounded WorkUnit, the unattributed parent probe and the
 // out-of-scope probe are DENIED by the maintenance fail-closed branches, the
 // bound worker's in-scope writes land, and the IMPLEMENTED digest closes it.
-function runQuickFixLeg(
+async function runQuickFixLeg(
   cwd: string,
   label: string,
   quickFix: NonNullable<Extract<MaintenanceTriageLeg, { kind: 'prompt' }>['quickFix']>,
   transcript: RunSimTranscript,
-): string | null {
+): Promise<string | null> {
   const runId = currentRunId(cwd);
   if (!runId) return `${label} no current run id after triage rotation`;
   const policy = readRunModelPolicy(cwd, runId);
@@ -347,15 +348,15 @@ function runQuickFixLeg(
 
   // The unattributed parent probe comes FIRST: it must be denied regardless of
   // whether a bounded contract exists yet.
-  const parentProbe = applyScriptedWrite(cwd, `${label}:parent-probe`, null, {
+  const parentProbe = await applyScriptedWrite(cwd, `${label}:parent-probe`, null, {
     path: firstFile.path,
     content: '// parent must not write feature source in maintenance\n',
     expectDeny: true,
     denyMatch: 'maintenance writes fail closed',
+    expectHandler: 'plan-guard.write',
   }, transcript);
-  if (!parentProbe.denied) {
-    return `${label} an unattributed parent write to ${parentProbe.path} was ALLOWED in maintenance`;
-  }
+  const parentGap = expectDenyGap(parentProbe);
+  if (parentGap) return `${label} ${parentGap}`;
 
   const preferredModel = policy.roles['quick-fix']?.preferredModel;
   if (!preferredModel) return `${label} frozen policy has no preferredModel for quick-fix`;
@@ -384,6 +385,7 @@ function runQuickFixLeg(
       content: quickFix.outOfScope.content,
       expectDeny: true,
       denyMatch: 'no valid parent-published WorkUnitContract',
+      expectHandler: 'plan-guard.write',
     });
   }
   rows.push({
@@ -396,10 +398,10 @@ function runQuickFixLeg(
       touched: quickFix.files.map((file) => file.path),
     }),
   });
-  const denied = applyAll(cwd, `${label}:quick-fix`, 'quick-fix', rows, transcript);
+  const denied = await applyAll(cwd, `${label}:quick-fix`, 'quick-fix', rows, transcript);
   if (denied) {
     return denied.expected
-      ? `${label} expected deny did not happen for ${denied.path}`
+      ? `${label} ${expectDenyGap(denied) ?? `expected deny did not happen for ${denied.path}`}`
       : `${label} quick-fix denied on ${denied.path}: ${denied.reason}`;
   }
   return null;
@@ -410,12 +412,12 @@ function runQuickFixLeg(
 // write MUST be allowed — deny here means the small tier (and the paid
 // OpenCode-fallback worker, which uses the same write path) is dead on an
 // existing codebase.
-function runBoundedRoleLeg(
+async function runBoundedRoleLeg(
   cwd: string,
   label: string,
   bounded: NonNullable<Extract<MaintenanceTriageLeg, { kind: 'prompt' }>['boundedRole']>,
   transcript: RunSimTranscript,
-): string | null {
+): Promise<string | null> {
   const runId = currentRunId(cwd);
   if (!runId) return `${label} no current run id after triage rotation`;
   const policy = readRunModelPolicy(cwd, runId);
@@ -443,7 +445,7 @@ function runBoundedRoleLeg(
   }
 
   if (!bindRole(cwd, bounded.role)) return `${label} could not bind ${bounded.role}`;
-  const denied = applyAll(
+  const denied = await applyAll(
     cwd,
     `${label}:bounded:${bounded.role}`,
     bounded.role,
@@ -454,7 +456,7 @@ function runBoundedRoleLeg(
     return `${label} bounded ${bounded.role} maintenance write denied on ${denied.path}: ${denied.reason} `
       + '— the small tier / paid-fallback write path does not honor <role>:bounded-maintenance WorkUnits';
   }
-  const digestDenied = applyAll(cwd, `${label}:bounded-digest`, bounded.role, [{
+  const digestDenied = await applyAll(cwd, `${label}:bounded-digest`, bounded.role, [{
     path: `.traffic-one/digests/${runId}/${bounded.role.replace(/^senior-/, '')}.md`,
     content: digestBody({
       role: bounded.role,
@@ -487,12 +489,12 @@ export async function runMaintenanceLegs(
     const runIdBefore = currentRunId(cwd);
 
     if (leg.kind === 'open-run') {
-      const started = startMaintenanceRun(cwd, label, leg.brief, leg.architecture, transcript);
+      const started = await startMaintenanceRun(cwd, label, leg.brief, leg.architecture, transcript);
       if ('failure' in started) return started.failure;
       // The reviewer records findings: verification has STARTED and is
       // nonterminal, which is the unresolved-run regime.
       if (!bindRole(cwd, 'senior-reviewer')) return `${label} could not bind the reviewer`;
-      const finding = applyAll(cwd, `${label}:reviewer`, 'senior-reviewer', [{
+      const finding = await applyAll(cwd, `${label}:reviewer`, 'senior-reviewer', [{
         path: `.traffic-one/digests/${started.runId}/reviewer.md`,
         content: digestBody({
           role: 'senior-reviewer',
@@ -572,12 +574,12 @@ export async function runMaintenanceLegs(
 
     if (leg.quickFix) {
       if (routed.routing !== 'triage') return `${label} quickFix declared on a non-triage leg`;
-      const failure = runQuickFixLeg(cwd, label, leg.quickFix, transcript);
+      const failure = await runQuickFixLeg(cwd, label, leg.quickFix, transcript);
       if (failure) return failure;
     }
     if (leg.boundedRole) {
       if (routed.routing !== 'triage') return `${label} boundedRole declared on a non-triage leg`;
-      const failure = runBoundedRoleLeg(cwd, label, leg.boundedRole, transcript);
+      const failure = await runBoundedRoleLeg(cwd, label, leg.boundedRole, transcript);
       if (failure) return failure;
     }
   }

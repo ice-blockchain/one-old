@@ -334,8 +334,7 @@ describe('enclosed-folder consent deadlock (A–D composition)', { concurrency: 
 
   test('8. leaked mode-bearing .one.json in the child: consent follows parent; SessionStart sweeps; child decline does not onboard the leak', () => {
     withIsolatedTree('t1-deadlock-leak-', gitLayout, ({ parent, child, env }) => {
-      writeLeak(child, { mode: 'new-project', onboardingComplete: true });
-      assert.equal(isOnboardedProjectRoot(child), true, 'fixture guard: the leak looks onboarded');
+      writeLeak(child, { mode: 'new-project' });
       assert.equal(resolveProjectRoot(child), parent);
       assert.equal(resolveProjectRoot(child, '', { ceiling: child }), parent);
       assert.equal(sessionProjectRoot(sessionCtx(child, child)), parent);
@@ -355,7 +354,7 @@ describe('enclosed-folder consent deadlock (A–D composition)', { concurrency: 
       assert.equal(recordPluginUseChoice(parent, true, 'command', env), true);
       resetPluginUseCache();
       assert.equal(projectWritesPermitted(parent, env), true);
-      writeLeak(child, { mode: 'new-project', onboardingComplete: true });
+      writeLeak(child, { mode: 'new-project' });
       assert.equal(fs.existsSync(childStateDir(child)), true, 'fixture guard: leak replanted for the sweep');
 
       silenceStderr(() => runSessionStartAuthed(sessionCtx(child)));

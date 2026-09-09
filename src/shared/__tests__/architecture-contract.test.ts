@@ -2596,6 +2596,7 @@ test('backend-only scaffolds stay stack-native and existing-codebase skips scaff
   for (const fixture of [
     { backend: 'go', expected: ['go.mod', 'go.sum'] },
     { backend: 'python', expected: ['pyproject.toml'] },
+    { backend: 'rust', expected: ['Cargo.toml'] },
     { backend: 'laravel', expected: ['composer.json', 'artisan'] },
   ]) {
     withProject((cwd) => {
@@ -2612,6 +2613,13 @@ test('backend-only scaffolds stay stack-native and existing-codebase skips scaff
       assert.ok(!outputs.some((output) => /(?:^|\/)(?:apps\/web|pnpm-workspace|tailwind|playwright)/i.test(output)),
         `${fixture.backend}: ${outputs.join(', ')}`);
       assert.ok(!compiled.profile.roles.includes('senior-frontend'));
+      if (fixture.backend === 'rust') {
+        assert.equal(
+          compiled.modules.find((module) => module.id === 'sync-service')?.output,
+          'src/sync_service.rs',
+          'backend-only rust services must not collide with src/lib.rs',
+        );
+      }
 
       const existing = compileArchitecture(cwd, 'E', { ...state, mode: 'existing-codebase' }, semanticService);
       assert.ok(!existing.allowedOutputs.some((output) => fixture.expected.includes(output)),
@@ -2931,13 +2939,14 @@ test('.gitignore is written from the shared skip authority, keeping digests', ()
     }
     // The prose this replaces was inverted — it omitted `runs/` (the real churn)
     // and named `digests/` (the handoff record worth committing).
-    assert.ok(body.includes('.traffic-one/runs/'));
-    assert.ok(body.includes('.traffic-one/reports/'));
+    assert.ok(body.includes('**/.traffic-one/runs/'));
+    assert.ok(body.includes('**/.traffic-one/reports/'));
     // Precondition for the decision-log work item: retention.ts sweeps
     // `.traffic-one/debug/*` directly, and `.traffic-one/runs/<id>/debug/*`
     // transitively — a directory pattern ignores everything beneath it — so
     // only the project-level line needs to exist here.
-    assert.ok(body.includes('.traffic-one/debug/'));
+    assert.ok(body.includes('**/.traffic-one/debug/'));
+    assert.ok(body.includes('**/.traffic-one/.onboarding-main-sessions.json'));
     assert.ok(!body.includes('.traffic-one/digests/'), 'digests must stay committed');
     assert.ok(body.includes('!.env.example'));
 

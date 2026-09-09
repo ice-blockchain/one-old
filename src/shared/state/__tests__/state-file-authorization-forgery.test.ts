@@ -119,11 +119,10 @@ test('reading effective state never promotes a state-file consent, with or witho
   });
 });
 
-// The OTHER authorization in this store, reached through the `hosts` bucket that
-// extractProjectPrefs rescues wholesale. teamModeMarkerWriteViolation does not
-// deny this write — it inspects the proposed state's TOP-LEVEL `team` — so the
-// per-user store is the only thing standing between an agent-typed marker and
-// the downgrade it authorizes.
+// The OTHER authorization in this store, reached through the `hosts` bucket.
+// Nested `team` / `performance` are dropped on rescue (prefs-split.ts); a
+// leaked `hosts.<host>.team.modeChangeApproval` must not become a downgrade
+// authorization, and nested `team.mode` must not be attributed to a host.
 test('an agent-authored hosts.<host>.team.modeChangeApproval never becomes a downgrade authorization', () => {
   const marker = {
     from: 'subagents',
@@ -146,14 +145,13 @@ test('an agent-authored hosts.<host>.team.modeChangeApproval never becomes a dow
         false,
         'the gate\'s own predicate, on the gate\'s own data source, sees no authorization',
       );
-      // The rest of the host bucket is still rescued — this drops the marker, not the leak repair.
-      assert.equal((effective.team as Record<string, unknown>).mode, 'subagents');
-      assert.equal((effective.team as Record<string, unknown>).approved, true);
-      // End to end: the write the marker exists to authorize is denied again.
+      // Nested team/performance are no longer rescued — a leaked bucket
+      // re-prompts rather than attributing team.mode to the scrubbing host.
+      assert.equal(effective.team, undefined, 'hosts.*.team is not a host-attributed approval');
       assert.equal(teamModeDowngradeViolation(cwd, 'Write', {
         file_path: path.join(cwd, '.traffic-one', '.one.json'),
         content: JSON.stringify({ mode: 'new-project', stack: 'default', onboardingComplete: true, team: { mode: 'main-agent', source: 'prompted' } }),
-      }, effective), true, 'the subagents → main-agent downgrade is denied');
+      }, effective), false, 'the downgrade guard is unarmed: leaked team.mode was not attributed');
     } finally {
       if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
       else process.env.TRAFFIC_ONE_HOST = prevHost;

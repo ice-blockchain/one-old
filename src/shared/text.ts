@@ -13,7 +13,7 @@ export function nowIsoNoMs(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-export function sha256(input: string): string {
+export function sha256(input: string | Buffer): string {
   return createHash('sha256').update(input).digest('hex');
 }
 

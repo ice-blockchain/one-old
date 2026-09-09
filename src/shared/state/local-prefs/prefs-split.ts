@@ -60,38 +60,37 @@ export function hasLocalPreferenceFields(value: unknown): boolean {
 // the answer re-writes both records.
 const UNROUTED_PROJECT_PREF_KEYS = new Set(['openCode']);
 
-// The same rule applied to the OTHER authorization that lives in this store.
-// `hosts` is rescued wholesale below, and a host bucket carries `team` — so a
-// state file carrying `hosts.<host>.team.modeChangeApproval` used to hand the
-// downgrade gate a marker nobody was ever prompted for. Measured end to end on
-// an agent-authored `.one.json`: the SessionStart scrub routed it,
-// `hasFreshTeamModeChangeApproval(readEffectiveState(cwd))` — the exact question
-// the gate asks, of the source it asks it of — came back true, and
-// `teamModeDowngradeViolation` then ALLOWED the subagents → main-agent write it
-// exists to deny. Only the UserPromptSubmit hook may mint this marker, so a copy
-// arriving from the shared state file is dropped and the rest of the host bucket
-// is rescued.
+// The same rule applied to the OTHER authorizations that live in this store.
+// `hosts` is rescued below, and a host bucket carries `team` / `performance` —
+// so a state file carrying `hosts.<host>.team.mode` (or `modeChangeApproval`)
+// used to attribute a team setting — and a downgrade marker — to whichever
+// host scrubbed the shared file first. The comment at extractProjectPrefs
+// omits generic top-level `team`/`performance` for that reason; the nested
+// spelling defeated it. Drop the entire nested `team` and `performance`
+// objects. A legitimately leaked bucket re-prompts the user; that is the
+// accepted cost. Other host fields (if any survive normalize) are still
+// rescued.
 //
-// `teamModeMarkerWriteViolation` now denies the nested spelling too — its
-// structured arm was widened after this rescue landed — but the two are not
-// redundant and the order matters. That predicate refuses a WRITE it can see
-// proposed through a tool call; this one refuses to ROUTE the value however it
-// arrived, including from bytes already on disk that no gate ever inspected.
-// This is the first line, the deny is the second.
+// `teamModeMarkerWriteViolation` / `teamModeDowngradeViolation` now read the
+// nested spelling too — their structured arms walk `proposedTeamObjects` —
+// but those refuse a WRITE they can see proposed through a tool call; this
+// one refuses to ROUTE the value however it arrived, including from bytes
+// already on disk that no gate ever inspected. This is the first line, the
+// deny is the second.
 function hostsWithoutForgedApprovals(value: unknown): unknown {
   const hosts = obj(value);
   if (!hosts) return value;
   const out: Rec = {};
   for (const [host, bucket] of Object.entries(hosts)) {
     const entry = obj(bucket);
-    const team = entry && obj(entry.team);
-    if (!entry || !team || !Object.prototype.hasOwnProperty.call(team, 'modeChangeApproval')) {
+    if (!entry) {
       out[host] = bucket;
       continue;
     }
-    const nextTeam: Rec = { ...team };
-    delete nextTeam.modeChangeApproval;
-    out[host] = { ...entry, team: nextTeam };
+    const next: Rec = { ...entry };
+    delete next.team;
+    delete next.performance;
+    out[host] = next;
   }
   return out;
 }
@@ -103,9 +102,11 @@ export function extractProjectPrefs(value: unknown): Rec {
     if (UNROUTED_PROJECT_PREF_KEYS.has(key)) continue;
     if (Object.prototype.hasOwnProperty.call(source, key)) prefs[key] = source[key];
   }
-  // A leaked NEW local shape can be rescued as-is. Legacy generic performance /
-  // team are intentionally omitted so they cannot be attributed to whichever
-  // host happens to scrub the shared file first.
+  // A leaked NEW local shape can be rescued as-is, except nested `team` /
+  // `performance` inside a host bucket — those are the same authorizations
+  // as the omitted top-level keys, and attributing them to whichever host
+  // scrubs the shared file first is the hole hostsWithoutForgedApprovals
+  // exists to close. Legacy generic performance / team stay omitted.
   if (Object.prototype.hasOwnProperty.call(source, 'hosts')) {
     prefs.hosts = hostsWithoutForgedApprovals(source.hosts);
   }

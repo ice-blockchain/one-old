@@ -56,21 +56,14 @@ import { markRunAgentReplaced } from './registry-refresh';
 
 export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 
-// Hosts where a recorded agent can never be VERIFIED as the role it claims, so
-// reuse must not be claimed there at all. None of the three exposes a
-// continuation primitive: their `continuationRecipe` prose says so in as many
-// words ("OpenCode does not expose a resumable Task field", "Kilo does not
-// expose a resumable Task field") and resolves to wait-or-respawn, never a
-// send-to-agent call. Meanwhile the only role evidence their rows ever carry is
-// the spawn prompt's own `[t1-role:]` marker (opencode/kilo, recorded from the
-// child's first chat.message) or the requested spawn profile (windsurf) —
-// orchestrator-authored text, never host identity and never a session
-// transcript. That unverified row was still authority to DENY the role's next
-// spawn and, through roleRegistryDisownsClaim, to release another thread's live
-// claim: absent evidence behaving as evidence of no problem. All three are
-// `tier: 'uncertified'` for this release (see host/capability-schema.ts), so the
-// registry stands down and a duplicate same-role spawn proceeds as a FRESH spawn
-// rather than an unverifiable reuse.
+// Hosts where a recorded agent cannot yet be VERIFIED as the role it claims, so
+// reuse must not be claimed there. host-liveness.ts has probes (OpenCode/Kilo
+// on-disk session JSON; Windsurf host-supplied `trajectory_id`), but a host
+// leaves this list only when a live-captured fixture pins that probe. The
+// published-layout fixtures under tests/fixtures/host-liveness/ pin the probe
+// logic; they are not live captures, so all three stay listed. Standing down
+// costs duplicate context; honouring an unverified row would make orchestrator-
+// authored text authority to deny the role's next spawn.
 const HOSTS_WITHOUT_VERIFIABLE_REUSE: ReadonlySet<string> = new Set(['opencode', 'kilo', 'windsurf']);
 
 // Continuation needs the host's send-to-agent tool. On current Codex that is
@@ -169,6 +162,8 @@ export interface RunAgentEntry {
   replaced: boolean;
   roleSource?: string | null;
   transcriptPath?: string | null;
+  /** Windsurf / Cascade host-supplied trajectory id. Never orchestrator text. */
+  trajectoryId?: string | null;
 }
 
 const VERDICT_AGENT_ROLES = new Set(['senior-reviewer', 'senior-tester']);
@@ -251,6 +246,7 @@ export function readRunAgentRegistry(cwd: string, runId: string): Record<string,
       replaced: entry.replaced === true,
       roleSource: typeof entry.roleSource === 'string' ? entry.roleSource : null,
       transcriptPath: typeof entry.transcriptPath === 'string' ? entry.transcriptPath : null,
+      trajectoryId: typeof entry.trajectoryId === 'string' ? entry.trajectoryId : null,
     };
   }
   return out;
@@ -290,6 +286,7 @@ type RunAgentRecordInput = {
   parentSessionId?: string | null;
   roleSource?: string | null;
   transcriptPath?: string | null;
+  trajectoryId?: string | null;
   /**
    * The CHILD was just observed acting for itself — it bound its role in this
    * run. Only such an observation may advance the row's liveness clock; see
@@ -434,6 +431,7 @@ export function recordRunAgentUnlocked(
   const priorParentSessionId = prior && typeof prior.parentSessionId === 'string' && prior.parentSessionId ? prior.parentSessionId : null;
   const priorRoleSource = prior && typeof prior.roleSource === 'string' && prior.roleSource ? prior.roleSource : null;
   const priorTranscriptPath = prior && typeof prior.transcriptPath === 'string' && prior.transcriptPath ? prior.transcriptPath : null;
+  const priorTrajectoryId = prior && typeof prior.trajectoryId === 'string' && prior.trajectoryId ? prior.trajectoryId : null;
   const recordedAt = stateTimestamp();
   // The row's LIVENESS clock, and therefore not simply "when this row was last
   // written". It was the latter, stamped unconditionally on every call — so the
@@ -479,6 +477,7 @@ export function recordRunAgentUnlocked(
     parentSessionId: firstString(entry.parentSessionId, sameAgent ? priorParentSessionId : null),
     roleSource: strongestRoleSource(entry.roleSource, sameAgent ? priorRoleSource : null),
     transcriptPath: firstString(entry.transcriptPath, sameAgent ? priorTranscriptPath : null),
+    trajectoryId: firstString(entry.trajectoryId, sameAgent ? priorTrajectoryId : null),
     recordedAt: rowRecordedAt,
     tasks: sameAgent && typeof prior?.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
     replaced: false,

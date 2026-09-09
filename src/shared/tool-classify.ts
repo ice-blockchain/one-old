@@ -8,7 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { isSafeOneMcpModelId, ONE_MCP_MAX_AVAILABLE_MODELS } from '../config/one-mcp';
-import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
+import { canonicalizeStateDirSegments, LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
 import { BACKEND_IDS, FRONTEND_IDS, MOBILE_FRAMEWORK_IDS } from '../config/state';
 import type { ToolClass, ToolInput } from '../core/types';
 import {
@@ -24,6 +24,8 @@ import { modelGateScriptPath } from './model-gate-command';
 // admits cannot drift apart; see its header for the charset reasoning.
 import { gateExemptDoctorScriptPaths, isDoctorIdArgument } from './doctor-command';
 import { gateExemptResetScriptPaths } from './reset-command';
+import { gateExemptWorkspaceScriptPaths } from './workspace-command';
+import { gateExemptSecurityCheckScriptPaths, securityCheckRunnerRel } from './security-check-command';
 // The shim GENERATOR, imported for the exemption's identity check (see
 // isGeneratedShim): the bytes a candidate must equal are derived, never
 // described. One-directional and cycle-free — runner-shims.ts imports only
@@ -37,6 +39,21 @@ import { memberPathVerdict } from './hook/workspace-members';
 import { isSafeRunId } from './qa-report/schema';
 import { legacyStatePath, statePath } from './state';
 import { resolveTrafficOneEnv } from './state/traffic-one-paths';
+import {
+  COMMAND_START,
+  COMMAND_WORD_PREFIX,
+  DESTRUCTIVE_VERB,
+  EVAL_FLAG,
+  findWriteAction,
+  HEREDOC_INTERPRETER_RE,
+  IN_PLACE_EDITORS,
+  IN_PLACE_EDITOR_RE,
+  OVERWRITE_TOOL,
+  SHELL_NAME,
+  shellStatementHead,
+  shellWordsOf,
+  VERB_ANCHOR,
+} from './shell-vocabulary';
 
 type Rec = Record<string, unknown>;
 
@@ -164,7 +181,9 @@ export function parsedToolInput(tool: ToolInput | undefined): Rec | null {
 }
 
 export function isWriteLikeToolName(toolName: unknown = ''): boolean {
-  return /^(Write|Edit|MultiEdit|apply_patch)$/i.test(normalizedToolName(toolName));
+  return /^(Write|Edit|MultiEdit|apply_patch|NotebookEdit|create|str_replace_editor)$/i.test(
+    normalizedToolName(toolName),
+  );
 }
 
 export function commandFromToolInput(toolInput: unknown): string {
@@ -184,11 +203,12 @@ export function commandFromToolInput(toolInput: unknown): string {
 
 export function isStateFilePath(filePath: unknown): boolean {
   const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const folded = canonicalizeStateDirSegments(normalized);
   const stateFile = STATE_FILE.split(path.sep).join('/');
-  return normalized === stateFile
-    || normalized.endsWith(`/${stateFile}`)
-    || normalized === LEGACY_STATE_FILE
-    || normalized.endsWith(`/${LEGACY_STATE_FILE}`);
+  return folded === stateFile
+    || folded.endsWith(`/${stateFile}`)
+    || folded === LEGACY_STATE_FILE
+    || folded.endsWith(`/${LEGACY_STATE_FILE}`);
 }
 
 export function hasStateFile(cwd: string): boolean {
@@ -831,6 +851,10 @@ function isGateExemptDoctorScript(candidate: string): boolean {
   return isGateExemptScript(candidate, gateExemptDoctorScriptPaths(), 'scripts/doctor.cjs');
 }
 
+function isGateExemptSecurityCheckScript(candidate: string): boolean {
+  return isGateExemptScript(candidate, gateExemptSecurityCheckScriptPaths(), securityCheckRunnerRel());
+}
+
 type DoctorCommandKind = 'plain' | 'run' | 'bundle' | 'session';
 
 interface DoctorCommandInvocation {
@@ -912,6 +936,11 @@ function doctorCommandInvocation(toolName: unknown, toolInput: unknown): DoctorC
   // The mint additionally refuses a non-interactive stdin, so admitting it
   // here would buy nothing but the hole. The audience for `--unblock` is a
   // human at their own terminal, where no hook fires at all.
+  //
+  // The grammar's silence is not the deny. namesDoctorUnblock below (and
+  // doctorUnblockAgentMintDenial) is what refuses the mint on PreToolUse,
+  // including expect/script/pty/bash -c wrappers. Do not fold `--unblock`
+  // into this exemption to "catch" those — that would waive every other gate.
   return null;
 }
 
@@ -927,6 +956,46 @@ function doctorCommandInvocation(toolName: unknown, toolInput: unknown): DoctorC
 // capability: doctor writes nothing anywhere.
 export function isTrafficOneDoctorCommand(toolName: unknown, toolInput: unknown): boolean {
   return doctorCommandInvocation(toolName, toolInput) !== null;
+}
+
+// `--unblock` as a flag token. Fail-closed on quoting (`"--unblock"`,
+// `'--unblock'`, `--unblock=gate`) so a python/pty argv literal still matches;
+// `--unblocked` and `X--unblock` do not.
+const DOCTOR_UNBLOCK_FLAG = /(?:^|[\s'"=`])--unblock(?:[\s'"=`]|$)/;
+
+function commandNamesDoctorRunner(command: string): boolean {
+  if (!command) return false;
+  const posix = command.replace(/\\/g, '/');
+  // Basename of every shipped runner and shim. A foreign `/tmp/evil/doctor.cjs
+  // --unblock` is a mint attempt too — this is a deny, not an exemption.
+  if (/(?:^|[/\s'"\\])doctor\.cjs\b/i.test(posix)) return true;
+  for (const admitted of gateExemptDoctorScriptPaths()) {
+    if (admitted && command.includes(admitted)) return true;
+    const posixAdmitted = admitted.replace(/\\/g, '/');
+    if (posixAdmitted && posix.includes(posixAdmitted)) return true;
+  }
+  // Documented `~/.traffic-one/bin/doctor.cjs` spelling, and the bare `doctor`
+  // shim token (`echo doctor --unblock` names the runner; `echo --unblock` does
+  // not). `documentation --unblock` must not trip the token.
+  if (posix.includes('~/.traffic-one/bin/doctor')) return true;
+  if (/(?:^|[\s'"=/`])doctor(?:[\s'"`]|$)/.test(command)) return true;
+  return false;
+}
+
+/**
+ * Fail-closed predicate for an agent-issued `doctor --unblock`.
+ *
+ * If the command text names a doctor runner (admitted path, `doctor.cjs`, or
+ * the `doctor` shim token) AND contains `--unblock`, this is true — including
+ * when wrapped by `expect`, `script`, `python`/`pty`, `bash -c`, `sh -c`, or
+ * `eval`. No AST. False positives that name the runner (`echo doctor
+ * --unblock`) are accepted; `echo --unblock` without the runner is not.
+ *
+ * Permanent sibling of isTrafficOneDoctorCommand, never a widening of it.
+ */
+export function namesDoctorUnblock(command: string): boolean {
+  if (!command || !DOCTOR_UNBLOCK_FLAG.test(command)) return false;
+  return commandNamesDoctorRunner(command);
 }
 
 /**
@@ -975,6 +1044,79 @@ function resetCommandInvocation(toolName: unknown, toolInput: unknown): { readon
 // gate has no opinion" (noop), never an elevated capability.
 export function isTrafficOneResetCommand(toolName: unknown, toolInput: unknown): boolean {
   return resetCommandInvocation(toolName, toolInput) !== null;
+}
+
+/**
+ * The workspace-convert grammar: `node <workspaceScript> --convert-to-container`
+ * or the same with `--yes`. Two exact argv shapes, nothing else.
+ *
+ * Tight like reset: the runner MUTATES identity (and with `--yes` archives plan
+ * and runs), so optional flags stay out of the gate. `--cwd` / `--json` are
+ * CLI-only. Exemption means no opinion, never an elevated capability.
+ */
+function workspaceCommandInvocation(toolName: unknown, toolInput: unknown): 'plain' | 'yes' | null {
+  if (!isExemptShellToolName(toolName)) return null;
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim(), {
+    tildeHome: process.env.HOME || os.homedir(),
+  });
+  if (!words || (words.length !== 3 && words.length !== 4)) return null;
+  if (words[0] !== 'node'
+    || !isGateExemptScript(words[1] as string, gateExemptWorkspaceScriptPaths(), 'scripts/traffic-one-workspace.cjs')) {
+    return null;
+  }
+  if (words[2] !== '--convert-to-container') return null;
+  if (words.length === 3) return 'plain';
+  return words[3] === '--yes' ? 'yes' : null;
+}
+
+export function isTrafficOneWorkspaceCommand(toolName: unknown, toolInput: unknown): boolean {
+  return workspaceCommandInvocation(toolName, toolInput) !== null;
+}
+
+const SECURITY_CHECK_FLAG_WITH_VALUE = new Set(['--report-dir', '--cwd']);
+const SECURITY_CHECK_FLAG_SOLO = new Set([
+  '--strict', '--stamp', '--no-stamp', '--help', '-h',
+]);
+
+/**
+ * The security-check grammar: `node <security-check-runner.cjs>` plus only
+ * that runner's documented flags.
+ *
+ * Same identity stack as doctor/reset (`isGateExemptScript` + generated-shim
+ * byte-equality). Exemption here means "this is not the state-file shell
+ * deny" — never a fail-closed recovery row, and never a widening of doctor
+ * or reset. The deploy remediation is `--strict --stamp`; `--stamp` is what
+ * writes `.one.json` via `writeState` and typically does not name that file
+ * in argv, so the predicate must still admit the command if a detector would
+ * classify `node <shim> --stamp` as a state-file writer.
+ *
+ * `words` is cleanShellWords output: chaining, substitution and redirection
+ * have already made it null. Case-sensitive flags, like the sibling grammars.
+ */
+function securityCheckCommandInvocation(toolName: unknown, toolInput: unknown): boolean {
+  if (!isExemptShellToolName(toolName)) return false;
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim(), {
+    tildeHome: process.env.HOME || os.homedir(),
+  });
+  if (!words || words.length < 2) return false;
+  if (words[0] !== 'node' || !isGateExemptSecurityCheckScript(words[1] as string)) return false;
+  const args = words.slice(2);
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index] as string;
+    if (SECURITY_CHECK_FLAG_SOLO.has(flag)) continue;
+    if (SECURITY_CHECK_FLAG_WITH_VALUE.has(flag)) {
+      const value = args[index + 1];
+      if (!value || value.startsWith('-')) return false;
+      index += 1;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+export function isTrafficOneSecurityCheckCommand(toolName: unknown, toolInput: unknown): boolean {
+  return securityCheckCommandInvocation(toolName, toolInput);
 }
 
 // The run id the grammar admitted, or '' — exported so a caller reads the value
@@ -1045,11 +1187,285 @@ export function isBrowserOpenCommand(toolName: unknown, toolInput: unknown): boo
   return BROWSER_OPEN_COMMAND.test(commandFromToolInput(toolInput));
 }
 
+// ── Onboarding orientation shell (allowlist; unknown → not read-only) ────────
+//
+// isMutatingPreToolUse is a DENYLIST used by re-anchor, authoring-guard, and
+// several onboarding-gate mutating walks. It deliberately leaves `python
+// analyze.py` unflagged so a read-only investigation of a foreign project does
+// not re-anchor onto it. That same denylist misses `"rm"`, `\rm`, `/bin/rm`,
+// `bash -c`, `eval`, `sh x.sh`, interpreter eval/heredoc, in-place editors,
+// glued redirects, rsync/patch/install, `curl -o`, and most git verbs.
+//
+// This predicate is the opposite bias, used ONLY by isReadOnlyOrientationToolUse
+// for the shell half: a command-position verb that is not a known orientation
+// read is mutating. Do not call it from tool-scope / authoring-guard / other
+// isMutatingPreToolUse consumers.
+
+const NESTED_SHELL_EXEC_RE = new RegExp(
+  String.raw`\b${SHELL_NAME}\b(?:\\\n|[^\n;|&])*\s-[a-zA-Z]*c\b`,
+);
+const EVAL_FLAG_RE = new RegExp(`^${EVAL_FLAG}$`);
+const DESTRUCTIVE_VERB_RE = new RegExp(`^${DESTRUCTIVE_VERB}$`);
+const OVERWRITE_TOOL_RE = new RegExp(`^${OVERWRITE_TOOL}$`);
+const SHELL_BINARY_RE = new RegExp(`^${SHELL_NAME}$`);
+const COMMAND_WORD_PREFIX_RE = new RegExp(`^${COMMAND_WORD_PREFIX}`);
+const ONBOARDING_WRITE_REDIRECT_RE =
+  /(?:^|[\s;&|\w"')}\x60])(?:>{1,2}|&>)\s*(?!&?\d(?:\b|$))(?!\/dev\/null(?:\b|$))/;
+const ONBOARDING_DESTRUCTIVE_RE = new RegExp(
+  `${VERB_ANCHOR}${COMMAND_WORD_PREFIX}${DESTRUCTIVE_VERB}\\b`,
+);
+const ONBOARDING_OVERWRITE_RE = new RegExp(
+  `${COMMAND_START}${COMMAND_WORD_PREFIX}${OVERWRITE_TOOL}\\b`,
+);
+const ONBOARDING_INTERPRETER_RE = /^(?:python(?:\d+(?:\.\d+)*)?|node(?:js)?|ts-node|tsx|deno|bun|perl|ruby|php)$/;
+const ONBOARDING_CURL_WRITE_RE = /^(?:-[a-zA-Z]*[oOT]|--output(?:-dir)?|--remote-name(?:-all)?)$/;
+
+/** Inspection verbs an onboarding agent may run. Unknown command-position verbs fail closed. */
+const ONBOARDING_READ_VERBS: ReadonlySet<string> = new Set([
+  'pwd', 'echo', 'printf', 'which', 'type', 'whence', 'printenv',
+  'whoami', 'id', 'uname', 'hostname', 'arch', 'nproc', 'getconf',
+  'ps', 'date', 'cd',
+  'cat', 'bat', 'head', 'tail', 'less', 'more', 'nl', 'wc', 'jq', 'yq',
+  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'ls', 'stat', 'file', 'du',
+  'cmp', 'diff', 'md5', 'md5sum', 'shasum', 'sha1sum', 'sha256sum', 'cksum',
+  'uniq', 'cut', 'tr', 'column', 'xxd', 'od', 'strings', 'realpath',
+  'readlink', 'dirname', 'basename', 'test', '[', '[[', 'true', 'false',
+  'lsof',
+]);
+
+const ONBOARDING_GIT_READ_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'status', 'log', 'diff', 'show', 'blame', 'grep', 'ls-files', 'ls-tree',
+  'rev-parse', 'describe', 'version', 'help', 'shortlog', 'name-rev',
+  'cat-file', 'rev-list', 'for-each-ref', 'symbolic-ref', 'check-ignore',
+  'check-attr', 'whatchanged', 'annotate',
+]);
+
+const GIT_GLOBAL_WITH_ARGUMENT = new Set([
+  '-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path',
+]);
+
+function onboardingCommandVerb(word: string): string {
+  return word.replace(/^['"`]+/, '').replace(/['"`]+$/, '').replace(COMMAND_WORD_PREFIX_RE, '');
+}
+
+function argsHaveEvalFlag(args: readonly string[]): boolean {
+  return args.some((arg) => EVAL_FLAG_RE.test(arg) || /^(?:--eval|--exec|--print)=/.test(arg));
+}
+
+function onboardingInPlaceEdit(verb: string, args: readonly string[]): boolean {
+  const editor = IN_PLACE_EDITORS.find((candidate) => candidate.binary === verb);
+  if (!editor) return false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (!token.startsWith('-') || token === '--') break;
+    if (editor.optionsWithArgument?.includes(token)) { index += 1; continue; }
+    if (token === '--in-place' || token.startsWith('--in-place=')) return true;
+    if (!editor.shortRun.test(token)) continue;
+    if (editor.requiresArgument && args[index + 1] !== editor.requiresArgument) continue;
+    return true;
+  }
+  return false;
+}
+
+function gitSubcommandIsOnboardingRead(args: readonly string[]): boolean {
+  let cursor = 0;
+  while (cursor < args.length) {
+    const token = args[cursor]!;
+    if (GIT_GLOBAL_WITH_ARGUMENT.has(token)) { cursor += 2; continue; }
+    if (token.startsWith('-')) { cursor += 1; continue; }
+    break;
+  }
+  const subcommand = args[cursor] ?? '';
+  return ONBOARDING_GIT_READ_SUBCOMMANDS.has(subcommand);
+}
+
+function commandHasOnboardingWriteRedirect(command: string): boolean {
+  let quote: "'" | '"' | '`' | '' = '';
+  let scanned = '';
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (quote) {
+      if (quote === '"' && character === '\\') { index += 1; continue; }
+      if (character === quote) quote = '';
+      continue;
+    }
+    if (character === "'" || character === '"' || character === '`') {
+      quote = character;
+      scanned += ' ';
+      continue;
+    }
+    scanned += character;
+  }
+  return ONBOARDING_WRITE_REDIRECT_RE.test(scanned);
+}
+
+function matchingClose(command: string, open: number, closer: string): number {
+  if (closer === '`') {
+    for (let index = open + 1; index < command.length; index += 1) {
+      if (command[index] === '\\') { index += 1; continue; }
+      if (command[index] === '`') return index;
+    }
+    return -1;
+  }
+  let depth = 0;
+  let quote: "'" | '"' | '' = '';
+  for (let index = open; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (quote) {
+      if (quote === '"' && character === '\\') { index += 1; continue; }
+      if (character === quote) quote = '';
+      continue;
+    }
+    if (character === "'" || character === '"') { quote = character; continue; }
+    if (character === '(') { depth += 1; continue; }
+    if (character === ')' && --depth === 0) return index;
+  }
+  return -1;
+}
+
+function onboardingSimpleCommands(command: string): string[] | null {
+  const pieces: string[] = [];
+  let current = '';
+  let quote: "'" | '"' | '' = '';
+  const flush = (): void => {
+    const trimmed = current.trim();
+    if (trimmed) pieces.push(trimmed);
+    current = '';
+  };
+  const liftSubstitution = (body: string): boolean => {
+    const inner = onboardingSimpleCommands(body);
+    if (inner === null) return false;
+    pieces.push(...inner);
+    return true;
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    const next = command[index + 1];
+    if (quote === "'") {
+      current += character;
+      if (character === "'") quote = '';
+      continue;
+    }
+    if (quote === '"' && character === '\\') {
+      current += character;
+      current += next ?? '';
+      index += 1;
+      continue;
+    }
+    // Live in double quotes as well as unquoted. Single-quoted `$(…)` / backticks
+    // / `<(…)` stay data. Unmatched substitution is fail-closed (null), not
+    // "verb is echo". `<(…)` is lifted the same way as `$()`; `>(…)` is left
+    // for the write-redirect check.
+    if (character === '`') {
+      const close = matchingClose(command, index, '`');
+      if (close === -1) return null;
+      if (!liftSubstitution(command.slice(index + 1, close))) return null;
+      current += '`';
+      index = close;
+      continue;
+    }
+    if (character === '$' && next === '(' && command[index + 2] !== '(') {
+      const close = matchingClose(command, index + 1, ')');
+      if (close === -1) return null;
+      if (!liftSubstitution(command.slice(index + 2, close))) return null;
+      current += '$';
+      index = close;
+      continue;
+    }
+    if (character === '<' && next === '(') {
+      const close = matchingClose(command, index + 1, ')');
+      if (close === -1) return null;
+      if (!liftSubstitution(command.slice(index + 2, close))) return null;
+      current += '<';
+      index = close;
+      continue;
+    }
+    if (quote) {
+      current += character;
+      if (character === quote) quote = '';
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === '\n' || character === ';') { flush(); continue; }
+    if (character === '&' && next === '&') { flush(); index += 1; continue; }
+    if (character === '&') {
+      // `2>&1` / `&>file` keep the operator; a background `&` splits like `;` / `|`.
+      if (next === '>' || current.endsWith('>')) {
+        current += character;
+        continue;
+      }
+      flush();
+      continue;
+    }
+    if (character === '|' && next === '|') { flush(); index += 1; continue; }
+    if (character === '|') { flush(); continue; }
+    current += character;
+  }
+  flush();
+  return pieces;
+}
+
+function simpleCommandIsOnboardingRead(statement: string): boolean {
+  if (!statement) return true;
+  if (commandHasOnboardingWriteRedirect(statement)) return false;
+  if (HEREDOC_INTERPRETER_RE.test(statement)) return false;
+  const words = shellWordsOf(statement);
+  if (words.length === 0) return true;
+  const head = shellStatementHead(words);
+  if (head.redirectionOnly) return !commandHasOnboardingWriteRedirect(statement);
+  const verb = onboardingCommandVerb(head.verb);
+  const args = head.args;
+  if (!verb) return false;
+
+  const verbLine = `${verb}${args.length ? ` ${args.join(' ')}` : ''}`;
+  if (ONBOARDING_DESTRUCTIVE_RE.test(verbLine) || DESTRUCTIVE_VERB_RE.test(verb)) return false;
+  if (ONBOARDING_OVERWRITE_RE.test(verbLine) || OVERWRITE_TOOL_RE.test(verb)) return false;
+  if (verb === 'eval' || verb === 'source' || verb === '.') return false;
+  if (SHELL_BINARY_RE.test(verb) || NESTED_SHELL_EXEC_RE.test(verbLine)) return false;
+  if (verb === 'dd' || verb === 'tee' || verb === 'patch' || verb === 'xargs') return false;
+  IN_PLACE_EDITOR_RE.lastIndex = 0;
+  if (IN_PLACE_EDITOR_RE.test(verb) && onboardingInPlaceEdit(verb, args)) return false;
+  if (onboardingInPlaceEdit(verb, args)) return false;
+  if (verb === 'curl' && args.some((arg) => ONBOARDING_CURL_WRITE_RE.test(arg))) return false;
+  if (verb === 'find') return !findWriteAction(statement);
+  if (verb === 'git') return gitSubcommandIsOnboardingRead(args);
+  if (verb === 'sed' || verb === 'gsed' || verb === 'awk' || verb === 'gawk') {
+    return !onboardingInPlaceEdit(verb, args);
+  }
+  if (ONBOARDING_INTERPRETER_RE.test(verb)) {
+    if (argsHaveEvalFlag(args)) return false;
+    if (/<<-?/.test(statement)) return false;
+    return true;
+  }
+  return ONBOARDING_READ_VERBS.has(verb);
+}
+
+/**
+ * Allowlist of onboarding orientation shell. Unknown command-position verbs
+ * are not read-only. Inverse of isOnboardingMutatingShell.
+ */
+export function isOnboardingReadOnlyShell(command: string): boolean {
+  if (!command.trim()) return false;
+  if (commandHasOnboardingWriteRedirect(command)) return false;
+  const statements = onboardingSimpleCommands(command);
+  if (!statements) return false;
+  return statements.every((statement) => simpleCommandIsOnboardingRead(statement));
+}
+
+/** Fail-closed inverse: a command-position verb that is not a known orientation read. */
+export function isOnboardingMutatingShell(command: string): boolean {
+  return !isOnboardingReadOnlyShell(command);
+}
+
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {
   const ti = toolInput && typeof toolInput === 'object' ? (toolInput as Rec) : null;
   const name = String(toolName || (ti && (ti.tool_name || ti.toolName)) || '');
   if (!name) return false;
   if (/^(Read|Glob|Grep|LS|NotebookRead)$/i.test(normalizedToolName(name))) return true;
-  if (isShellToolName(name) && !isMutatingPreToolUse(name, toolInput)) return true;
+  if (isShellToolName(name) && isOnboardingReadOnlyShell(commandFromToolInput(toolInput))) return true;
   return false;
 }

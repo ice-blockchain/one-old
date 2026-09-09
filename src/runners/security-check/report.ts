@@ -60,6 +60,14 @@ export function renderMarkdownReport(report: Report): string {
   return `${lines.join('\n')}\n`;
 }
 
+// A stamp is deploy-authorizing only when the scan itself passed AND there are
+// no high findings. `--strict` still owns report.status (a non-strict run with
+// highs can stay `passed` as a diagnostic); this predicate owns the write.
+export function securityCheckCanStamp(report: Pick<Report, 'status' | 'issues'>): boolean {
+  return report.status === 'passed'
+    && !report.issues.some((issue) => issue.severity === 'high');
+}
+
 // Returns whether the stamp is actually ON DISK. `.one.json` is written through
 // the fenced chokepoint, and the refusal used to be dropped here: the runner then
 // printed `PASSED` and exited 0 while nothing was stamped, and the deploy-gate —
@@ -69,6 +77,7 @@ export function renderMarkdownReport(report: Report): string {
 // The gate's own direction is fail-closed and stays untouched; what was broken is
 // that the producer certified a stamp it never landed.
 export function stampState(cwd: string, report: Report, relativeReportPath: string): boolean {
+  if (!securityCheckCanStamp(report)) return false;
   return withProjectStateLock(cwd, () => {
     const nextStatePath = statePath(cwd);
     const oldStatePath = legacyStatePath(cwd);
@@ -85,6 +94,7 @@ export function stampState(cwd: string, report: Report, relativeReportPath: stri
     state.lastSecurityCheckStatus = 'passed';
     state.lastSecurityCheckFingerprint = report.fingerprint.fingerprint;
     state.lastSecurityCheckReport = relativeReportPath;
+    state.lastSecurityCheckStrict = Boolean(report.strict);
     delete state.pluginVersion;
     const version = pluginVersion();
     if (version) state.version = version;

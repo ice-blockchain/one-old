@@ -14,6 +14,7 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
     'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'opencode-hook-runtime.cjs', 'kilo-hook-runtime.cjs', 'windsurf-hook-runtime.cjs', 'devin-hook-runtime.cjs',
     'opencode-host.cjs', 'kilo-host.cjs', 'windsurf-host.cjs', 'one-mcp-sync.cjs', 'doctor.cjs',
     'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs', 'one-mcp-host.cjs', 'traffic-one-cleanup.cjs',
+    'traffic-one-reset.cjs', 'traffic-one-workspace.cjs',
     'qa-evidence-runner.cjs', 'gitnexus-runner.cjs', 'graphify-runner.cjs',
   ]) {
     assert.ok(name in SHIMS, `missing shim for ${name}`);

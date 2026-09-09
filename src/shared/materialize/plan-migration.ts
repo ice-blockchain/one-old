@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readFileNoFollow, realPathWithMissingTail } from '../fs-nofollow';
-import { readJsonResult, removePath, stateWritePermitted, writeTextFile } from '../fsjson';
+import { readJsonResult, removePath, stateWritePermitted, writeJson, writeTextFile } from '../fsjson';
 import { isRegisteredWorkspaceMember } from '../hook/paths';
 import { statePath } from '../state/normalize';
 import { hasStateFile } from '../tool-classify';
@@ -19,7 +19,8 @@ export type PlanMigrationRetainReason =
   | 'blank'
   | 'not-carried'
   | 'changed'
-  | 'remove-failed';
+  | 'remove-failed'
+  | 'packages-case-mismatch';
 
 export interface RetainedLegacyDoc {
   relPath: string;
@@ -102,6 +103,15 @@ const SECTION_PREAMBLE = 'The sections below were migrated from legacy `architec
  * pinned now by the two-sentinel row in plan-migration-fold-safety.test.ts.
  */
 const SECTION_END = '<!-- traffic-one:migrated-notes:end -->';
+
+/**
+ * Soft warn only. A cap would delete a carried version, which this path forbids.
+ * 8 `###` blocks is already past the architect's ~250-line plan budget for any
+ * realistic multi-line document; the fold still appends.
+ */
+export const MIGRATED_SECTION_BLOCK_WARN = 8;
+
+const FOLD_NOTICE_REL = path.join('.traffic-one', 'runs', '.once', 'architecture-fold-notice.json');
 
 /**
  * EVERY MARKER GRAMMAR THE RUNTIME PARSES OUT OF `plan.md`, enumerated — because
@@ -554,6 +564,59 @@ function resolveWithinProject(projectRoot: string, target: string): string | nul
   return real !== null && containedIn(projectRoot, real) ? real : null;
 }
 
+/**
+ * A `packages` symlink whose JS realpath re-spells the project (exact contain
+ * refuses) but whose native realpath is the same tree — the case-folding cost
+ * of the exact predicate. Report it; do not fold through `.native`.
+ */
+function packagesCaseMismatch(projectRoot: string, packagesRoot: string): boolean {
+  try {
+    if (!fs.lstatSync(packagesRoot).isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+  if (resolveWithinProject(projectRoot, packagesRoot) !== null) return false;
+  try {
+    const nativePkg = fs.realpathSync.native(packagesRoot);
+    const nativeRoot = fs.realpathSync.native(projectRoot);
+    return containedIn(nativeRoot, nativePkg);
+  } catch {
+    return false;
+  }
+}
+
+function migratedSectionBlockCount(plan: string): number {
+  const start = plan.search(SECTION_HEADING_RE);
+  if (start < 0) return 0;
+  const end = plan.lastIndexOf(SECTION_END);
+  const section = end > start ? plan.slice(start, end) : plan.slice(start);
+  return (section.match(/^### /gm) ?? []).length;
+}
+
+function architectureFoldNoticePath(cwd: string): string {
+  return path.join(cwd, FOLD_NOTICE_REL);
+}
+
+function persistArchitectureFoldNotice(cwd: string, result: PlanMigrationResult): void {
+  const notice = planMigrationNotice(result);
+  if (!notice) return;
+  writeJson(architectureFoldNoticePath(cwd), { notice });
+}
+
+/**
+ * Read-and-delete the fold marker for a non-denying SessionStart /
+ * UserPromptSubmit context line. Empty when nothing is pending.
+ */
+export function consumeArchitectureFoldNotice(cwd: string): string {
+  const file = architectureFoldNoticePath(cwd);
+  const read = readJsonResult<{ notice?: unknown }>(file);
+  if (read.kind !== 'ok' || typeof read.value.notice !== 'string') return '';
+  const text = read.value.notice.trim();
+  if (!text) return '';
+  removePath(file);
+  return text;
+}
+
 function toPosix(value: string): string {
   return value.replace(/\\/g, '/');
 }
@@ -805,6 +868,7 @@ function legacyArchitectureDocs(cwd: string, projectRoot: string): { docs: Legac
     path.join(cwd, 'architecture.md'),
   ];
   const packagesRoot = path.join(cwd, 'packages');
+  const packagesRetained: RetainedLegacyDoc[] = [];
   if (resolveWithinProject(projectRoot, packagesRoot) !== null && fs.existsSync(packagesRoot)) {
     for (const entry of fs.readdirSync(packagesRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
@@ -812,6 +876,8 @@ function legacyArchitectureDocs(cwd: string, projectRoot: string): { docs: Legac
       if (ownsSeparateProject(pkg)) continue;
       candidates.push(path.join(pkg, 'architecture.md'));
     }
+  } else if (packagesCaseMismatch(projectRoot, packagesRoot)) {
+    packagesRetained.push({ relPath: 'packages', reason: 'packages-case-mismatch' });
   }
 
   const docs: LegacyDoc[] = [];
@@ -848,6 +914,7 @@ function legacyArchitectureDocs(cwd: string, projectRoot: string): { docs: Legac
     docs.push({ absPath, realPath, relPath, content, marker, block: migratedBlock(inputs, marker) });
   }
   docs.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  retained.push(...packagesRetained);
   retained.sort((a, b) => a.relPath.localeCompare(b.relPath));
   return { docs, retained };
 }
@@ -1102,6 +1169,7 @@ const RETAIN_PROSE: Record<PlanMigrationRetainReason, string> = {
   'not-carried': 'is not carried by `.traffic-one/plan.md` on disk',
   changed: 'changed on disk after it was read',
   'remove-failed': 'could not be removed',
+  'packages-case-mismatch': 'is a symlink whose target spells this project in a different case, so nothing under packages/ was folded',
 };
 
 /**
@@ -1192,10 +1260,18 @@ export function planMigrationNotice(result: PlanMigrationResult | null): string 
   if (result === null) return '';
   const parts: string[] = [];
   if (result.migrated.length > 0) {
-    parts.push(`Legacy \`architecture.md\` folded into \`.traffic-one/plan.md\` and removed: ${result.migrated.map((rel) => `\`${rel}\``).join(', ')}.`);
+    const headings = result.migrated.map((rel) => `\`### ${rel}\``).join(', ');
+    parts.push(`Legacy \`architecture.md\` folded into \`.traffic-one/plan.md\` under the heading${result.migrated.length === 1 ? '' : 's'} ${headings} and removed.`);
   }
   if (result.retained.length > 0) {
     parts.push(`Left exactly where it is, unfolded and not removed: ${result.retained.map((doc) => `\`${doc.relPath}\` (${RETAIN_PROSE[doc.reason]})`).join(', ')}.`);
+  }
+  const plan = readTextNoFollow(result.planPath);
+  if (plan) {
+    const blocks = migratedSectionBlockCount(plan);
+    if (blocks >= MIGRATED_SECTION_BLOCK_WARN) {
+      parts.push(`The migrated section now has ${blocks} \`###\` blocks; prune versions you no longer need. Traffic One will not delete a carried version.`);
+    }
   }
   return parts.join(' ');
 }
@@ -1330,7 +1406,11 @@ export function migrateArchitectureDocsToPlan(cwd: string): PlanMigrationResult 
   if (docs.length === 0 && retained.length === 0) return null;
 
   const planPath = path.join(cwd, '.traffic-one', 'plan.md');
-  if (docs.length === 0) return { changed: false, migrated: [], retained, planPath };
+  if (docs.length === 0) {
+    const result = { changed: false, migrated: [], retained, planPath };
+    persistArchitectureFoldNotice(cwd, result);
+    return result;
+  }
 
   const existingPlan = readTextNoFollow(planPath);
   const basePlan = (existingPlan && existingPlan.trim()) ? existingPlan.trimEnd() : PLAN_TEMPLATE.trimEnd();
@@ -1375,5 +1455,7 @@ export function migrateArchitectureDocsToPlan(cwd: string): PlanMigrationResult 
     migrated.push(doc.relPath);
   }
 
-  return { changed: planChanged || migrated.length > 0, migrated, retained, planPath };
+  const result = { changed: planChanged || migrated.length > 0, migrated, retained, planPath };
+  persistArchitectureFoldNotice(cwd, result);
+  return result;
 }

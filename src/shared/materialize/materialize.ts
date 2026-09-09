@@ -34,7 +34,7 @@ import {
 import { writeCursorAgentFiles } from './cursor-agents';
 import { writeCopilotAgentFiles } from './copilot-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
-import { isLeanMaterialization } from './has-assets';
+import { isLeanMaterialization, materializedFileHashes } from './has-assets';
 import { pluginContentHash } from '../build-provenance';
 import { writeCodexAgentFiles } from './codex-agents';
 import { writeKiloAgentFiles } from './kilo-agents';
@@ -538,16 +538,26 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // the root cannot state one (a fixture or partial tree) rather than written
   // as null — absence says "unknown", and a null would be a claim.
   const buildHash = pluginContentHash(root);
+  // Per-file sha256 of the bytes this run left on disk — the freshness signal
+  // materializedFileHashesDrifted (has-assets.ts) compares on the hook path.
+  // Computed AFTER the writes above so the stamp matches what is actually
+  // there (copySkillDir appends the generated marker; writeRootAgents may
+  // fold preserved local notes). The manifest itself is not in the map: the
+  // hashes live in this file, so hashing it is circular. Absence of this
+  // field on an older manifest is stale, same transition as pluginContentHash.
+  const posixRules = rules.map(toPosix);
+  const fileHashes = materializedFileHashes(cwd, posixRules, skills);
   const manifestJson = (generatedAt: string): string => `${JSON.stringify({
     generatedBy: 'traffic-one',
     generatedAt,
     ...(buildHash ? { pluginContentHash: buildHash } : {}),
+    fileHashes,
     contextProfile: leanMode ? 'lean' : 'full',
     stack: (capabilityState.stack as string) || 'minimal',
     frontend: (capabilityState.frontend as string) || 'none',
     backend: (capabilityState.backend as string) || 'none',
     mobile: (mobile && (mobile.framework as string)) || 'none',
-    rules: rules.map(toPosix),
+    rules: posixRules,
     skills,
     ...(windsurfAssets ? { windsurf: { rules: windsurfAssets.rules, skills: windsurfAssets.skills, agents: windsurfAgents } } : {}),
   }, null, 2)}\n`;

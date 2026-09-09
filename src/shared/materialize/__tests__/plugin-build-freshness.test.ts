@@ -284,6 +284,11 @@ test('the writer stamps the build it actually copied from into .traffic-one/mani
     const result = materializeProjectAssets(project, { ...STATE });
     assert.equal(result.skipped, undefined, `a whole root must materialize, got ${result.skipped}`);
     assert.equal(readManifest(project).pluginContentHash, HASH_A);
+    const hashes = readManifest(project).fileHashes as Record<string, string>;
+    assert.equal(typeof hashes, 'object');
+    assert.ok(hashes['AGENTS.md'], 'generated root AGENTS.md is stamped');
+    assert.ok(hashes[`skills/${MUTABLE_SKILL}/SKILL.md`], 'each skill SKILL.md is stamped');
+    assert.ok(Object.keys(hashes).some((key) => key.startsWith('rules/')), 'tracked rules are stamped');
   });
 });
 

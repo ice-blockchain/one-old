@@ -549,6 +549,39 @@ test('ensureProjectGitignore appends below an existing file, preserving the owne
   });
 });
 
+test('generated gitignore run-state lines are recursive **/.traffic-one/… and include the onboarding session store', () => {
+  const expected = [
+    '**/.traffic-one/runs/',
+    '**/.traffic-one/reports/',
+    '**/.traffic-one/backups/',
+    '**/.traffic-one/debug/',
+    '**/.traffic-one/one-mcp-report.json',
+    '**/.traffic-one/.onboarding-main-sessions.json',
+  ];
+  const blockLines = TRAFFIC_ONE_BLOCK_BODY.split('\n').filter((line) => line.startsWith('**/.traffic-one/'));
+  const seedLines = String(scaffoldFileContent('.gitignore')).split('\n').filter((line) => line.startsWith('**/.traffic-one/'));
+  assert.deepEqual(blockLines, expected);
+  assert.deepEqual(seedLines, expected, 'the greenfield seed emits the same recursive lines');
+  assert.equal(
+    TRAFFIC_ONE_BLOCK_BODY.split('\n').some((line) => /^\.traffic-one\//.test(line)),
+    false,
+    'no generated rule is anchored to the directory that holds .gitignore',
+  );
+});
+
+test('git check-ignore matches a nested workspace member against the generated block', () => {
+  withTempDir((cwd) => {
+    git(cwd, ['init', '-q']);
+    assert.equal(ensureProjectGitignore(cwd), true);
+    const ignored = (rel: string): boolean => spawnSync('git', ['check-ignore', '-q', '--', rel], { cwd }).status === 0;
+    assert.equal(ignored('web/.traffic-one/runs/debug.log'), true, 'member runs/ is ignored');
+    assert.equal(ignored('web/.traffic-one/.onboarding-main-sessions.json'), true, 'member session store is ignored');
+    assert.equal(ignored('.traffic-one/runs/debug.log'), true, 'root runs/ is still ignored');
+    assert.equal(ignored('web/.traffic-one/digests/handoff.md'), false, 'digests stay trackable');
+    assert.equal(ignored('web/.traffic-one/.one.json'), false, '.one.json stays trackable');
+  });
+});
+
 test('ensureProjectGitignore leaves a file already carrying an identical block byte-identical', () => {
   withTempDir((cwd) => {
     fs.writeFileSync(path.join(cwd, '.gitignore'), 'keep-me/\n', 'utf8');

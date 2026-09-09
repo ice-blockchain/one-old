@@ -7,7 +7,7 @@ import { trackedTempDirs } from '../../test-support/__tests__/temp-dirs';
 import { runPipeline, selectHandlers } from '../pipeline';
 import { buildContext } from '../context';
 import { askUser, context, deny, mergeResults, noop } from '../result';
-import { toolClassForRawName } from '../events';
+import { classifyTool, toolClassForRawName } from '../events';
 import { readDecisions } from '../../shared/state/decision-log';
 import { writeJson } from '../../shared/fsjson';
 import { recordPluginUseChoice } from '../../shared/state/plugin-use';
@@ -172,7 +172,35 @@ test('toolClassForRawName maps all three hosts to one vocabulary', () => {
   assert.equal(toolClassForRawName('collaboration.send_message'), 'spawn-agent');
   assert.equal(toolClassForRawName('send_input'), 'spawn-agent');
   assert.equal(toolClassForRawName('Grep'), 'search');
+  assert.equal(toolClassForRawName('NotebookEdit'), 'file-write');
+  assert.equal(toolClassForRawName('create'), 'file-write');
+  assert.equal(toolClassForRawName('str_replace_editor'), 'file-write');
+  assert.equal(toolClassForRawName('view'), 'file-read');
+  assert.equal(toolClassForRawName('patch'), 'file-edit');
   assert.equal(toolClassForRawName('SomethingElse'), 'other');
+});
+
+test('classifyTool keeps name-derived classes and only reclassifies unknown by args', () => {
+  assert.equal(classifyTool('SomethingElse'), 'other');
+  assert.equal(classifyTool('mcp__filesystem__write_file', { path: '/a.ts', content: 'x' }), 'file-write');
+  assert.equal(classifyTool('mcp__filesystem__write_file', { file_path: '/a.ts', edits: [{ new_string: 'x' }] }), 'file-write');
+  assert.equal(classifyTool('mcp__filesystem__write_file', { filePath: '/a.ts', new_string: 'x' }), 'file-write');
+  assert.equal(classifyTool('mcp__filesystem__write_file', { path: '/a.ts', newString: 'x' }), 'file-write');
+  assert.equal(classifyTool('mcp__shell__run', { command: 'npm test' }), 'shell');
+  assert.equal(classifyTool('mcp__shell__run', { shell: 'ls' }), 'shell');
+  assert.equal(classifyTool('mcp__shell__run', { cmd: 'pwd' }), 'shell');
+  assert.equal(classifyTool('Write', { path: '/a.ts', content: 'x', command: 'echo hi' }), 'file-write');
+  assert.equal(classifyTool('Bash', { path: '/a.ts', content: 'x' }), 'shell');
+  assert.equal(classifyTool('mcp__search__query', { query: 'todos' }), 'other');
+  assert.equal(classifyTool('mcp__filesystem__write_file', { path: '/a.ts' }), 'other');
+  assert.equal(classifyTool('mcp__shell__run', { command: '' }), 'other');
+  assert.equal(classifyTool('NotebookEdit'), 'file-write');
+  assert.equal(classifyTool('create'), 'file-write');
+  assert.equal(classifyTool('str_replace_editor'), 'file-write');
+  assert.equal(classifyTool('view'), 'file-read');
+  // Name-first: OpenCode/Kilo `patch` stays file-edit even with write-shaped args.
+  assert.equal(classifyTool('patch'), 'file-edit');
+  assert.equal(classifyTool('patch', { path: '/a.ts', content: 'x' }), 'file-edit');
 });
 
 // ── decision log integration ─────────────────────────────────────────────────

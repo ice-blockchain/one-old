@@ -9,9 +9,12 @@
 #   - Steps run SERIALLY. Two concurrent suite runs fail each other on
 #     same-prefix temp directories, and the latency rows misread I/O contention
 #     as a real breach.
-#   - PLAYWRIGHT_BROWSERS_PATH is corrected. An agent shell may export it to a
-#     sandbox cache that does not exist, and `test:env` then reports ~48 false
-#     failures that look exactly like an uninstalled browser.
+#   - PLAYWRIGHT_BROWSERS_PATH is corrected only when an inherited value names a
+#     directory that does not exist (an agent sandbox cache). Playwright's own
+#     default, or an inherited path that exists, is left alone. An explicit
+#     PLAYWRIGHT_BROWSERS_PATH_OVERRIDE is used only when that directory exists.
+#     Never force $HOME/Library/Caches/ms-playwright — that is a macOS path and
+#     clobbers Linux and Playwright's default.
 #   - The suite log is CHECKED FOR ITS TAP MARKER before any count is read off
 #     it. Node's reporter is `spec` on a TTY and `tap` when redirected; a grep
 #     for `# pass` against a spec log matches nothing and looks like a clean
@@ -38,7 +41,11 @@ cd "$(dirname "$0")/.." || exit 1
 # it is about to judge.
 LOGS=.tmp/verify-chain
 mkdir -p "$LOGS"
-export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH_OVERRIDE:-$HOME/Library/Caches/ms-playwright}"
+if [ -n "${PLAYWRIGHT_BROWSERS_PATH_OVERRIDE:-}" ] && [ -d "$PLAYWRIGHT_BROWSERS_PATH_OVERRIDE" ]; then
+  export PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH_OVERRIDE"
+elif [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && [ ! -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
+  unset PLAYWRIGHT_BROWSERS_PATH
+fi
 
 SUMMARY="$LOGS/SUMMARY.txt"
 : > "$SUMMARY"
@@ -46,7 +53,7 @@ SUMMARY="$LOGS/SUMMARY.txt"
 say() { printf '%s\n' "$*" | tee -a "$SUMMARY"; }
 
 say "chain started $(date '+%Y-%m-%d %H:%M:%S')  load=$(sysctl -n vm.loadavg 2>/dev/null || uptime)"
-say "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH"
+say "PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-}"
 say ""
 
 step() {
@@ -151,28 +158,52 @@ say ""
 # out of the workflows, in its own words: "A job that is red on a green tree is
 # worse than no job." The workflow therefore runs `--strict --host=claude,codex`.
 #
-# So the verdict is read from the assertion tally. A missing toolchain reports
+# So the verdict is read from the assertion tally run.ts actually prints:
+#   assertions: PASS N · FAIL N · SKIP N · INCONCLUSIVE N · UNSUPPORTED N
+# result-policy.ts fails strict on SKIP, UNSUPPORTED, host-uncertified and
+# manual-uncertified as well as FAIL/INCONCLUSIVE. A missing toolchain reports
 # INCONCLUSIVE rather than PASS, which is why INCONCLUSIVE is fatal here and not
-# merely noted: this step needs go, pytest, ruff and a Playwright Chromium at the
-# runs root, and silence about an absent one would read as a pass.
-TALLY=$(grep -o 'assertions: PASS [0-9]* · FAIL [0-9]* · SKIP [0-9]* · INCONCLUSIVE [0-9]*' "$LOGS/test-env.log" | tail -1)
+# merely noted: this step needs go, pytest, ruff, cargo (plus clippy and rustfmt)
+# and a Playwright Chromium at the runs root, and silence about an absent one
+# would read as a pass. SKIP and UNSUPPORTED are fatal for the same reason —
+# they are not a clean tree.
+TALLY=$(grep -o 'assertions: PASS [0-9]* · FAIL [0-9]* · SKIP [0-9]* · INCONCLUSIVE [0-9]* · UNSUPPORTED [0-9]*' "$LOGS/test-env.log" | tail -1)
+ENV_PASS=$(printf '%s' "$TALLY" | sed -n 's/.*PASS \([0-9]*\).*/\1/p')
 ENV_FAIL=$(printf '%s' "$TALLY" | sed -n 's/.*FAIL \([0-9]*\).*/\1/p')
+ENV_SKIP=$(printf '%s' "$TALLY" | sed -n 's/.*SKIP \([0-9]*\).*/\1/p')
 ENV_INCONC=$(printf '%s' "$TALLY" | sed -n 's/.*INCONCLUSIVE \([0-9]*\).*/\1/p')
+ENV_UNSUP=$(printf '%s' "$TALLY" | sed -n 's/.*UNSUPPORTED \([0-9]*\).*/\1/p')
 say "  ${TALLY:-NO ASSERTION TALLY FOUND}"
 if [ -z "$TALLY" ]; then
   say "  no tally to read, so this proves nothing either way — treat as UNDETERMINED"
   fail test-env
 fi
-if [ "$ENV_FAIL" != 0 ] || [ "$ENV_INCONC" != 0 ]; then
-  say "  bar: FAIL = 0 and INCONCLUSIVE = 0. Read $LOGS/test-env.log and the run's"
-  say "  own results.md, which names every failing assertion per scenario."
+if [ -z "$ENV_PASS" ] || [ "$ENV_PASS" = 0 ] \
+  || [ "$ENV_FAIL" != 0 ] || [ "$ENV_SKIP" != 0 ] \
+  || [ "$ENV_INCONC" != 0 ] || [ "$ENV_UNSUP" != 0 ]; then
+  say "  bar: PASS > 0 and FAIL = SKIP = INCONCLUSIVE = UNSUPPORTED = 0. Read"
+  say "  $LOGS/test-env.log and the run's own results.md, which names every"
+  say "  failing assertion per scenario."
+  fail test-env
+fi
+# EXIT=2 is cleanupBuildInstall failing. Always fatal — never the cursor
+# manual-cert gap (that gap is EXIT=1 with a clean tally AND the line
+# 'manual certifications: 0/1 certified').
+if [ "$ENV_EXIT" -eq 2 ]; then
+  say "  EXIT=2 is a cleanup failure, not the cursor manual-cert gap. Read $LOGS/test-env.log."
   fail test-env
 fi
 if [ "$ENV_EXIT" -ne 0 ]; then
-  say "  EXIT=$ENV_EXIT with a CLEAN tally: this is the manual-certification gap"
-  say "  described above (expect 'manual certifications: 0/1 certified' and"
-  say "  'cursor' listed as never driven automatically), NOT a regression."
-  grep -E 'manual certifications:|never driven automatically' "$LOGS/test-env.log" | sed 's/^/  /' >> "$SUMMARY"
+  if grep -q 'manual certifications: 0/1 certified' "$LOGS/test-env.log"; then
+    say "  EXIT=$ENV_EXIT with a CLEAN tally and 'manual certifications: 0/1 certified':"
+    say "  this is the cursor manual-certification gap described above (cursor is"
+    say "  contract+manual-e2e and is never driven automatically), NOT a regression."
+    grep -E 'manual certifications:|never driven automatically' "$LOGS/test-env.log" | sed 's/^/  /' >> "$SUMMARY"
+  else
+    say "  EXIT=$ENV_EXIT with a clean tally but without the cursor manual-cert line."
+    say "  That is not the known gap — treat as a regression."
+    fail test-env
+  fi
 fi
 
 say ""

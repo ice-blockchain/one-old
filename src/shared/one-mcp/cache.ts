@@ -6,7 +6,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   ONE_MCP_CACHE_FILE,
-  ONE_MCP_CACHE_LOCK_TIMEOUT_MS,
   ONE_MCP_CACHE_SCHEMA_VERSION,
   ONE_MCP_DECODER_VERSION,
 } from '../../config/one-mcp';
@@ -117,8 +116,9 @@ function writeCacheFile(filePath: string, cache: Rec): void {
 
 
 
-function withCacheLock<T>(filePath: string, body: () => T): T {
+function withCacheLock<T>(filePath: string, body: () => T): T | undefined {
   const lock = acquireCacheLock(filePath);
+  if (!lock) return undefined;
   try {
     return body();
   } finally {
@@ -291,7 +291,7 @@ export function beginOneMcpConfigCacheRequest(
       identity: entry ? oneMcpConfigCacheIdentity(entry) : null,
       syncGeneration,
     };
-  });
+  }) ?? { entry: null, identity: null, syncGeneration: '' };
 }
 
 export function completeOneMcpConfigCacheRequest(
@@ -330,7 +330,7 @@ export function completeOneMcpConfigCacheRequest(
       lastSync: diagnostic,
     }));
     return { written: true, current: config === undefined ? current : config };
-  });
+  }) ?? { written: false, current: currentConfig(readRawCache(filePath), host) };
 }
 
 export function compareAndSwapOneMcpConfigCacheEntry(
@@ -355,7 +355,7 @@ export function compareAndSwapOneMcpConfigCacheEntry(
       config: nextEntry,
     }));
     return { written: true, current: nextEntry };
-  });
+  }) ?? { written: false, current: currentConfig(readRawCache(filePath), host) };
 }
 
 export function writeOneMcpConfigCacheEntry(
@@ -376,7 +376,7 @@ export function writeOneMcpConfigCacheEntry(
       config: entry,
     }));
     return entry;
-  });
+  }) ?? entry;
 }
 
 // Atomically claim a bounded diagnostic key. Parent SessionStart uses the true
@@ -399,7 +399,7 @@ export function claimOneMcpWarningKey(
     if (currentHostState(source, host)?.lastWarningKey === warningKey) return false;
     writeCacheFile(filePath, rawCacheWithHostMutation(source, host, { lastWarningKey: warningKey }));
     return true;
-  });
+  }) ?? false;
 }
 
 export function clearOneMcpConfigCacheEntry(
@@ -419,7 +419,7 @@ export function clearOneMcpConfigCacheEntry(
         config: null,
       }));
       return true;
-    });
+    }) ?? false;
   } catch {
     return false;
   }

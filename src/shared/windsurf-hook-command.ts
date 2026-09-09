@@ -93,6 +93,30 @@ export function matchesDevinUserHookCommand(command: string, pluginRoot: string,
 }
 
 /**
+ * Recover a Traffic One plugin root from a command WE wrote — portable
+ * `Buffer.from` launcher or legacy `TRAFFIC_ONE_PLUGIN_ROOT=` prefix.
+ * A near-collision that merely names `windsurf-hook-runtime.cjs` is not ours.
+ */
+export function pluginRootFromTrafficOneHookCommand(command: string): string | null {
+  if (command.includes('traffic-one-launcher') && command.includes("Buffer.from('")) {
+    const encoded = /Buffer\.from\('([A-Za-z0-9+/=]+)','base64'\)/.exec(command)?.[1];
+    if (encoded) {
+      try {
+        const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+        return path.isAbsolute(decoded) ? path.normalize(decoded) : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  const legacy = /TRAFFIC_ONE_PLUGIN_ROOT=(?:"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)')/.exec(command);
+  const raw = legacy?.[1] ?? legacy?.[2];
+  if (!raw) return null;
+  const unescaped = raw.replace(/\\(["\\$`])/g, '$1');
+  return path.isAbsolute(unescaped) ? path.normalize(unescaped) : null;
+}
+
+/**
  * Workspace-level hooks: the stable shim dir resolved at RUN time.
  *
  * `.windsurf/hooks.json` is a WORKSPACE file — it lands in the project and gets

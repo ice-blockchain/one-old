@@ -243,13 +243,60 @@ test('cursor: beforeMCPExecution composes the config key and bare tool name exac
   assert.equal(fixedCommand.tool?.rawName, 'traffic-one-mcp.get_config');
 });
 
+test('cursor: beforeMCPExecution classifies write/shell MCP by tool_input, not the server command key', () => {
+  const write = cursor.parse(inv('before-mcp-execution', {
+    command: 'filesystem',
+    tool_name: 'write_file',
+    tool_input: { path: '/a.ts', content: 'hi' },
+  }));
+  assert.equal(write.event, 'PreToolUse');
+  assert.equal(write.tool?.class, 'file-write');
+  assert.equal(write.tool?.rawName, 'filesystem.write_file');
+  assert.equal(write.tool?.filePath, '/a.ts');
+
+  const edits = cursor.parse(inv('before-mcp-execution', {
+    command: 'filesystem',
+    tool_name: 'edit_file',
+    tool_input: { file_path: '/a.ts', edits: [{ new_string: 'z' }] },
+  }));
+  assert.equal(edits.tool?.class, 'file-write');
+
+  const shell = cursor.parse(inv('before-mcp-execution', {
+    command: 'shell-server',
+    tool_name: 'run',
+    tool_input: { command: 'npm test' },
+  }));
+  assert.equal(shell.tool?.class, 'shell');
+  assert.equal(shell.tool?.command, 'npm test');
+
+  const other = cursor.parse(inv('before-mcp-execution', {
+    command: 'search',
+    tool_name: 'query',
+    tool_input: { query: 'todos' },
+  }));
+  assert.equal(other.tool?.class, 'other');
+});
+
 test('cursor: generic preToolUse EXCLUDES fixed-event classes → class "other" (no double-fire), tool stays present', () => {
   const sh = cursor.parse(inv('before-tool-use', { tool_name: 'Shell', tool_input: { command: 'ls' } }));
   assert.equal(sh.tool?.class, 'other'); // before-shell-execution owns (PreToolUse, shell)
   assert.ok(sh.tool, 'tool present so the no-tools materialize-project gate stays a no-op');
   assert.equal(cursor.parse(inv('before-tool-use', { tool_name: 'Read', tool_input: { file_path: '/x' } })).tool?.class, 'other');
-  // Unknown tool_name → other = FAIL CLOSED (no double-fire, new coverage simply doesn't fire).
+  // Bare unknown stays other (future read tools must not become a deny).
   assert.equal(cursor.parse(inv('before-tool-use', { tool_name: 'Frobnicate' })).tool?.class, 'other');
+  const write = cursor.parse(inv('before-tool-use', {
+    tool_name: 'Frobnicate',
+    tool_input: { path: '/a.ts', content: 'hi' },
+  }));
+  assert.equal(write.tool?.class, 'file-write');
+  assert.equal(write.tool?.filePath, '/a.ts');
+  assert.equal(write.tool?.content, 'hi');
+  const edits = cursor.parse(inv('before-tool-use', {
+    tool_name: 'Frobnicate',
+    tool_input: { path: '/a.ts', edits: [{ new_string: 'z' }] },
+  }));
+  assert.equal(edits.tool?.class, 'file-write');
+  assert.equal(edits.tool?.filePath, '/a.ts');
 });
 
 test('cursor: generic postToolUse admits file-write/spawn-agent, excludes file-edit/shell (afterFileEdit/afterShell own them)', () => {

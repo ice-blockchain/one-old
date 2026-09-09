@@ -1,0 +1,13 @@
+{
+  "id": "ses_recorded_kilo_frontend",
+  "slug": "recorded-kilo-frontend",
+  "projectID": "proj-fixture",
+  "directory": "/workspace/app",
+  "parentID": "ses_recorded_kilo_parent",
+  "title": "senior-frontend",
+  "version": "1.0.0",
+  "time": {
+    "created": 1700000000000,
+    "updated": 1700000008000
+  }
+}

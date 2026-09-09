@@ -27,12 +27,12 @@
 // the cheap ways of erasing that evidence are refused, because the pre-override
 // snapshot and a signed mint counter in the machine-owned one.json outlive the
 // ledger (shared/override/integrity.ts). A run that has ALREADY certified is
-// therefore refused a mint outright (`run-already-verified` in runUnblock): that
-// is the single state in which the guard has nothing left to demote — and that
-// refusal reads a record NOTHING SIGNS, so it can be triggered on purpose. See
-// its comment: the price is a per-run lockout out of the operator's escape
-// hatch, the remedy is a new run, and the refusal names the suspicion instead of
-// asserting an immutability the product does not have.
+// refused a mint (`run-already-verified`) only when this install signed the
+// `verified` record (`settlementMac`). An unsigned `verified` is treated as
+// planted: the mint proceeds, and the message plus `planted-verified.jsonl`
+// name it. Same-uid remains the trust boundary. The remedy for a real
+// certificate is a new run; the refusal names the signature, not an
+// immutability the product does not have.
 //
 // ── Stated exactly, because the shorter version was false ────────────────────
 // This file used to say "an override minted behind the operator's back cannot
@@ -80,7 +80,11 @@ import {
   parseOverrideTtl,
   reconciliationRef,
   recordOverrideReconciliation,
+  verifiedSettlementAuthentic,
 } from '../../shared/override';
+import { overrideProjectDir } from '../../shared/override/paths';
+import { appendTextFile } from '../../shared/fsjson';
+import { sweepTrafficOneRetention } from '../../shared/retention';
 import { OVERRIDE_RECONCILE_FLAG } from './override-probe';
 import { readDecisions } from '../../shared/state/decision-log';
 import {
@@ -134,6 +138,8 @@ export interface UnblockOutcome {
   readonly tokenId?: string;
   readonly expiresAt?: string;
   readonly snapshotPath?: string;
+  /** Unsigned `verified` treated as planted: mint proceeded and the log named it. */
+  readonly plantedVerified?: boolean;
 }
 
 // ── what the override will let past ──────────────────────────────────────────
@@ -259,6 +265,12 @@ export function buildOverrideSnapshot(
  * invocation. Combined with the TTY requirement it means the confirmation
  * cannot be pre-recorded, replayed from a script, or answered by something that
  * only sees the command line.
+ *
+ * Phase 1 closes the agent-mint path with the PreToolUse deny
+ * `doctor-unblock-agent-mint` (namesDoctorUnblock). Delivering this nonce over
+ * the hosted dashboard the human already has open is a follow-up:
+ * onboarding-server's dashboard channel is setup-only today and has no surface
+ * for an override nonce. Do not invent a new HTTP route here.
  */
 export function overrideConfirmationNonce(): string {
   return Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
@@ -323,23 +335,12 @@ export async function runUnblock(
   // lets through afterwards rides on it. That is the laundering shape this
   // feature exists to close, so the mint is refused rather than sold as safe.
   //
-  // GATED ON A FORGEABLE RECORD, and the refusal says so out loud rather than
-  // resting on an immutability the product does not have. `settlementHash` is an
-  // unkeyed digest over the record with sorted keys, so anything that can write
-  // the project tree can WRITE a `verified` settlement this reader accepts —
-  // MEASURED, twenty lines — and thereby deny the operator the escape hatch,
-  // once per run, for every new run. That is the product's pre-existing forgery
-  // floor (the same one that lets fabricated evidence certify a fresh run id),
-  // and this refusal WIDENS ITS CONSEQUENCE from "forge a verdict" to "forge a
-  // verdict and disable recovery".
-  //
-  // Refused anyway, because the alternative is worse in the direction that
-  // matters: minting on a `verified` run launders work that is already
-  // certified, and the operator has a route out that a planted certificate
-  // cannot follow them down — a new run. What the refusal owes them is the
-  // SUSPICION, which is why the message below names the file, says the
-  // certificate may have been planted, and tells them how to check.
-  // KNOWN-ISSUES.md carries the lockout as a residual.
+  // GATED ON A SIGNED CERTIFICATE. `settlementHash` is still an unkeyed digest,
+  // so anything that can write the project tree can plant a `verified` record
+  // this reader accepts. That used to lock `--unblock` out. A valid
+  // `settlementMac` is now required before the refusal fires; an unsigned or
+  // invalid MAC is named as planted and the mint proceeds. Same-uid remains the
+  // trust boundary — whoever can read the override key can forge a MAC.
   //
   // ONLY `verified`, and the enumeration is the argument. Of the seven canonical
   // statuses (run-settlement/types.ts) `planned`, `active`, `code-delivered` and
@@ -352,20 +353,29 @@ export async function runUnblock(
   // no settlement at all (the overwhelmingly common case) is untouched. So the
   // refusal costs no recovery: a run that certified is by definition not wedged.
   const settlement = readRunSettlement(projectRoot, runId);
-  if (settlement?.status === 'verified') {
+  // ONLY a settlement this install signed is a certificate. `settlementHash` is
+  // still an unkeyed digest, so an unsigned `verified` is treated as planted:
+  // the mint proceeds, and the refusal text plus the planted-verified log name
+  // it. Same-uid remains the trust boundary.
+  const authenticVerified = settlement?.status === 'verified'
+    && verifiedSettlementAuthentic(projectRoot, settlement);
+  let plantedVerified = false;
+  if (settlement?.status === 'verified' && !authenticVerified) {
+    plantedVerified = true;
+  }
+  if (authenticVerified) {
     return refuse('run-already-verified',
-      `Refusing: run \`${runId}\` has already settled \`verified\`, and nothing in this product replaces a `
-      + 'certificate once it is written. An override here would relax a gate for work that keeps a certificate '
-      + 'earned BEFORE the relaxation — the one case where "this run can never settle verified again" cannot be '
-      + 'made true, because it already did. Nothing was minted, and this run\'s verdict is unchanged.\n'
-      + 'IF YOU DID NOT EXPECT THIS RUN TO BE CERTIFIED, the certificate may have been PLANTED. Its integrity '
-      + 'hash is an ordinary digest, not a signature, so anything that can write this project can produce a '
-      + `settlement that reads as verified. Check \`.traffic-one/runs/${runId}/settlement-v2.json\`: an honest `
-      + 'certification is reached by the runtime, so its `revision` counts up from earlier settlements of this '
-      + 'run, its `updatedAt` matches when the run actually finished, and `.traffic-one/runs/'
-      + `${runId}/run.json\` agrees with it. A revision of 1 on a run that was driven for a while, a timestamp `
-      + 'that does not match, or a run.json that never left `active` is a planted record, and a planted record '
-      + 'is a report to whoever owns this machine — not something to work around.\n'
+      `Refusing: run \`${runId}\` has already settled \`verified\` with a signature this install wrote, and `
+      + 'nothing in this product replaces a certificate once it is written. An override here would relax a gate '
+      + 'for work that keeps a certificate earned BEFORE the relaxation — the one case where "this run can never '
+      + 'settle verified again" cannot be made true, because it already did. Nothing was minted, and this run\'s '
+      + 'verdict is unchanged.\n'
+      + 'IF YOU DID NOT EXPECT THIS RUN TO BE CERTIFIED, check that the signature is yours: '
+      + `\`.traffic-one/runs/${runId}/settlement-v2.json\` must carry a \`settlementMac\` this install\'s `
+      + 'override key accepts. An unsigned `verified` is treated as PLANTED and does not lock this command out. '
+      + 'An honest certification is reached by the runtime, so its `revision` counts up from earlier settlements '
+      + 'of this run, its `updatedAt` matches when the run actually finished, and `.traffic-one/runs/'
+      + `${runId}/run.json\` agrees with it.\n`
       + 'What to do instead: do the work in a run that has not certified. Re-prompt the parent agent in this '
       + `project so a new run is minted, then run this command again with \`--run <that id>\`; work done after a `
       + 'certification is outside what that certificate covers either way. Every state an override is legitimate '
@@ -460,8 +470,10 @@ export async function runUnblock(
     }
     return refuse('write-failed', `Refusing: the override could not be recorded (${result.reason}). No override minted.`);
   }
+  if (plantedVerified) logPlantedVerified(projectRoot, runId);
   return {
     ok: true,
+    plantedVerified: plantedVerified || undefined,
     message: [
       `Override minted for gate \`${gateId}\` on run \`${runId}\`.`,
       `  token     ${result.token.id}`,
@@ -469,11 +481,29 @@ export async function runUnblock(
       `  snapshot  ${result.snapshotPath}`,
       '',
       `Run \`${runId}\` is now permanently ineligible for verified/shipped.`,
+      ...(plantedVerified ? [
+        '',
+        `PLANTED VERIFIED SETTLEMENT: run \`${runId}\` had a \`verified\` settlement-v2.json this install `
+          + 'did not sign (`settlementMac` missing or invalid). That is treated as a planted certificate, not '
+          + 'a lock-out — the mint proceeded. Named in this message and in '
+          + '`planted-verified.jsonl` under this project\'s override bucket (machine dir). '
+          + 'Report it to whoever owns this machine.',
+      ] : []),
     ].join('\n'),
     tokenId: result.token.id,
     expiresAt: result.token.expiresAt,
     snapshotPath: result.snapshotPath,
   };
+}
+
+function logPlantedVerified(projectRoot: string, runId: string): void {
+  const line = `${JSON.stringify({
+    ts: new Date().toISOString(),
+    event: 'planted-verified-settlement',
+    runId,
+    note: 'unsigned or invalid settlementMac; --unblock mint proceeded',
+  })}\n`;
+  appendTextFile(path.join(overrideProjectDir(projectRoot), 'planted-verified.jsonl'), line);
 }
 
 /** The shipped confirmation: a real terminal, or nothing. */
@@ -513,6 +543,7 @@ export interface ReconcileOutcome {
   readonly message: string;
   readonly reconciled?: string[];
   readonly quarantinedRuns?: number;
+  readonly prunedRuns?: number;
   readonly ref?: string;
 }
 
@@ -534,7 +565,7 @@ export function projectRunIds(projectRoot: string): { readonly runs: string[]; r
     return { runs: [], complete: !fs.existsSync(path.join(projectRoot, '.traffic-one', 'runs')) };
   }
   const runs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-  return { runs, complete: runs.length <= MAX_QUARANTINED_RUNS };
+  return { runs, complete: true };
 }
 
 /**
@@ -586,17 +617,20 @@ export async function runOverrideReconcile(
         + 'doing so, and if the record then accounts for itself there is nothing left to reconcile.',
     };
   }
-  const { runs, complete } = projectRunIds(projectRoot);
-  if (!complete) {
+  const listed = projectRunIds(projectRoot);
+  if (!listed.complete) {
     return {
       ok: false,
       refusal: 'too-many-runs',
-      message: `Refusing: this project has more than ${MAX_QUARANTINED_RUNS} runs on disk, or its `
-        + '`.traffic-one/runs/` could not be listed. A reconciliation has to NAME every run it '
-        + 'quarantines — one that cannot is an acknowledgement with nothing behind it — so archive or '
-        + 'clean up old runs, or fix the directory, and run this again.',
+      message: 'Refusing: `.traffic-one/runs/` could not be listed. A reconciliation has to NAME every '
+        + 'run it quarantines — one that cannot is an acknowledgement with nothing behind it — so fix '
+        + 'the directory and run this again.',
     };
   }
+  let runs = listed.runs;
+  const drySweep = sweepTrafficOneRetention(projectRoot, { dryRun: true });
+  const reclaimable = runs.filter((id) => !drySweep.keepRunIds.includes(id));
+  const offerPrune = runs.length > MAX_QUARANTINED_RUNS && reclaimable.length > 0;
 
   const nonce = overrideConfirmationNonce();
   const summary = [
@@ -608,11 +642,25 @@ export async function runOverrideReconcile(
     `  orphans     ${report.orphanSnapshots.length} snapshot(s) no ledger line accounts for`,
     `  counter     ${report.mintCounter.state}${report.mintCounter.count === null ? '' : ` / ${report.mintCounter.count}`}`,
     `  runs        ${runs.length} in this project`,
+    ...(offerPrune
+      ? [
+        `  prune       retention would reclaim ${reclaimable.length} inactive run(s) first (confirming applies that sweep)`,
+      ]
+      : runs.length > MAX_QUARANTINED_RUNS
+        ? [
+          `  prune       ${runs.length} runs exceed ${MAX_QUARANTINED_RUNS}; the signed sidecar will list them all `
+            + '(retention has nothing inactive to reclaim)',
+        ]
+        : []),
     '',
-    'This does NOT delete anything. It appends a signed statement that you looked at exactly this',
-    'state and accepted it, so certification can resume for work that comes after. Consequences,',
-    'all of them permanent:',
-    `  - all ${runs.length} run(s) currently in this project can never settle as verified or shipped;`,
+    offerPrune
+      ? 'Confirming FIRST applies the retention sweep to inactive runs, then appends a signed statement '
+        + 'that you looked at exactly this state and accepted it. The override record itself is not deleted. '
+        + 'Certification can resume for work that comes after. Consequences, all of them permanent:'
+      : 'This does NOT delete anything. It appends a signed statement that you looked at exactly this '
+        + 'state and accepted it, so certification can resume for work that comes after. Consequences, '
+        + 'all of them permanent:',
+    `  - all remaining run(s) currently in this project can never settle as verified or shipped;`,
     '  - the acknowledgement is recorded with your username under the machine dir, beside the',
     '    evidence it accounts for, which stays exactly where it is;',
     `  - this project's signed mint counter is pinned at ${report.vouchableMints}, so a later mint — or the`,
@@ -627,6 +675,13 @@ export async function runOverrideReconcile(
   }
   if (confirmation !== 'confirmed') {
     return { ok: false, refusal: 'declined', message: 'Nothing reconciled.' };
+  }
+
+  let prunedRuns = 0;
+  if (offerPrune) {
+    const applied = sweepTrafficOneRetention(projectRoot, { dryRun: false });
+    prunedRuns = applied.removed;
+    runs = projectRunIds(projectRoot).runs;
   }
 
   const result = recordOverrideReconciliation({
@@ -652,13 +707,17 @@ export async function runOverrideReconcile(
     ok: true,
     reconciled: report.checks,
     quarantinedRuns: runs.length,
+    prunedRuns: prunedRuns || undefined,
     ref: reconciliationRef(result.entry),
     message: [
       `Reconciled: ${report.checks.join(', ')}.`,
       `  ref       ${reconciliationRef(result.entry)}`,
       `  runs      ${runs.length} run(s) permanently ineligible for verified/shipped`,
+      ...(prunedRuns ? [`  pruned    ${prunedRuns} path(s) reclaimed by retention before the acknowledgement`] : []),
       '',
-      'Nothing was deleted. The evidence and this acknowledgement are both on the record.',
+      offerPrune
+        ? 'The override evidence was not deleted. Inactive runs the retention sweep named were reclaimed first.'
+        : 'Nothing was deleted. The evidence and this acknowledgement are both on the record.',
     ].join('\n'),
   };
 }
@@ -697,6 +756,7 @@ export async function unblockMain(request: UnblockRequest): Promise<number> {
     unblock: outcome.ok ? 'minted' : 'refused',
     ...(outcome.refusal ? { refusal: outcome.refusal } : {}),
     ...(outcome.tokenId ? { tokenId: outcome.tokenId, expiresAt: outcome.expiresAt } : {}),
+    ...(outcome.plantedVerified ? { plantedVerified: true } : {}),
   })}\n`);
   return outcome.ok ? 0 : 1;
 }

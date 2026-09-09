@@ -1,12 +1,12 @@
 // THE CONSUMERS THAT PAY FOR AN OVERLAPPING REGISTRY.
 //
 // `resolveToolScope` is not the only reader of the resolution walk, and it is not
-// even the majority one. Twenty-one sites across production source resolve a
+// even the majority one. Twenty-two sites across production source resolve a
 // working directory DIRECTLY — session start, the model gate, subagent bind, the
 // agent recorder, the Cursor failure paths, graphify, page-speed, the
 // onboarding-gate stop, the workspace boundary guard, the Devin/Windsurf entry,
-// the two materialize write paths, the two OpenCode delegation entries and the
-// reset runner — and every one of them takes the answer as "the project this call
+// the two materialize write paths, the two OpenCode delegation entries, the
+// reset runner and the workspace-convert runner — and every one of them takes the answer as "the project this call
 // is operating on": where the plan lives, where run state is minted, which
 // manifest is read, whose role claims are staked. Prompt submit still resolves,
 // but through `sessionProjectRoot` (census row: `session-start-setup.ts`), not a
@@ -39,7 +39,7 @@
 // convenience:
 //
 //   - THE ARGUMENT SHAPE. Production source holds 48 `resolveProjectRoot*` calls;
-//     21 of them pass `ctx.cwd` or a local holding it, and those are the ones this
+//     22 of them pass `ctx.cwd` or a local holding it, and those are the ones this
 //     file drives. The rest resolve an explicit path that is not the caller's own
 //     working directory (`shared/tool-scope.ts` resolves a re-anchored target, and
 //     the fence tests own it), so "which project is this call operating in" is not
@@ -128,6 +128,7 @@ const DIRECT_SITES: Readonly<Record<string, number>> = {
   'src/runners/opencode/from-plan.ts': 1,
   'src/runners/opencode/index.ts': 1,
   'src/runners/traffic-one-reset/index.ts': 1,
+  'src/runners/traffic-one-workspace/index.ts': 1,
 };
 
 test('direct resolution sites: the population that reads the walk without a tool scope is pinned', () => {
@@ -140,7 +141,7 @@ test('direct resolution sites: the population that reads the walk without a tool
     found[relative] = matches.length;
   }
   const total = Object.values(found).reduce((sum, count) => sum + count, 0);
-  assert.equal(total, 21, `expected 21 direct resolution sites, found ${total} — the scan may be broken`);
+  assert.equal(total, 22, `expected 22 direct resolution sites, found ${total} — the scan may be broken`);
   assert.deepEqual(found, DIRECT_SITES,
     'a hook now resolves the project root directly and is not covered by the shapes below. Add it to this list,'
     + ' and if it passes arguments no row here drives, add the row: an uncovered site attributes a deeper'

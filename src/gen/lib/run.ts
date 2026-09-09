@@ -32,7 +32,12 @@ export class GenRun {
 
   // Emit (or check) a single file at a plugin-root-relative path.
   file(relPath: string, content: string): void {
-    this.emittedByPath.set(this.posixKey(relPath), content);
+    const key = this.posixKey(relPath);
+    const previous = this.emittedByPath.get(key);
+    if (previous !== undefined && previous !== content) {
+      throw new Error(`gen: colliding emit for ${key}`);
+    }
+    this.emittedByPath.set(key, content);
     const abs = path.join(this.root, relPath);
     if (this.check) {
       const current = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;

@@ -3,8 +3,9 @@
 // ── the asymmetry this file exists for ───────────────────────────────────────
 // `currentRunId` has two readerships. `readEffectiveState` coerces it on the way
 // out (local-prefs/index.ts `normalizeRuntimeIds`: number → string, string →
-// trimmed), so everything reading through that funnel is insulated from whatever
-// shape is actually on disk. The RAW readers are not, and there are ~30 of them,
+// trimmed-and-charset-safe), so everything reading through that funnel is
+// insulated from whatever shape is actually on disk. The RAW readers are not,
+// and there are ~30 of them,
 // every one spelling the test the same way:
 //
 //     typeof state.currentRunId === 'string' ? state.currentRunId.trim() : ''
@@ -40,6 +41,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { readEffectiveState } from '../local-prefs';
 import { normalizeState, patchState, readState, statePath, writeState } from '../normalize';
 
 function withProject<T>(label: string, fn: (dir: string) => T): T {
@@ -163,4 +165,51 @@ test('normalizeState leaves an ALL-WHITESPACE run pointer alone instead of blank
     'blanking a pointer is a CHANGE, and a caller that publishes on `changed` would then persist it');
   assert.equal(blankish.currentRunId, '   ',
     'an id that trims to nothing must stay untouched: absent is rescuable, blank-on-disk is not');
+});
+
+function plantCurrentRunId(dir: string, currentRunId: string): void {
+  assert.equal(writeState(dir, { stack: 'default', mode: 'new-project', currentRunId: '1715091785000' }), true);
+  const planted = onDisk(dir);
+  planted.currentRunId = currentRunId;
+  fs.writeFileSync(statePath(dir), JSON.stringify(planted));
+  assert.equal(onDisk(dir).currentRunId, currentRunId, 'fixture: the plant must land raw');
+}
+
+test('readState sanitizes a planted path-unsafe currentRunId without rejecting legacy shapes', () => {
+  withProject('read-planted-traversal', (dir) => {
+    plantCurrentRunId(dir, 'foo/../bar');
+    assert.equal(readState(dir).currentRunId, 'foo_.._bar');
+  });
+  withProject('read-legacy', (dir) => {
+    plantCurrentRunId(dir, 'legacy-current');
+    assert.equal(readState(dir).currentRunId, 'legacy-current');
+  });
+  withProject('read-iso', (dir) => {
+    plantCurrentRunId(dir, '2026-06-17T12-09-40Z');
+    assert.equal(readState(dir).currentRunId, '2026-06-17T12-09-40Z');
+  });
+});
+
+test('readEffectiveState sanitizes a planted path-unsafe currentRunId without rejecting legacy shapes', () => {
+  withProject('effective-planted-traversal', (dir) => {
+    plantCurrentRunId(dir, 'foo/../bar');
+    assert.equal(readEffectiveState(dir).currentRunId, 'foo_.._bar');
+  });
+  withProject('effective-legacy', (dir) => {
+    plantCurrentRunId(dir, 'legacy-current');
+    assert.equal(readEffectiveState(dir).currentRunId, 'legacy-current');
+  });
+  withProject('effective-iso', (dir) => {
+    plantCurrentRunId(dir, '2026-06-17T12-09-40Z');
+    assert.equal(readEffectiveState(dir).currentRunId, '2026-06-17T12-09-40Z');
+  });
+});
+
+test('writeState of another field cannot re-persist a planted traversal currentRunId', () => {
+  withProject('rescue-sanitizes', (dir) => {
+    plantCurrentRunId(dir, 'foo/../bar');
+    assert.equal(writeState(dir, { stack: 'default', mode: 'new-project' }), true);
+    assert.equal(onDisk(dir).currentRunId, 'foo_.._bar',
+      'preserveCurrentRunId must charset-coerce the rescued on-disk id, not replay the plant');
+  });
 });

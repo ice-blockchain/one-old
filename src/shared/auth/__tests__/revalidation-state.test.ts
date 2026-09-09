@@ -19,6 +19,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { machineSidecarPath } from '../machine-sidecar';
+import { AUTH_GATE_DRIFT_FILE } from '../auth-gate-drift';
 import {
   REVALIDATION_STATE_FILE,
   readRevalidationState,
@@ -177,7 +178,7 @@ test('a refused write is REPORTED by both writers, and neither leaves a temp fil
   } finally { m.dispose(); }
 });
 
-// ── both sidecars are MACHINE-owned, and the two lists must move together ────
+// ── auth sidecars are MACHINE-owned, and the two lists must move together ────
 // machine-sidecar.ts writes through raw `fs`, the sanctioned opt-out from the
 // write fence, so nothing here is fenced today. The names are ALSO declared in
 // state/plugin-use.ts's MACHINE_OWNED_ENTRIES.files, and that second line is
@@ -186,10 +187,10 @@ test('a refused write is REPORTED by both writers, and neither leaves a temp fil
 // machine dir IS the "project's" state dir.
 //
 // MACHINE_OWNED_ENTRIES is not exported, so this pins the exported PREDICATE
-// that consults it, and keys off the two file-name constants rather than off
+// that consults it, and keys off the file-name constants rather than off
 // string literals — a rename that moved only one of the two lists would
 // otherwise leave this test green while the fence closed on the renamed file.
-test('the two auth sidecars stay writable on a $HOME-rooted session whose consent is PENDING', () => {
+test('the auth sidecars stay writable on a $HOME-rooted session whose consent is PENDING', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'one-machine-owned-'));
   const env = {
     HOME: home,
@@ -200,7 +201,7 @@ test('the two auth sidecars stay writable on a $HOME-rooted session whose consen
   } as NodeJS.ProcessEnv;
   resetPluginUseCache();
   try {
-    for (const file of [REVALIDATION_STATE_FILE, UPDATES_STORE_FILE]) {
+    for (const file of [REVALIDATION_STATE_FILE, UPDATES_STORE_FILE, AUTH_GATE_DRIFT_FILE]) {
       const target = machineSidecarPath(file, env);
       assert.ok(
         target.startsWith(`${path.join(home, '.traffic-one')}${path.sep}`),

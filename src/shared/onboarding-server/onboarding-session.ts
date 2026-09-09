@@ -17,8 +17,9 @@
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
-import { writeJson } from '../fsjson';
 import { readRegularFileOrThrow } from '../bounded-read';
+import { trustworthyAgeSince } from '../clock-skew';
+import { writeJson } from '../fsjson';
 
 const ONBOARDING_MAIN_SESSIONS_REL = path.join('.traffic-one', '.onboarding-main-sessions.json');
 
@@ -37,6 +38,15 @@ const MAX_MAIN_SESSIONS = 16;
 
 function storePath(cwd: string): string {
   return path.join(cwd, ONBOARDING_MAIN_SESSIONS_REL);
+}
+
+// Freshness here GRANTS a suppression: a "fresh" main lets us hide the wizard
+// from every other session. That is "permission granted by freshness", so an
+// unusable stamp (future beyond skew, non-finite) must not buy it — otherwise a
+// committed store with a clock in 2099 silences Cursor consent forever.
+function isFreshMainStamp(stampMs: number, nowMs: number): boolean {
+  const age = trustworthyAgeSince(stampMs, nowMs);
+  return age !== null && age <= ONBOARDING_MAIN_TTL_MS;
 }
 
 function readStore(cwd: string): Record<string, number> {
@@ -60,7 +70,7 @@ export function recordMainOnboardingSession(cwd: string, sessionId: string, nowM
     sessions[sessionId] = nowMs;
     // Drop expired + cap size (keep the most recent), so the file can't grow unbounded.
     const fresh = Object.entries(sessions)
-      .filter(([, t]) => nowMs - t <= ONBOARDING_MAIN_TTL_MS)
+      .filter(([, t]) => isFreshMainStamp(t, nowMs))
       .sort((a, b) => b[1] - a[1])
       .slice(0, MAX_MAIN_SESSIONS);
     // Through the declared IO chokepoint, NOT raw fs: this store lives under
@@ -89,7 +99,7 @@ export function recordMainOnboardingSession(cwd: string, sessionId: string, nowM
 export function isForeignOnboardingThread(cwd: string, sessionId: string, nowMs: number = Date.now()): boolean {
   if (!sessionId || isNonProjectRoot(cwd)) return false;
   const sessions = readStore(cwd);
-  const fresh = Object.entries(sessions).filter(([, t]) => nowMs - t <= ONBOARDING_MAIN_TTL_MS);
+  const fresh = Object.entries(sessions).filter(([, t]) => isFreshMainStamp(t, nowMs));
   if (fresh.length === 0) return false; // no known orchestrator yet → don't suppress anyone
   return !fresh.some(([id]) => id === sessionId);
 }

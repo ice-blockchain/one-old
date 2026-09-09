@@ -2445,6 +2445,29 @@ export const GIT_WORKTREE_SUBCOMMANDS: readonly GitWorktreeSubcommand[] = [
 ];
 
 /**
+ * A here-doc delimiter is a bash WORD (see `man bash` / WORD DEFINITION):
+ * unquoted words cannot contain IFS whitespace or the metacharacters
+ * `|&;()<>`; quoting (`'EOF-1'`, `"EOF-1"`) is quote-removed to the same word
+ * and is the only way a space may appear. Hyphens are ordinary word
+ * characters, so `<<'EOF-1'`, `<<"EOF-1"` and `<<EOF-1` must all match.
+ *
+ * Unquoted form refuses a leading digit so `$((x << 2))` / `$((x<<2))` is not
+ * captured as a here-doc (a shift, not a redirection). Quoted `'2'` still
+ * matches — that is a real delimiter. Groups 1/2/3 are single / double /
+ * unquoted after quote removal, which is what `heredocSpans` uses as TERM.
+ *
+ * The class is bash-word characters MINUS regex metacharacters. `heredocSpans`
+ * interpolates TERM into `new RegExp` with no escape (and this file must not
+ * edit that walker), so `'([^']*)'` / a metachar-eating unquoted class would
+ * let `<<'(a+)+'` or `<<.**` hang the span walk.
+ */
+// Hyphen is last in each class so it cannot open a range.
+const HEREDOC_DELIM_UNQUOTED = String.raw`[A-Za-z_./][A-Za-z0-9_./-]*`;
+const HEREDOC_DELIM_QUOTED = String.raw`[A-Za-z0-9_./ -]+`;
+const HEREDOC_DELIMITER_SOURCE =
+  String.raw`(?:'(${HEREDOC_DELIM_QUOTED})'|"(${HEREDOC_DELIM_QUOTED})"|\\?(${HEREDOC_DELIM_UNQUOTED}))`;
+
+/**
  * A heredoc whose READER is an interpreter or a shell, so the body is code about
  * to run rather than data about to be written.
  *
@@ -2452,7 +2475,11 @@ export const GIT_WORKTREE_SUBCOMMANDS: readonly GitWorktreeSubcommand[] = [
  * opposite facts. Both detectors dropped every heredoc body to protect the
  * reviewer-digest carve-out, and `python3 - <<'PY' … os.unlink(…) … PY` was
  * therefore a write primitive nobody could see. The distinction is the command
- * on the left, which the grammar makes available.
+ * on the left, which the grammar makes available. After `<<` this only
+ * needs an optional quote and a letter — enough to see `python3 <<'PY-1'`
+ * as an interpreter reader. The full delimiter word lives on
+ * `HEREDOC_OPERATOR_SOURCE`; repeating it here made `.test()` on a long
+ * interpreter line a ReDoS.
  */
 export const HEREDOC_INTERPRETER_RE = new RegExp(
   String.raw`(?:^|[\s;&|(])(?:[^\s;&|]*\/)?(?:${SHELL_NAME}|${INTERPRETER_NAME})\b[^\n]*?<<-?\s*['"]?[A-Za-z_]`,
@@ -2460,7 +2487,138 @@ export const HEREDOC_INTERPRETER_RE = new RegExp(
 
 /** Heredoc operator, with the terminator word captured. */
 export const HEREDOC_OPERATOR_SOURCE =
-  String.raw`<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|\\?([A-Za-z_][A-Za-z0-9_]*))`;
+  String.raw`<<-?\s*${HEREDOC_DELIMITER_SOURCE}`;
+
+/**
+ * A real here-doc operator (`<<` / `<<-`, not `<<<`) whose body span cannot
+ * be taken: no delimiter word, or a delimiter and no newline after it.
+ *
+ * Quote / comment / backtick / `$((…))` / command-position `((…))`
+ * occurrences are not operators (`echo 'see <<EOF'`, `# <<EOF`,
+ * `echo $((x << 2))`). Sidecar and reset-record writers deny when this is
+ * true; feature-source's write detector does not consult it.
+ *
+ * `<<` is found on the mask (data stays invisible). The operator is then
+ * matched on the ORIGINAL at that index so delimiter quotes on `<<'EOF'`
+ * are still present — matching on the blanked string made a well-formed
+ * quoted-delimiter heredoc look unspanned.
+ *
+ * After a matched operator with a following newline, the cursor advances
+ * past that span so a `<<` inside the body is not a second operator
+ * (`<<'EOF'\nsee <<\nEOF` is spanned). Same skip as `heredocSpans`.
+ */
+export function heredocOperatorUnspanned(command: string): boolean {
+  let cursor = 0;
+  for (const site of visibleHeredocSites(command)) {
+    if (site.index < cursor) continue; // operator text inside an already-walked body
+    if (!site.match) return true;
+    const operatorEnd = site.match.index + site.match[0].length;
+    const bodyStart = command.indexOf('\n', operatorEnd);
+    if (bodyStart === -1) return true;
+    const term = site.match[1] || site.match[2] || site.match[3] || '';
+    const termRe = new RegExp(`\\n[\\t ]*${term}[\\t ]*(?=\\n|$)`);
+    const terminator = termRe.exec(command.slice(bodyStart));
+    if (!terminator) break;
+    cursor = bodyStart + terminator.index;
+  }
+  return false;
+}
+
+/**
+ * Visible here-doc sites: `<<` found on the mask, operator matched on the
+ * original at that index. `match` is null when the site is a here-doc shift
+ * (`<<` / `<<-`, not `<<<`) but not a well-formed operator (`cat <<`).
+ *
+ * Shared by `heredocOperatorUnspanned` and `heredocSpans` so quote/comment
+ * blindness and delimiter-quote matching cannot drift apart.
+ */
+export function* visibleHeredocSites(command: string): Generator<{
+  index: number;
+  match: RegExpExecArray | null;
+}> {
+  const visible = maskNonHeredocRegions(command);
+  const operatorRe = new RegExp(HEREDOC_OPERATOR_SOURCE, 'g');
+  let searchFrom = 0;
+  while (searchFrom < visible.length) {
+    const raw = visible.indexOf('<<', searchFrom);
+    if (raw === -1) return;
+    if (visible[raw + 2] === '<') { searchFrom = raw + 3; continue; }
+    operatorRe.lastIndex = raw;
+    const matched = operatorRe.exec(command);
+    const match = matched && matched.index === raw ? matched : null;
+    yield { index: raw, match };
+    searchFrom = match ? match.index + match[0].length : raw + 2;
+  }
+}
+
+function isShellSeparator(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r'
+    || ch === ';' || ch === '&' || ch === '|' || ch === '(' || ch === ')'
+    || ch === '{' || ch === '}';
+}
+
+function isArithmeticOpenPrefix(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r'
+    || ch === ';' || ch === '&' || ch === '|' || ch === '(' || ch === '{';
+}
+
+/**
+ * Length-preserving mask: quoted spans, backtick command substitutions,
+ * `#` comments, `$((…))` and a command-position `((…))` become spaces so a
+ * later `<<` search cannot see them. Indices stay aligned with the original
+ * command. Delimiter quotes on a real `<<'EOF'` are blanked here too —
+ * callers match the operator on the original at the unmasked `<<` index.
+ */
+function maskNonHeredocRegions(command: string): string {
+  const out = command.split('');
+  const blank = (from: number, to: number): void => {
+    for (let i = from; i < to && i < out.length; i += 1) out[i] = ' ';
+  };
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i]!;
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const close = quotedSpanEnd(command, i);
+      blank(i, close === -1 ? command.length : close + 1);
+      i = close === -1 ? command.length : close + 1;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || isShellSeparator(command[i - 1]!))) {
+      const eol = command.indexOf('\n', i);
+      blank(i, eol === -1 ? command.length : eol);
+      i = eol === -1 ? command.length : eol;
+      continue;
+    }
+    if (ch === '$' && command[i + 1] === '(' && command[i + 2] === '(') {
+      const close = matchingDoubleClose(command, i + 3);
+      blank(i, close);
+      i = close;
+      continue;
+    }
+    if (ch === '(' && command[i + 1] === '(' && (i === 0 || isArithmeticOpenPrefix(command[i - 1]!))) {
+      const close = matchingDoubleClose(command, i + 2);
+      blank(i, close);
+      i = close;
+      continue;
+    }
+    i += 1;
+  }
+  return out.join('');
+}
+
+/** Index one past a matching `))`, or `command.length` if unterminated. */
+function matchingDoubleClose(command: string, from: number): number {
+  let depth = 1;
+  for (let i = from; i < command.length; i += 1) {
+    if (command[i] === '(') depth += 1;
+    else if (command[i] === ')') {
+      depth -= 1;
+      if (depth === 0 && command[i + 1] === ')') return i + 2;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return command.length;
+}
 
 /**
  * Is THIS heredoc — the one whose operator ends at `operatorEnd` — read by an
@@ -3234,12 +3392,12 @@ export function shellWordsOf(statement: string): string[] {
 }
 
 /** Index of the quote closing the one at `open`, or -1. A backslash escapes the
- *  closing quote inside a DOUBLE-quoted span only, which is the shell's own
- *  asymmetry. */
+ *  closing quote inside a DOUBLE-quoted or backtick span, which is the shell's
+ *  own asymmetry (single quotes are literal). */
 function quotedSpanEnd(text: string, open: number): number {
   const quote = text[open]!;
   for (let index = open + 1; index < text.length; index += 1) {
-    if (quote === '"' && text[index] === '\\') { index += 1; continue; }
+    if ((quote === '"' || quote === '`') && text[index] === '\\') { index += 1; continue; }
     if (text[index] === quote) return index;
   }
   return -1;

@@ -18,6 +18,7 @@ import {
   nowIso,
   scanExternalTools,
   scanProject,
+  securityCheckCanStamp,
   stampState,
   writeReports,
 } from './lib';
@@ -75,8 +76,15 @@ export function runSecurityCheck(options: Partial<SecurityOptions> = {}): Securi
   };
 
   const paths = writeReports(cwd, reportDir, serializable);
-  const wantsStamp = Boolean(options.stamp) && serializable.status === 'passed';
-  const stamped = wantsStamp ? stampState(cwd, serializable, paths.relativeJsonPath) : undefined;
+  // High findings never stamp, even when a non-strict run leaves status `passed`.
+  // `stamped: false` is only for a scan that still reads as passed — the caller
+  // asked for a stamp and has none. A `--strict` failure keeps `stamped`
+  // omitted so the headline stays the scan's FAILED, not "scan passed".
+  const stamped = options.stamp && serializable.status === 'passed'
+    ? (securityCheckCanStamp(serializable)
+      ? stampState(cwd, serializable, paths.relativeJsonPath)
+      : false)
+    : undefined;
 
   return {
     report: serializable,

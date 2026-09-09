@@ -32,7 +32,7 @@ function rec(over: Partial<ServerRecord> = {}): ServerRecord {
     port: 51000,
     token: 'tok',
     url: 'http://127.0.0.1:51000/?t=tok',
-    startedAt: '2026-01-01T00:00:00Z',
+    startedAt: new Date().toISOString(),
     ...over,
   };
 }
@@ -86,6 +86,24 @@ test('registry: missing → null; malformed (no token) → null', () => {
     assert.equal(readServerRecord(cwd, env), null);
     writeServerRecord(cwd, rec({ token: '' }), env);
     assert.equal(readServerRecord(cwd, env), null);
+  });
+});
+
+test('ensure: does not reuse a live pid whose startedAt is too old (pid reuse)', () => {
+  withProject((cwd, env) => {
+    writeServerRecord(cwd, rec({ startedAt: '2026-01-01T00:00:00Z' }), env);
+    let launched = false;
+    const r = ensureOnboardingServer(cwd, {
+      env,
+      isAlive: () => true,
+      launch: (c, e) => {
+        launched = true;
+        writeServerRecord(c, rec({ pid: 999, port: 52000, token: 'z', url: 'http://127.0.0.1:52000/?t=z' }), e);
+        return 999;
+      },
+    });
+    assert.equal(launched, true, 'a months-old server.json must not be reused on pid liveness alone');
+    assert.equal(r.port, 52000);
   });
 });
 

@@ -9,6 +9,7 @@ import type { Ctx, HookResult, ResultMeta } from '../../core/types';
 import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
+import { consumeArchitectureFoldNotice } from '../../shared/materialize/plan-migration';
 import { autoDetectedAnnouncement } from '../../shared/directives';
 import { buildOrchestrationDirective } from '../plan-guard/build-orchestration-directive';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
@@ -164,7 +165,8 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // neither become a refusal nor replace one, and a project that legitimately
   // has no state gets `null` (shared/state/state-loss.ts).
   const stateLoss = stateLossNotice(cwd);
-  const advisories = [stateLoss, oneMcpWarning, authWarning, uncertifiedBanner, updates?.text]
+  const foldNotice = consumeArchitectureFoldNotice(cwd);
+  const advisories = [stateLoss, foldNotice, oneMcpWarning, authWarning, uncertifiedBanner, updates?.text]
     .filter((text): text is string => Boolean(text));
   const withAdvisories = (result: HookResult): HookResult => {
     const merged = advisories.length

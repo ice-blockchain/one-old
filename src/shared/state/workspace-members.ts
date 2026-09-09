@@ -20,6 +20,7 @@ import {
   resolveMemberIdentities,
   type WorkspaceMemberIdentity,
 } from '../hook/workspace-members';
+import { convertToContainerCommand, convertToContainerYesCommand } from '../workspace-command';
 import { patchState } from './normalize';
 
 /**
@@ -125,6 +126,8 @@ export function writeWorkspaceMemberRegistry(
       outcome: 'rejected',
       why: `${root} is already onboarded as a ${committedMode} project, and a Traffic One workspace is a CONTAINER of `
         + 'projects rather than a project with members — converting it would make every gate refuse work at this root. '
+        + `To convert this directory into a container, run ${convertToContainerCommand()} `
+        + `(or ${convertToContainerYesCommand()} if it already has a plan or runs). `
         + 'Register members in the directory that HOLDS the projects.',
     };
   }

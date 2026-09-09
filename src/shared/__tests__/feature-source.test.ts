@@ -5,9 +5,12 @@ import {
   applyPatchTargetPaths,
   commandAppearsToWriteBuildArtifact,
   commandAppearsToWriteFeatureSource,
+  heredocBodies,
   isCodeGraphIgnorePath,
   isLocalMjsPath,
   FEATURE_SOURCE_RE,
+  interpreterEvalWrite,
+  isStateFileWriteTarget,
   isTestInfraConfigPath,
   isTestScopePath,
   roleCanWriteFeatureSource,
@@ -16,8 +19,12 @@ import {
   shellStrayDeleteTarget,
   shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
+  shellWriteTargetsStateFile,
+  stripHeredocBodies,
   subagentMayWriteFeatureSource,
 } from '../feature-source';
+import { HEREDOC_OPERATOR_SOURCE, heredocOperatorUnspanned } from '../shell-vocabulary';
+import { securityCheckStampCommand } from '../security-check-command';
 import {
   commandAppearsToCreateCodeGraphIgnore,
   commandAppearsToDeleteCodeGraphIgnore,
@@ -128,6 +135,30 @@ test('quoted text is data: comparison/prose ">" and quoted rm/tee never count as
   // a nested shell body is real code — quotes there keep scanning raw
   assert.equal(commandAppearsToWriteFeatureSource("bash -c 'echo hi > src/x.ts'"), true);
   assert.equal(commandAppearsToWriteFeatureSource("sh -lc 'echo x > src/x.ts'"), true);
+});
+
+test('command-position quotes unquote; argument quotes stay data', () => {
+  // `"rm"` is the verb — blanking every quote used to hide it.
+  assert.equal(shellCommandHasWritePrimitive('"rm" -rf src'), true);
+  assert.equal(shellCommandHasWritePrimitive("'rm' -rf src"), true);
+  assert.equal(commandAppearsToWriteFeatureSource('"rm" -rf src/stale.js'), true);
+  // A quoted destructive phrase in an argument is still data.
+  assert.equal(shellCommandHasWritePrimitive('git commit -m "rm -rf src/old"'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('git commit -m "rm -rf src/old"'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('echo "rm -rf src/" && ls src/'), false);
+  // `$PKG` is a parameter, not `$(`. Breaking on `$` never advanced the index.
+  assert.equal(shellCommandHasWritePrimitive('rm -rf node_modules/.cache/$PKG'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('rm -rf src/$PKG'), true);
+});
+
+test('glued redirects are write primitives', () => {
+  // The widened anchor is `[\s;&|\w"')}\x60]` so `i>` / `s>` count. Feature-path
+  // mention still needs a delimiter, so the product wrapper is tested with a
+  // spaced dest; the primitive itself is what glued spellings must trip.
+  assert.equal(shellCommandHasWritePrimitive('echo hi>src/x.ts'), true);
+  assert.equal(shellCommandHasWritePrimitive('ls>out.txt'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('echo hi > src/x.ts'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('cat apps/web/src/x.ts 2>/dev/null'), false);
 });
 
 test('bare interpreter reads are not writes; eval writes still are (B5)', () => {
@@ -427,6 +458,79 @@ test('a simple command may span lines with a backslash', () => {
   ]) assert.equal(shellCommandHasWritePrimitive(command), false, command);
 });
 
+test('HEREDOC_OPERATOR_SOURCE accepts a bash word delimiter, including hyphens', () => {
+  // The old charset was `[A-Za-z_][A-Za-z0-9_]*`, so `<<'EOF-1'` produced no
+  // span and no shellBody. A here-doc delimiter is a WORD: hyphen is legal
+  // unquoted, and quoted forms may contain spaces.
+  const operator = new RegExp(HEREDOC_OPERATOR_SOURCE);
+  for (const [text, term] of [
+    ["<<'EOF-1'", 'EOF-1'],
+    ['<<"EOF-1"', 'EOF-1'],
+    ['<<EOF-1', 'EOF-1'],
+    ["<<'PY-1'", 'PY-1'],
+    ["<<'EOF 1'", 'EOF 1'],
+  ] as const) {
+    const matched = operator.exec(text);
+    assert.ok(matched, text);
+    assert.equal(matched[1] || matched[2] || matched[3], term, text);
+  }
+  assert.equal(operator.exec('<< 2'), null, 'unquoted digit-only is a shift, not a delimiter');
+});
+
+test('<<\'EOF-1\' yields a shellBody and hyphen interpreter readers stay code', () => {
+  const digest = "cat > .traffic-one/digests/R/reviewer.md <<'EOF-1'\nverdict: APPROVED\nEOF-1";
+  assert.equal(heredocBodies(digest).trim(), 'verdict: APPROVED');
+  assert.equal(shellWriteTargetsStateDir(digest), true);
+  assert.deepEqual(shellTrafficOneWriteTargets(digest), ['.traffic-one/digests/R/reviewer.md']);
+
+  const hyphenInterp = `python3 <<'PY-1'\nimport os\nos.unlink('${RESETS}')\nPY-1`;
+  assert.equal(shellCommandHasWritePrimitive(hyphenInterp), true);
+  assert.deepEqual(shellTrafficOneWriteTargets(hyphenInterp), [RESETS]);
+  assert.ok(stripHeredocBodies(hyphenInterp).includes(`os.unlink('${RESETS}')`));
+});
+
+test('heredocOperatorUnspanned is quote/comment/arithmetic-blind and deny-on-no-span', () => {
+  assert.equal(heredocOperatorUnspanned("echo 'see <<EOF'"), false);
+  assert.equal(heredocOperatorUnspanned('echo "see <<EOF"'), false);
+  assert.equal(heredocOperatorUnspanned('echo `see <<EOF`'), false);
+  assert.equal(heredocOperatorUnspanned('# <<EOF'), false);
+  assert.equal(heredocOperatorUnspanned('# <<EOF\ntrue'), false);
+  assert.equal(heredocOperatorUnspanned('echo foo # <<EOF'), false);
+  assert.equal(heredocOperatorUnspanned('echo $((x << 2))'), false);
+  assert.equal(heredocOperatorUnspanned('echo $((x<<2))'), false);
+  assert.equal(heredocOperatorUnspanned("cat > f <<'EOF'\nbody\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("cat > f <<'EOF'\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("<<'EOF'\n# comment\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("<<'EOF'\n\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("<<'EOF'\n123\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("<<'EOF'\n(verdict)\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("<<'EOF'\nbody\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("<<'EOF'\nsee <<\nEOF"), false);
+  assert.equal(heredocOperatorUnspanned("cat > f <<'EOF-1'\nbody\nEOF-1"), false);
+  assert.equal(heredocOperatorUnspanned("python3 <<'PY-1'\nprint(1)\nPY-1"), false);
+  assert.equal(heredocOperatorUnspanned("cat > f <<'EOF'"), true);
+  assert.equal(heredocOperatorUnspanned('cat <<'), true);
+  assert.equal(heredocOperatorUnspanned('python3 <<'), true);
+});
+
+test('quoted/comment << does not strip the next command as a heredoc body', () => {
+  // Regression: walking the raw command treated data `<<` as an operator and
+  // dropped the following line as a "body", so writers returned [] (noop).
+  const commentThenRm = '# <<EOF\nrm -rf .traffic-one/runs';
+  const quotedThenRm = "echo 'see <<EOF'\nrm -rf .traffic-one/runs";
+  const ticksThenRm = 'echo `see <<EOF`\nrm -rf .traffic-one/runs';
+  for (const command of [commentThenRm, quotedThenRm, ticksThenRm]) {
+    assert.equal(stripHeredocBodies(command), command, command);
+    assert.equal(heredocBodies(command), '', command);
+    assert.equal(heredocOperatorUnspanned(command), false, command);
+  }
+  // A real quoted-delimiter operator still yields a span; delimiter quotes stay.
+  const real = "cat > f <<'EOF'\nbody\nEOF";
+  assert.equal(stripHeredocBodies(real), "cat > f <<'EOF'\nEOF");
+  assert.equal(heredocBodies(real), 'body');
+  assert.equal(heredocOperatorUnspanned(real), false);
+});
+
 test('a heredoc read by an interpreter is code, and its target is visible', () => {
   // Two failures in one: `python3 - <<PY … os.unlink(p) … PY` was not a write at
   // all, and `bash <<SH … node -e "…unlinkSync(p)" … SH` was a write with NO
@@ -600,6 +704,57 @@ test('shellTrafficOneWriteTargets extracts real state targets but ignores heredo
   assert.deepEqual(shellTrafficOneWriteTargets(
     'cat .traffic-one/runs/R/architecture-v1.json',
   ), []);
+});
+
+test('shellTrafficOneWriteTargets includes .one.json, including case-fold', () => {
+  const STATE = '.traffic-one/.one.json';
+  const FOLDED = '.Traffic-One/.one.json';
+  assert.equal(isStateFileWriteTarget(STATE), true);
+  assert.equal(isStateFileWriteTarget(FOLDED), true);
+  assert.equal(isStateFileWriteTarget('.traffic-one-backup/.one.json'), false);
+  for (const command of [
+    `cat > ${STATE}`,
+    `echo '{}' > ${STATE}`,
+    `tee ${STATE}`,
+    `node -e "require('fs').writeFileSync('${STATE}','{}')"`,
+    `python3 -c "open('${STATE}','w').write('{}')"`,
+    `sed -i 's/a/b/' ${STATE}`,
+    `python -c "import zipfile; zipfile.ZipFile('${STATE}','w')"`,
+    `python -c "import zipfile; zipfile.ZipFile('${FOLDED}','w')"`,
+  ]) {
+    assert.ok(shellTrafficOneWriteTargets(command).some((target) => isStateFileWriteTarget(target)), command);
+  }
+  assert.ok(
+    shellTrafficOneWriteTargets(`cat > ${FOLDED}`).some((target) => isStateFileWriteTarget(target)),
+    'case-folded .Traffic-One/.one.json must be visible',
+  );
+  assert.equal(
+    shellCommandHasWritePrimitive(`python -c "import zipfile; zipfile.ZipFile('${FOLDED}','w')"`),
+    true,
+    'unknown-verb folded state file must reach interpreterEvalWrite',
+  );
+  assert.equal(
+    interpreterEvalWrite(`python -c "import zipfile; zipfile.ZipFile('${STATE}','w')"`),
+    true,
+  );
+  assert.equal(
+    interpreterEvalWrite(`python -c "import zipfile; zipfile.ZipFile('${FOLDED}','w')"`),
+    true,
+    'inverse-question arm sees case-folded state file',
+  );
+  assert.equal(
+    interpreterEvalWrite(`python -c "print(open('${FOLDED}').read())"`),
+    false,
+    'folded state-file read stays a read',
+  );
+  assert.deepEqual(shellTrafficOneWriteTargets(`cat ${STATE}`), []);
+  assert.equal(shellWriteTargetsStateFile(`cat > ${STATE} <<'EOF'\n{"src":"apps/web/src"}\nEOF`), true);
+  assert.equal(shellWriteTargetsStateFile(`cat > ${FOLDED}`), true);
+  assert.equal(shellWriteTargetsStateFile(`node -e "require('fs').writeFileSync('${STATE}','{}')"`), false);
+  assert.equal(FEATURE_SOURCE_RE.test(STATE), false);
+  assert.deepEqual(shellTrafficOneWriteTargets(securityCheckStampCommand()), [],
+    'security-check --stamp does not name .one.json and has no write primitive');
+  assert.equal(shellCommandHasWritePrimitive(securityCheckStampCommand()), false);
 });
 
 test('sed -i detection anchors on sed option tokens, not any later "-i" text', () => {

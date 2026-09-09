@@ -9,7 +9,8 @@ if [ ! -x node_modules/.bin/tsx ]; then
   exit 1
 fi
 
-node_modules/.bin/tsx src/gen/index.ts
-npm run build
-npm run gen:check
-npm run build:verify
+# Do not run gen first: plugin:check is fallbacks:check + gen:check +
+# build:verify against the tree as committed. Generating immediately before
+# gen:check made the check tautological.
+npm run plugin:check
+node --import ./src/build/test-preload.mjs --import tsx --test tests/golden/golden-snapshot.test.ts

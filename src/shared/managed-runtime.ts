@@ -274,17 +274,19 @@ export function ensureManagedRuntime(
   const minMinor = opts.minMinor ?? 0;
   const skip = (error: string): ManagedRuntimeResult => ({ ok: false, path: null, binDir: null, version: null, action: 'skipped', error });
 
-  if (downloadDisabled()) return skip('managed runtime download disabled (TRAFFIC_ONE_MANAGED_RUNTIME_OFF / TRAFFIC_ONE_RUNTIME_PROBE_OFF)');
-
   const sel = runtimeAsset(kind, process.platform, process.arch);
   if (!sel) return skip(`no managed ${kind} runtime is published for ${process.platform}/${process.arch}`);
 
   const dir = managedRuntimeDir(kind, sel.version);
   const binPath = path.join(dir, sel.asset.binSubdir, binName(kind));
 
-  // Cached and usable?
+  // Cached and usable? Checked BEFORE the download kill-switch so a Node already
+  // on disk can re-exec a below-floor host even when TRAFFIC_ONE_MANAGED_RUNTIME_OFF
+  // forbids a fetch (the test suite pins that switch).
   const cachedV = probeManagedVersion(binPath, kind, minMajor, minMinor);
   if (cachedV) return { ok: true, path: binPath, binDir: path.dirname(binPath), version: cachedV, action: 'used-managed', error: null };
+
+  if (downloadDisabled()) return skip('managed runtime download disabled (TRAFFIC_ONE_MANAGED_RUNTIME_OFF / TRAFFIC_ONE_RUNTIME_PROBE_OFF)');
 
   // Download + verify + extract.
   const placed = downloadAndExtract(sel.asset, dir);

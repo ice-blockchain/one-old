@@ -54,6 +54,17 @@ export {
   validateCodexLiveRunAgent,
 } from './codex-liveness';
 export {
+  findHostSessionFile,
+  kiloDataDir,
+  openCodeDataDir,
+  validateHostLiveRunAgent,
+  validateKiloLiveRunAgent,
+  validateOpenCodeLiveRunAgent,
+  validateWindsurfLiveRunAgent,
+  windsurfTrajectoryId,
+  type HostLiveAgentValidation,
+} from './host-liveness';
+export {
   explainUnresolvedRunAgent,
   hasActiveRunClaims,
   hasRunAgentState,

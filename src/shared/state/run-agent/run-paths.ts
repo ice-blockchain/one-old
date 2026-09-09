@@ -15,8 +15,9 @@ import {
   stackFingerprint,
   UNKNOWN_STACK_FINGERPRINT,
 } from '../materialization';
-import { writeState } from '../normalize';
+import { patchState, writeState } from '../normalize';
 import { withProjectStateLock } from '../project-state-lock';
+import { safeRunIdSegment } from '../run-id-segment';
 import {
   activeRunClaimCount,
   effectiveLegacyRunStatus,
@@ -54,12 +55,27 @@ function stateFileDegraded(cwd: string): boolean {
 // session that skipped Phase 0). Mirrors ensureRunAgentClaim's persist pattern;
 // writeState splits local prefs back out, so .one.json stays canonical. Returns
 // the existing or newly minted run id.
+function rawCurrentRunId(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
+  return '';
+}
+
+function adoptedCurrentRunId(value: unknown): string {
+  const raw = rawCurrentRunId(value);
+  return raw ? safePathSegment(raw) : '';
+}
+
 export function ensureCurrentRunId(cwd: string, state: unknown): string {
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
-  const existing = typeof source.currentRunId === 'string'
-    ? source.currentRunId.trim()
-    : (typeof source.currentRunId === 'number' && Number.isFinite(source.currentRunId) ? String(Math.trunc(source.currentRunId)) : '');
+  const rawExisting = rawCurrentRunId(source.currentRunId);
+  const existing = adoptedCurrentRunId(source.currentRunId);
   if (existing) {
+    source.currentRunId = existing;
+    if (obj(state)) (state as Rec).currentRunId = existing;
+    if (existing !== rawExisting) {
+      try { patchState(cwd, { currentRunId: existing }); } catch { /* in-memory id stays sanitized */ }
+    }
     // Reading/freezing policy for an existing id is not itself a resume. In
     // particular SessionStart calls this on every subagent-enabled project.
     // Actual worker claims and the unresolved-run continue path activate the
@@ -113,12 +129,13 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
       const degraded = rawText !== null && rawText.trim().length > 0 && !obj(parsed);
       const onDisk = obj(parsed) || {};
       const diskRaw = onDisk.currentRunId;
-      const diskId = typeof diskRaw === 'string'
-        ? diskRaw.trim()
-        : (typeof diskRaw === 'number' && Number.isFinite(diskRaw) ? String(Math.trunc(diskRaw)) : '');
+      const diskId = adoptedCurrentRunId(diskRaw);
       if (diskId) {
         runId = diskId;
         source.currentRunId = diskId;
+        if (diskId !== rawCurrentRunId(diskRaw)) {
+          try { patchState(cwd, { currentRunId: diskId }); } catch { /* adopt the sanitized id in memory */ }
+        }
         return;
       }
       if (degraded) {
@@ -212,12 +229,9 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
 }
 
 export function safePathSegment(value: unknown): string {
-  const segment = String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160);
   // `.` and `..` survive the character allowlist but are never safe directory
   // names. Keep legacy sanitization behavior while preventing path traversal.
-  if (segment === '.') return '_';
-  if (segment === '..') return '__';
-  return segment;
+  return safeRunIdSegment(String(value ?? '').trim());
 }
 
 export function runsRoot(cwd: string): string {

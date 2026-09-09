@@ -40,7 +40,7 @@ import * as nodePath from 'node:path';
 import { buildFindings } from '../findings';
 import { NODE_FLOOR_MAJOR } from '../../../shared/node-floor';
 import { WORKSPACE_PROJECT_MODE } from '../../../shared/hook/workspace-members';
-import type { GitnexusProbe, NodeProbe, NvmProbe, ProjectProbe } from '../probes';
+import { probeProject, type GitnexusProbe, type NodeProbe, type NvmProbe, type ProjectProbe } from '../probes';
 
 const CONTAINER = '/repo';
 
@@ -233,23 +233,93 @@ test('nested roots: a FORGED or stale entry silences a real stray, and that is t
   );
 });
 
-test('nested roots: a workspace NESTED inside an ordinary project still reports every member', () => {
-  // The limit, pinned so it is a recorded fact rather than a surprise. The
-  // registry read is `project.state` — the state of the directory the doctor
-  // ran in — so a Traffic One workspace living inside an ordinary project is
-  // invisible here and each of its members is reported with the cleanup advice
-  // attached. Closing it needs a state read per nested root, which this pure
-  // module has no business doing; the probe is where it belongs.
-  const finding = nestedFinding({
-    state: { mode: 'existing-codebase', onboardingComplete: true },
-    hasState: true,
-    nestedTrafficOneRoots: ['/repo/nested-ws', '/repo/nested-ws/apps/web', '/repo/nested-ws/services/ledger'],
-  });
-  assert.equal(finding?.severity, 'fix-needed');
-  for (const dir of ['/repo/nested-ws/apps/web', '/repo/nested-ws/services/ledger']) {
-    assert.match(finding?.message ?? '', new RegExp(dir.replace(/\//g, '\\/')),
-      'a member of the nested workspace is reported as a stray');
+test('nested roots: a workspace NESTED inside an ordinary project is not a stray, nor are its members', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), 't1-nested-ws-above-')));
+  TEMP_DIRS.push(root);
+  fs.mkdirSync(nodePath.join(root, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(
+    nodePath.join(root, '.traffic-one', '.one.json'),
+    JSON.stringify({ mode: 'existing-codebase', onboardingComplete: true }),
+    'utf8',
+  );
+  const ws = nodePath.join(root, 'nested-ws');
+  fs.mkdirSync(nodePath.join(ws, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(
+    nodePath.join(ws, '.traffic-one', '.one.json'),
+    JSON.stringify({
+      mode: WORKSPACE_PROJECT_MODE,
+      onboardingComplete: true,
+      workspaceMembers: [{ path: 'apps/web' }, { path: 'services/ledger' }],
+    }),
+    'utf8',
+  );
+  for (const member of ['apps/web', 'services/ledger']) {
+    const dir = nodePath.join(ws, ...member.split('/'));
+    fs.mkdirSync(nodePath.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(
+      nodePath.join(dir, '.traffic-one', '.one.json'),
+      JSON.stringify({ mode: 'existing-codebase' }),
+      'utf8',
+    );
   }
+  const stray = nodePath.join(root, 'tools', 'scratch');
+  fs.mkdirSync(nodePath.join(stray, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(
+    nodePath.join(stray, '.traffic-one', '.one.json'),
+    JSON.stringify({ mode: 'new-project' }),
+    'utf8',
+  );
+
+  const probed = probeProject(root);
+  const finding = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gitnexus(), project: probed,
+  }).find((row) => row.code === 'NESTED_TRAFFIC_ONE_ROOTS');
+  assert.equal(finding?.severity, 'fix-needed');
+  assert.equal(
+    finding?.message,
+    `Nested Traffic One state roots were found inside this workspace: ${stray}. `
+    + 'Hooks will not delete them automatically; inspect them, then use the cleanup runner in apply mode '
+    + 'only after confirming the ancestor workspace root is the real project.',
+    'the nested container and its members are gone from the list; only the stray remains',
+  );
+});
+
+test('nested roots: an unreadable nested workspace does not list its members as strays', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), 't1-nested-ws-opaque-')));
+  TEMP_DIRS.push(root);
+  fs.mkdirSync(nodePath.join(root, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(
+    nodePath.join(root, '.traffic-one', '.one.json'),
+    JSON.stringify({ mode: 'existing-codebase', onboardingComplete: true }),
+    'utf8',
+  );
+  const ws = nodePath.join(root, 'nested-ws');
+  const member = nodePath.join(ws, 'apps', 'web');
+  fs.mkdirSync(nodePath.join(ws, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(
+    nodePath.join(ws, '.traffic-one', '.one.json'),
+    JSON.stringify({ mode: WORKSPACE_PROJECT_MODE, workspaceMembers: 'apps/web' }),
+    'utf8',
+  );
+  fs.mkdirSync(nodePath.join(member, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(
+    nodePath.join(member, '.traffic-one', '.one.json'),
+    JSON.stringify({ mode: 'existing-codebase' }),
+    'utf8',
+  );
+
+  const findings = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gitnexus(), project: probeProject(root),
+  });
+  assert.equal(
+    findings.find((row) => row.code === 'NESTED_TRAFFIC_ONE_ROOTS'),
+    undefined,
+    'members under an unreadable nested registry are not cleanup candidates',
+  );
+  const unknown = findings.find((row) => row.code === 'NESTED_TRAFFIC_ONE_ROOTS_MEMBERSHIP_UNKNOWN');
+  assert.equal(unknown?.severity, 'info');
+  assert.match(unknown?.message ?? '', /apps\/web/);
+  assert.doesNotMatch(unknown?.message ?? '', /cleanup runner/);
 });
 
 // ── the arm the sweep spares ─────────────────────────────────────────────────

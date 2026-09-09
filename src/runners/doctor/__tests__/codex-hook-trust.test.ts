@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
+  CODEX_HOOK_EXPECTED_COUNT,
   CODEX_TRAFFIC_ONE_HOOK_KEYS,
   CODEX_TRAFFIC_ONE_PLUGIN_ID,
   probeCodexHookTrust,
@@ -259,7 +260,13 @@ test('probeCodexHookTrust handles fragmented JSONL + stderr, copies config bytes
     assert.equal(run.result.evaluation, 'verified');
     if (run.result.evaluation !== 'verified') return;
     assert.deepEqual(run.result.counts, {
-      discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 16,
+      discovered: CODEX_HOOK_EXPECTED_COUNT,
+      trusted: CODEX_HOOK_EXPECTED_COUNT,
+      managed: 0,
+      modified: 0,
+      untrusted: 0,
+      disabled: 0,
+      runnable: CODEX_HOOK_EXPECTED_COUNT,
     });
     assert.deepEqual(run.result.missingKeys, []);
     assert.deepEqual(run.result.unexpectedKeys, []);
@@ -273,24 +280,31 @@ test('probeCodexHookTrust handles fragmented JSONL + stderr, copies config bytes
   }
 });
 
-test('probeCodexHookTrust counts disabled hooks and the 14 modified + 2 untrusted regression exactly', async () => {
+test('probeCodexHookTrust counts disabled hooks and the modified + 2 untrusted regression exactly', async () => {
   const disabled = await runFakeProbe('disabled', { hooks: hooks(() => 'trusted', 4) });
   try {
     assert.equal(disabled.result.evaluation, 'verified');
     if (disabled.result.evaluation === 'verified') {
       assert.equal(disabled.result.counts.disabled, 1);
-      assert.equal(disabled.result.counts.runnable, 15);
+      assert.equal(disabled.result.counts.runnable, CODEX_HOOK_EXPECTED_COUNT - 1);
     }
   } finally {
     fs.rmSync(disabled.root, { recursive: true, force: true });
   }
 
-  const stale = await runFakeProbe('stale', { hooks: hooks((index) => index < 14 ? 'modified' : 'untrusted') });
+  const modifiedCount = CODEX_HOOK_EXPECTED_COUNT - 2;
+  const stale = await runFakeProbe('stale', { hooks: hooks((index) => index < modifiedCount ? 'modified' : 'untrusted') });
   try {
     assert.equal(stale.result.evaluation, 'verified');
     if (stale.result.evaluation === 'verified') {
       assert.deepEqual(stale.result.counts, {
-        discovered: 16, trusted: 0, managed: 0, modified: 14, untrusted: 2, disabled: 0, runnable: 0,
+        discovered: CODEX_HOOK_EXPECTED_COUNT,
+        trusted: 0,
+        managed: 0,
+        modified: modifiedCount,
+        untrusted: 2,
+        disabled: 0,
+        runnable: 0,
       });
     }
   } finally {
@@ -409,7 +423,7 @@ test('probeCodexHookTrust drains a hooks/list response when the direct child exi
   });
   try {
     assert.equal(run.result.evaluation, 'verified');
-    if (run.result.evaluation === 'verified') assert.equal(run.result.counts.runnable, 16);
+    if (run.result.evaluation === 'verified') assert.equal(run.result.counts.runnable, CODEX_HOOK_EXPECTED_COUNT);
     assert.equal(fs.existsSync(run.shadowHome), false);
   } finally {
     fs.rmSync(run.root, { recursive: true, force: true });

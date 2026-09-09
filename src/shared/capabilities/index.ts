@@ -26,6 +26,12 @@ export {
   capabilityProfileForProject,
 } from './profile';
 export {
+  hybridUiTargetAsk,
+  splitHybridOfferText,
+  type HybridUiTargetAsk,
+  type SplitHybridLayout,
+} from './hybrid-target';
+export {
   profileSupportsShadcnWorkspace,
   resolveWebUiSystem,
   uiLibraryFromPrompt,

@@ -114,7 +114,14 @@ function bundleInput(over: Partial<BuildDoctorBundleInput> = {}): BuildDoctorBun
     gitnexus: { onPath: null, absoluteV22: null, crashRiskInOldNvm: false },
     project: project(),
     codexHooks: null,
-    auth: { filePath: '/home/dev/.traffic-one/one.json', present: true, valid: true, updatedAt: '2026-08-01T00:00:00Z' },
+    auth: {
+      filePath: '/home/dev/.traffic-one/one.json',
+      present: true,
+      valid: true,
+      updatedAt: '2026-08-01T00:00:00Z',
+      unknown401Code: null,
+      unknown401At: null,
+    },
     oneMcp: null,
     openCodeMcp: null,
     pluginRoot: {

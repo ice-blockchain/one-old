@@ -11,8 +11,9 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { obj } from '../shared/obj';
 import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
-import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { hasValidPreToolPayload, isFailClosedRecoveryExemption, wrapperPreToolDeny } from './fail-closed';
+import { authFallbackMessage, safeHookFallbackStandsDown } from './auth-fallback';
+import { guardedMain } from './entry-guard';
+import { hasValidPreToolPayload, safeFailClosedRecoveryExemption, wrapperPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -51,7 +52,7 @@ export async function runOpenCodeHook(
   if (!subcommand) return { stdout: OPENCODE_NOOP, exitCode: 0 };
   if (subcommand === 'before-tool-use'
     && !hasValidPreToolPayload(stdin, subcommand, 'wrapper')
-    && !isFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) {
+    && !safeFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) {
     return { stdout: OPENCODE_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };
   }
   try {
@@ -62,13 +63,13 @@ export async function runOpenCodeHook(
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand, '--host=opencode'] });
     return { stdout: stdout || OPENCODE_NOOP, exitCode: 0 };
   } catch {
-    if (hookFallbackStandsDown(stdin, env)) return { stdout: OPENCODE_NOOP, exitCode: 0 };
+    if (safeHookFallbackStandsDown(stdin, env)) return { stdout: OPENCODE_NOOP, exitCode: 0 };
     if (subcommand === 'session-start' || subcommand === 'system-transform') {
       const message = authFallbackMessage(stdin, env);
       return { stdout: message ? sessionStartFallback(message) : OPENCODE_NOOP, exitCode: 0 };
     }
     if (subcommand === 'before-tool-use') {
-      if (isFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) return { stdout: OPENCODE_NOOP, exitCode: 0 };
+      if (safeFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) return { stdout: OPENCODE_NOOP, exitCode: 0 };
       return { stdout: OPENCODE_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };
     }
     return { stdout: OPENCODE_NOOP, exitCode: 0 };
@@ -90,12 +91,33 @@ function readStdin(): Promise<string> {
 
 export async function main(): Promise<void> {
   const subcommand = subcommandFromArgs(process.argv.slice(2));
-  const stdin = await readStdin();
-  const { stdout } = await runOpenCodeHook(subcommand, stdin);
-  process.stdout.write(stdout);
-  process.exitCode = 0;
+  try {
+    const stdin = await readStdin();
+    const out = await guardedMain({
+      subcommand,
+      stdin,
+      isPreTool: subcommand === 'before-tool-use',
+      surface: 'wrapper',
+      deny: { stdout: OPENCODE_PRE_TOOL_FAIL_CLOSED, exitCode: 0 },
+      noop: { stdout: OPENCODE_NOOP, exitCode: 0 },
+      run: () => runOpenCodeHook(subcommand, stdin),
+    });
+    process.stdout.write(out.stdout);
+    process.exitCode = 0;
+  } catch {
+    try {
+      process.stdout.write(subcommand === 'before-tool-use' ? OPENCODE_PRE_TOOL_FAIL_CLOSED : OPENCODE_NOOP);
+    } catch { /* last-ditch write must not reject */ }
+    process.exitCode = 0;
+  }
 }
 
 if (require.main === module) {
-  void main();
+  void main().catch(() => {
+    try {
+      const subcommand = subcommandFromArgs(process.argv.slice(2));
+      process.stdout.write(subcommand === 'before-tool-use' ? OPENCODE_PRE_TOOL_FAIL_CLOSED : OPENCODE_NOOP);
+    } catch { /* */ }
+    process.exitCode = 0;
+  });
 }

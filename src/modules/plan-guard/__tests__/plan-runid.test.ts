@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { normalizeState } from '../../../shared/state/normalize';
 import { runIdPathViolation } from '../plan-runid';
 
 // Block stub: returns the verbatim fallback (the prose ships in TS), with vars echoed
@@ -75,6 +76,26 @@ test('runIdPathViolation: no currentRunId → no enforcement (returns null)', ()
     command: '',
     block,
   }), null);
+});
+
+test('runIdPathViolation: after normalizeState, a path-unsafe currentRunId is the expected segment', () => {
+  const state: Record<string, unknown> = { currentRunId: 'foo/bar' };
+  normalizeState(state);
+  assert.equal(state.currentRunId, 'foo_bar');
+  assert.equal(runIdPathViolation({
+    state,
+    relTargets: ['.traffic-one/runs/foo_bar/assignments.json'],
+    command: '',
+    block,
+  }), null);
+  const v = runIdPathViolation({
+    state,
+    relTargets: ['.traffic-one/runs/other/assignments.json'],
+    command: '',
+    block,
+  });
+  assert.ok(v, 'a write under a different segment still violates');
+  assert.match(v as string, /foo_bar/);
 });
 
 test('runIdPathViolation: a WRITE to a literal <run-id> placeholder path still denies', () => {

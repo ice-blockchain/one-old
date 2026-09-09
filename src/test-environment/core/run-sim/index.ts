@@ -1,7 +1,7 @@
 // src/test-environment/core/run-sim/index.ts
 // The phase machine. It drives a full post-onboarding run with scripted role
-// writes: real writers for everything runtime owns, and the real plan-write gate
-// for everything a role would author.
+// writes: real writers for everything runtime owns, and the real
+// check-plan-write pipeline for everything a role would author.
 //
 // The load-bearing idea: writing `.traffic-one/digests/<runId>/architect.md`
 // with `PLAN_READY` is not a bookkeeping step — it IS the runtime transaction
@@ -54,6 +54,7 @@ import { runMaintenanceLegs, runMaintenancePass } from './maintenance';
 import { runBrowserEvidence, runBrowserProbe, runStackEvidence } from './qa';
 import { sourceFor } from './sources';
 import type { RunSimTranscript, ScriptedWrite } from './types';
+import { expectDenyGap } from './expect-deny';
 import { applyAll, bindRole } from './write';
 
 const GIT_ENV = ['-c', 'user.email=run-sim@traffic.one', '-c', 'user.name=run-sim'];
@@ -187,6 +188,7 @@ function negativeRows(cwd: string, runId: string, implement: ImplementContext): 
     content: '{"schemaVersion":1,"assignments":[]}\n',
     expectDeny: true,
     denyMatch: 'generated atomically from CompiledArchitectureV1',
+    expectHandler: 'plan-guard.write',
   });
 
   rows.push({
@@ -194,6 +196,7 @@ function negativeRows(cwd: string, runId: string, implement: ImplementContext): 
     content: '{"schemaVersion":2}\n',
     expectDeny: true,
     denyMatch: 'is published by the runtime',
+    expectHandler: 'plan-guard.write',
   });
 
   // A role reaching into another role's compiled output.
@@ -205,6 +208,7 @@ function negativeRows(cwd: string, runId: string, implement: ImplementContext): 
       content: '// not mine to write\n',
       expectDeny: true,
       denyMatch: 'Run-team enforcement gate',
+      expectHandler: 'plan-guard.write',
     });
   }
 
@@ -223,6 +227,7 @@ function negativeRows(cwd: string, runId: string, implement: ImplementContext): 
       content: `${packed}\n`,
       expectDeny: true,
       denyMatch: 'STRUCT_COLLAPSED_LINE',
+      expectHandler: 'plan-guard.write',
     });
   }
 
@@ -236,6 +241,7 @@ function negativeRows(cwd: string, runId: string, implement: ImplementContext): 
     })}\n`,
     expectDeny: true,
     denyMatch: 'may not choose output paths, roots, or roles',
+    expectHandler: 'plan-guard.write',
   });
 
   return rows;
@@ -313,7 +319,7 @@ export async function runSimulatedRun(
     return finish('phase-1 could not bind a run claim for senior-architect');
   }
   const state = readEffectiveState(cwd) as Rec;
-  const denied = applyAll(
+  const denied = await applyAll(
     cwd,
     'architect',
     'senior-architect',
@@ -326,7 +332,7 @@ export async function runSimulatedRun(
     path: `.traffic-one/runs/${runId}/architecture-input-v1.json`,
     content: `${JSON.stringify(spec.architecture, null, 2)}\n`,
   };
-  const inputDenied = applyAll(cwd, 'architect', 'senior-architect', [inputWrite], transcript);
+  const inputDenied = await applyAll(cwd, 'architect', 'senior-architect', [inputWrite], transcript);
   if (inputDenied) {
     return finish(`phase-1 architecture input denied: ${inputDenied.reason}`);
   }
@@ -342,7 +348,7 @@ export async function runSimulatedRun(
       touched: ['.traffic-one/plan.md', `.traffic-one/runs/${runId}/architecture-input-v1.json`],
     }),
   };
-  const planDenied = applyAll(cwd, 'plan-ready', 'senior-architect', [planReady], transcript);
+  const planDenied = await applyAll(cwd, 'plan-ready', 'senior-architect', [planReady], transcript);
   if (planDenied) return finish(`PLAN_READY denied: ${planDenied.reason}`);
   transcript.phasesCompleted.push('plan-ready');
 
@@ -393,14 +399,14 @@ export async function runSimulatedRun(
       if (content !== null) writes.push({ path: rel, content });
     }
     // Case-declared rows beyond the compiled outputs (an existing repo's own
-    // conventions). Same gate path, same claim; applyAll fails the run on a
+    // conventions). Same pipeline path, same claim; applyAll fails the run on a
     // deny, so "allowed" is asserted, not hoped.
     for (const extra of spec.extraWrites ?? []) {
       if (extra.role === role) writes.push({ path: extra.path, content: extra.content });
     }
     authored.set(role, writes.map((write) => write.path));
     if (!bindRole(cwd, role)) return finish(`phase-2 could not bind a run claim for ${role}`);
-    const roleDenied = applyAll(cwd, `implement:${role}`, role, writes, transcript);
+    const roleDenied = await applyAll(cwd, `implement:${role}`, role, writes, transcript);
     if (roleDenied) {
       return finish(`phase-2 ${role} denied on ${roleDenied.path}: ${roleDenied.reason}`);
     }
@@ -413,7 +419,7 @@ export async function runSimulatedRun(
   // crawl origin, full structure scan) against the finished tree.
   for (const role of implementers) {
     const suffix = role.replace(/^senior-/, '');
-    const digestDenied = applyAll(cwd, `digest:${role}`, role, [{
+    const digestDenied = await applyAll(cwd, `digest:${role}`, role, [{
       path: `.traffic-one/digests/${runId}/${suffix}.md`,
       content: digestBody({
         role,
@@ -441,7 +447,7 @@ export async function runSimulatedRun(
       const before = claimSnapshot(cwd, runId, owner);
       const reviewerSession = bindRole(cwd, 'senior-reviewer');
       if (!reviewerSession) return finish('phase-4 could not bind the reviewer');
-      const changes = applyAll(cwd, 'fix-cycle:review', 'senior-reviewer', [{
+      const changes = await applyAll(cwd, 'fix-cycle:review', 'senior-reviewer', [{
         path: `.traffic-one/digests/${runId}/reviewer.md`,
         content: digestBody({
           role: 'senior-reviewer',
@@ -457,13 +463,13 @@ export async function runSimulatedRun(
       const owned = implement.outputsFor(owner)
         .find((rel) => sourceFor(rel, implement) !== null);
       if (owned) {
-        const fixWrite = applyAll(cwd, 'fix-cycle:implement', owner, [{
+        const fixWrite = await applyAll(cwd, 'fix-cycle:implement', owner, [{
           path: owned,
           content: `${sourceFor(owned, implement)!}\n`,
         }], transcript);
         if (fixWrite) return finish(`phase-4 fix write denied: ${fixWrite.reason}`);
       }
-      const reFixed = applyAll(cwd, 'fix-cycle:digest', owner, [{
+      const reFixed = await applyAll(cwd, 'fix-cycle:digest', owner, [{
         path: `.traffic-one/digests/${runId}/${owner.replace(/^senior-/, '')}.md`,
         content: digestBody({
           role: owner,
@@ -537,7 +543,7 @@ export async function runSimulatedRun(
   ] as const) {
     if (!bindRole(cwd, role)) return finish(`phase-3 could not bind a run claim for ${role}`);
     const suffix = role.replace(/^senior-/, '');
-    const verdictDenied = applyAll(cwd, `digest:${role}`, role, [{
+    const verdictDenied = await applyAll(cwd, `digest:${role}`, role, [{
       path: `.traffic-one/digests/${runId}/${suffix}.md`,
       content: digestBody({
         role,
@@ -586,9 +592,9 @@ export async function runSimulatedRun(
     // is the realistic actor for every row here.
     bindRole(cwd, 'senior-reviewer');
     const rows = negativeRows(cwd, runId, implement);
-    const leaked = applyAll(cwd, 'negative', 'senior-reviewer', rows, transcript);
+    const leaked = await applyAll(cwd, 'negative', 'senior-reviewer', rows, transcript);
     if (leaked) {
-      return finish(`phase-6 a gate that must deny allowed ${leaked.path}`);
+      return finish(`phase-6 ${expectDenyGap(leaked) ?? `mismatch on ${leaked.path}`}`);
     }
     // The reviewer bind above is sim scaffolding on an already-settled run —
     // production would hold no live claim here, and a leftover one would

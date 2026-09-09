@@ -11,7 +11,7 @@
 import { obj } from '../obj';
 import { LIFECYCLE_PHASE_IDS } from '../../config/state';
 import { stateTimestamp } from './io';
-import { readState, writeState } from './normalize';
+import { patchState, readState } from './normalize';
 import { releaseAllRunClaims } from './run-agent';
 import { ensureInitialCommit } from '../git-init';
 
@@ -124,7 +124,7 @@ export function markMaintenance(cwd: string, source: string): boolean {
   try {
     const state = readState(cwd);
     if (projectPhase(state, state.mode) === 'maintenance' && source !== 'orchestrator') return false;
-    if (!writeState(cwd, { ...state, lifecycle: maintenanceLifecycle(source) })) return false;
+    if (!patchState(cwd, { lifecycle: maintenanceLifecycle(source) })) return false;
     // The build is settled: sweep the run's agent claims (pending deleted, claimed →
     // released) so finished runs never read as in-flight to hasActiveRunClaims.
     releaseAllRunClaims(cwd, 'maintenance-flip');

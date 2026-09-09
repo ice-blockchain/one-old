@@ -9,7 +9,7 @@
 import * as path from 'path';
 
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
-import { stripToolNamespace, toolClassForRawName } from '../core/events';
+import { classifyTool, stripToolNamespace } from '../core/events';
 import { parseJson } from '../shared/fsjson';
 import { patchTextFromToolInput } from '../shared/apply-patch';
 import { asRecord, firstString } from './coerce';
@@ -148,15 +148,47 @@ export function makeCursorAdapter(): HostAdapter {
         ));
         const toolName = firstString(data.mcp_tool_name, data.mcpToolName, data.tool_name, data.toolName, data.name);
         const rawName = serverName && toolName ? `${serverName}.${toolName}` : (toolName || sub);
-        tool = withFields('other', rawName);
+        // Classify and take command/workdir from tool_input only. Top-level
+        // `command` is the MCP config key / server hint, not a shell command —
+        // feeding it to classifyTool (or leaving it on `tool.command`) would
+        // turn every beforeMCPExecution into `shell` and hide the real argv.
+        const mcpCommand = firstString(input.command, input.cmd, input.shell);
+        const mcpWorkdir = firstString(
+          input.workdir, input.cwd, input.working_dir, input.workingDir, input.working_directory,
+        );
+        const mcpFilePath = firstString(input.file_path, input.filePath, input.path, input.uri);
+        const mcpEdits = Array.isArray(input.edits) ? input.edits : [];
+        const mcpEditsContent = mcpEdits
+          .map((e) => (e && typeof e === 'object' ? firstString((e as Record<string, unknown>).new_string, (e as Record<string, unknown>).newString, (e as Record<string, unknown>).new_str) : ''))
+          .filter(Boolean)
+          .join('\n');
+        const mcpContent = firstString(
+          input.content, input.new_content, input.newContent, input.text,
+          input.new_string, input.newString, input.new_str,
+        ) || mcpEditsContent;
+        tool = {
+          class: classifyTool(rawName, input),
+          rawName,
+          ...(mcpCommand ? { command: mcpCommand } : {}),
+          ...(mcpWorkdir ? { workdir: mcpWorkdir } : {}),
+          ...(mcpFilePath ? { filePath: mcpFilePath } : {}),
+          ...(mcpContent ? { content: mcpContent } : {}),
+        };
       } else if (sub === 'before-tool-use' || sub === 'after-tool-use') {
-        // Generic event: derive the class from the payload tool_name. Classes a fixed
-        // event already owns are dropped to 'other' (inert — matches no tool gate, and
-        // keeps the tool present so the no-tools materialize-project gate no-ops).
-        // Unknown tool_name → 'other' too, so we FAIL CLOSED (no double-fire, the new
-        // coverage simply doesn't fire) rather than mis-gating.
+        // Generic event: classify from tool_name plus write-shaped args.
+        // Classes a fixed event already owns are dropped to 'other' (inert —
+        // no tool-scoped gate double-fires; the tool stays present so the
+        // no-tools materialize-project gate no-ops). Bare unknown names stay
+        // 'other'; unknown + path + content|edits|new_string becomes
+        // file-write and is admitted.
         const rawName = firstString(data.tool_name, data.toolName, data.tool, data.name);
-        const cls = rawName ? toolClassForRawName(rawName) : 'other';
+        const classifyArgs = {
+          ...input,
+          ...(filePath ? { path: filePath, file_path: filePath } : {}),
+          ...(content ? { content } : {}),
+          ...(editsArr.length > 0 ? { edits: editsArr } : {}),
+        };
+        const cls = rawName ? classifyTool(rawName, classifyArgs) : 'other';
         const admit = sub === 'before-tool-use' ? GENERIC_PRE_ADMIT : GENERIC_POST_ADMIT;
         tool = withFields(admit.has(cls) ? cls : 'other', rawName || sub);
       }

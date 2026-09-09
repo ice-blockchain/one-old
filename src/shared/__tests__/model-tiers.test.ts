@@ -297,6 +297,9 @@ test('modelMatchesExpected accepts exact + same-family variants, rejects other f
   assert.equal(modelMatchesExpected('', 'gpt-5.5'), false);
   assert.equal(modelMatchesExpected('gpt-5.5', ''), false);
   assert.equal(modelMatchesExpected(undefined, 'gpt-5.5'), false);
+  assert.equal(modelMatchesExpected('SWE-1.7 Lightning', 'SWE-1.7'), true);
+  assert.equal(modelMatchesExpected('SWE-1.6 Fast', 'SWE-1.6'), true);
+  assert.equal(modelMatchesExpected('SWE-1.70', 'SWE-1.7'), false);
 });
 
 test('canonicalHost defaults to claude for unknowns', () => {

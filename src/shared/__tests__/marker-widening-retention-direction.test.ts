@@ -14,11 +14,10 @@
 // usually discussed in terms of.
 //
 // THIS FILE IS A SEPARATE ONE ON PURPOSE. `isLeakedNestedRoot` is not exported,
-// so the four lines above are reproduced below rather than imported;
-// `retention.ts` and its own test file belong to a different change and are not
-// touched here. The copy is asserted to be faithful the only way it can be — it
-// is the whole body of the function as of this commit, and it is short enough
-// to read against the source.
+// so the predicate is reproduced below rather than imported. Evidence of a
+// real project (plan, digests, consent, onboardingComplete) is imported from
+// retention.ts so the copy cannot drift from the keep that now sits in front
+// of the deletion.
 //
 // The unlisted control is `CMakeLists.txt`: naming files is all
 // `MANIFEST_MARKERS` does, so an identical tree built with a marker the list
@@ -35,21 +34,24 @@ import { obj } from '../obj';
 import { readJsonResult } from '../fsjson';
 import { resolveProjectRoot } from '../hook/paths';
 import { dirOwnsProject } from '../project-membership';
+import { nestedRootHasProjectEvidence } from '../retention';
 import { resetAuthoringRootCache } from '../authoring-root';
 import { resetPluginUseCache } from '../state/plugin-use';
 
 process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 
-/** shared/retention.ts `isLeakedNestedRoot`, verbatim. True means SWEPT. */
+/** shared/retention.ts `isLeakedNestedRoot`, including the project-evidence keep. True means SWEPT. */
 function isLeakedNestedRoot(projectDir: string): boolean {
   const dir = path.resolve(projectDir);
   const state = readJsonResult<unknown>(path.join(dir, '.traffic-one', '.one.json'));
   if (state.kind !== 'ok' || !obj(state.value)) return false;
   try {
-    return resolveProjectRoot(dir, undefined, { workspaceAuthority: 'membership' }) !== dir;
+    if (resolveProjectRoot(dir, undefined, { workspaceAuthority: 'membership' }) === dir) return false;
   } catch {
     return false;
   }
+  if (nestedRootHasProjectEvidence(dir, state.value)) return false;
+  return true;
 }
 
 const LISTED = 'build.gradle';
@@ -106,8 +108,8 @@ test('marker widening: a stray inside a newly recognised module is KEPT, and no 
     return isLeakedNestedRoot(api);
   });
 
-  assert.deepEqual(verdicts, { unlisted: true, listed: false },
-    'swept before the widening, kept after it');
+  assert.deepEqual(verdicts, { unlisted: false, listed: false },
+    'onboardingComplete is project evidence — a nested project is kept even when the module marker is unlisted');
 });
 
 test('marker widening: it ENLARGES the keep → delete population, in one narrow shape', () => {
@@ -127,8 +129,27 @@ test('marker widening: it ENLARGES the keep → delete population, in one narrow
     return isLeakedNestedRoot(sub);
   });
 
+  assert.deepEqual(verdicts, { unlisted: false, listed: false },
+    'onboardingComplete is project evidence — a real nested project is kept in both columns');
+});
+
+test('marker widening: the same tree without project evidence is still swept in the listed column', () => {
+  // The debris twin of the row above. Same holder/sub shape, but the nested
+  // state is a mode object and nothing else — leftover, not a project. The
+  // listed marker still enlarges the delete population; the unlisted control
+  // still keeps.
+  const verdicts = bothColumns((root, marker) => {
+    const holder = path.join(root, 'holder');
+    marked(holder, marker);
+    seedState(holder, { mode: 'existing-codebase' });
+    const sub = path.join(holder, 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    seedState(sub, { mode: 'new-project' });
+    return isLeakedNestedRoot(sub);
+  });
+
   assert.deepEqual(verdicts, { unlisted: false, listed: true },
-    'a directory the sweep used to KEEP is now a deletion candidate');
+    'a directory the sweep used to KEEP is now a deletion candidate when it carries no project evidence');
 });
 
 test('marker widening: version control anywhere above removes that population again', () => {

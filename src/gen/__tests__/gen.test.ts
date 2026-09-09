@@ -13,6 +13,7 @@ import {
   CURSOR_EVENTS,
   CURSOR_PLUGIN_ROOT_TOKEN,
   PLUGIN_ROOT_ENV_KEYS,
+  PRE_TOOL_USE,
   claudeCommand,
   cursorCommand,
   windsurfCommand,
@@ -34,6 +35,50 @@ const MAX_CURSOR_TIER_LENGTH = Math.max(
 const CURSOR_FAIL_CLOSED_EVENTS: readonly string[] = [
   'beforeShellExecution', 'beforeReadFile', 'beforeMCPExecution', 'preToolUse',
 ];
+
+test('PRE_TOOL_USE lists the managed one-mcp matcher first and mcp__.* separately', () => {
+  const managed = PRE_TOOL_USE.find((group) => group.matcher?.includes('traffic-one-mcp'));
+  const wildcards = PRE_TOOL_USE.filter((group) => group.matcher === 'mcp__.*');
+  assert.ok(managed, 'managed one-mcp matcher must remain');
+  assert.equal(wildcards.length, 1, 'mcp__.* must be its own group');
+  assert.ok(
+    PRE_TOOL_USE.indexOf(managed!) < PRE_TOOL_USE.indexOf(wildcards[0]!),
+    'managed matcher stays first and exclusive; wildcard is listed after it',
+  );
+  assert.deepEqual(managed!.entries.map((entry) => entry.subcommand), ['check-one-mcp-tool']);
+  assert.deepEqual(wildcards[0]!.entries.map((entry) => entry.subcommand), [
+    'check-onboarding-gate',
+    'check-model-choice-gate',
+    'check-plan-write',
+    'check-library-allowlist',
+  ]);
+  assert.equal(
+    PRE_TOOL_USE.some((group) => (
+      group.matcher === 'mcp__.*' && group.entries.some((entry) => entry.subcommand === 'check-agent-model')
+    )),
+    false,
+  );
+  assert.equal(PRE_TOOL_USE[0]?.matcher, '.*');
+  assert.deepEqual(PRE_TOOL_USE[0]?.entries.map((entry) => entry.subcommand), ['check-codex-child-model']);
+  assert.equal(PRE_TOOL_USE[7]?.matcher, 'mcp__.*', 'mcp__.* stays at group 7 so Codex keys 0–6 stay unchanged');
+  assert.equal(PRE_TOOL_USE[8]?.matcher, 'NotebookEdit');
+  assert.deepEqual(PRE_TOOL_USE[8]?.entries.map((entry) => entry.subcommand), [
+    'check-onboarding-gate',
+    'check-model-choice-gate',
+  ]);
+  assert.equal(PRE_TOOL_USE[9]?.matcher, 'MultiEdit|NotebookEdit');
+  assert.deepEqual(PRE_TOOL_USE[9]?.entries.map((entry) => entry.subcommand), ['check-plan-write']);
+  assert.equal(
+    PRE_TOOL_USE.some((group) => (
+      (group.matcher === 'NotebookEdit' || group.matcher === 'MultiEdit|NotebookEdit')
+      && group.entries.some((entry) => (
+        entry.subcommand === 'check-agent-model' || entry.subcommand === 'check-library-allowlist'
+      ))
+    )),
+    false,
+  );
+  assert.equal(PRE_TOOL_USE.length, 10);
+});
 
 function assertPortableNodeHookCommand(command: string, label: string): void {
   assert.match(command, /^node -e "/, `${label} must launch through Node`);
@@ -79,6 +124,40 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     const managedClaudeGate = claudeHooks.hooks.PreToolUse.find((group: { matcher?: string }) => group.matcher?.includes('traffic-one-mcp'));
     assert.equal(managedClaudeGate.matcher, '^mcp__traffic-one-mcp__(get_config|report_codebase_metadata)$');
     assert.ok(managedClaudeGate.hooks[0].command.endsWith('check-one-mcp-tool'));
+    const mcpWildcardGates = claudeHooks.hooks.PreToolUse.filter((group: { matcher?: string }) => group.matcher === 'mcp__.*');
+    assert.equal(mcpWildcardGates.length, 1, 'mcp__.* must be a separate matcher group');
+    const mcpWildcard = mcpWildcardGates[0];
+    assert.ok(
+      claudeHooks.hooks.PreToolUse.indexOf(managedClaudeGate) < claudeHooks.hooks.PreToolUse.indexOf(mcpWildcard),
+      'managed one-mcp matcher stays first and wins over mcp__.*',
+    );
+    assert.equal(
+      claudeHooks.hooks.PreToolUse[7],
+      mcpWildcard,
+      'mcp__.* stays at PreToolUse group 7 so Codex keys 0–6 stay unchanged',
+    );
+    assert.equal(claudeHooks.hooks.PreToolUse[8].matcher, 'NotebookEdit');
+    assert.deepEqual(
+      claudeHooks.hooks.PreToolUse[8].hooks.map((hook: { command: string }) => hook.command.replace(/^.*\s/, '')),
+      ['check-onboarding-gate', 'check-model-choice-gate'],
+    );
+    assert.equal(claudeHooks.hooks.PreToolUse[9].matcher, 'MultiEdit|NotebookEdit');
+    assert.deepEqual(
+      claudeHooks.hooks.PreToolUse[9].hooks.map((hook: { command: string }) => hook.command.replace(/^.*\s/, '')),
+      ['check-plan-write'],
+    );
+    assert.deepEqual(
+      mcpWildcard.hooks.map((hook: { command: string }) => hook.command.replace(/^.*\s/, '')),
+      ['check-onboarding-gate', 'check-model-choice-gate', 'check-plan-write', 'check-library-allowlist'],
+    );
+    assert.equal(
+      claudeHooks.hooks.PreToolUse.some((group: { matcher?: string; hooks: Array<{ command: string }> }) => (
+        group.matcher === 'mcp__.*' && group.hooks.some((hook) => hook.command.endsWith('check-agent-model'))
+      )),
+      false,
+    );
+    assert.equal(claudeHooks.hooks.PreToolUse[0].matcher, '.*');
+    assert.ok(claudeHooks.hooks.PreToolUse[0].hooks[0].command.endsWith('check-codex-child-model'));
     const cursorHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks-cursor.json'), 'utf8'));
     assert.equal(CURSOR_PLUGIN_ROOT_TOKEN, '${CURSOR_PLUGIN_ROOT}');
     assert.equal(CURSOR_EVENTS.length, 12);
@@ -895,6 +974,19 @@ test('codegen ignores runtime plugin-root env vars and still reads the source ch
     if (saved.codex === undefined) delete process.env.CODEX_PLUGIN_ROOT; else process.env.CODEX_PLUGIN_ROOT = saved.codex;
     if (saved.claude === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = saved.claude;
     if (saved.cursor === undefined) delete process.env.CURSOR_PLUGIN_ROOT; else process.env.CURSOR_PLUGIN_ROOT = saved.cursor;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GenRun.file throws on a relPath collision with different content', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-collide-'));
+  try {
+    const run = new GenRun({ check: false, root: dir });
+    run.file('agents/x.md', 'first\n');
+    run.file('agents/x.md', 'first\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'agents', 'x.md'), 'utf8'), 'first\n');
+    assert.throws(() => run.file('agents/x.md', 'second\n'), /colliding emit for agents\/x\.md/);
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

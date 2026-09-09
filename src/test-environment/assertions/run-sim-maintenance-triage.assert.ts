@@ -84,10 +84,10 @@ export const assertion: Assertion = {
       }
     }
 
-    // 2 — the fail-closed rows actually pinned their gates. applyAll only
-    // verifies denied-vs-expected; the PROSE match lives here, exactly like
-    // run-sim-negative-gates (which does not run for cases without
-    // negativeGates), scoped to the leg phases.
+    // 2 — the fail-closed rows actually pinned their gates. applyAll now
+    // rejects crash-denies and unnamed handlers; the PROSE match still lives
+    // here, exactly like run-sim-negative-gates (which does not run for cases
+    // without negativeGates), scoped to the leg phases.
     const writes = (Array.isArray(transcript.writes) ? transcript.writes : []).map((row) => rec(row));
     const legRows = writes.filter((row) => String(row.phase ?? '').startsWith('leg-'));
     if (legRows.length === 0 && declared.some((leg) => leg.kind !== 'prompt' || leg.quickFix || leg.boundedRole)) {
@@ -99,6 +99,25 @@ export const assertion: Assertion = {
         return result(ctx, 'FAIL', `Fail-closed probe ${String(row.path)} was ALLOWED — the maintenance write protection went quiet.`, {
           expected: 'denied',
           actual: String(row.path),
+        });
+      }
+      if (str(row.denyId) === 'pipeline-handler-crashed') {
+        return result(ctx, 'FAIL', `Fail-closed probe ${String(row.path)} was refused by pipeline-handler-crashed (handler ${str(row.gateId) || 'unnamed'}) — a runtime crash must not read as correct enforcement.`, {
+          expected: 'named handler deny, not pipeline-handler-crashed',
+          actual: str(row.denyId),
+        });
+      }
+      if (!str(row.gateId)) {
+        return result(ctx, 'FAIL', `Fail-closed probe ${String(row.path)} was denied without naming the producing handler.`, {
+          expected: 'gateId',
+          actual: str(row.gateId),
+        });
+      }
+      const expectedHandler = str(row.expectHandler);
+      if (expectedHandler && str(row.gateId) !== expectedHandler) {
+        return result(ctx, 'FAIL', `Fail-closed probe ${String(row.path)} was refused by ${str(row.gateId)}, not the handler this row names (${expectedHandler}).`, {
+          expected: expectedHandler,
+          actual: str(row.gateId),
         });
       }
       const needle = str(row.denyMatch);

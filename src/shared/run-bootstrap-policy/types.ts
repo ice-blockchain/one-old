@@ -76,6 +76,14 @@ export interface EnsureRunBootstrapOptions {
   boundedOutputs?: string[];
   boundedAllowlist?: string[];
   boundedAllowlistExclude?: string[];
+  /**
+   * When known, whether the project is in maintenance. Senior implementers
+   * only receive a `:bounded-maintenance` unit when this is true. `quick-fix`
+   * ignores it. Callers that have `state` should set this from
+   * `isMaintenancePhase`. When omitted, `ensureRunBootstrap` infers it from
+   * `state` via `maintenancePhaseFromState`; omitted is not "not maintenance".
+   */
+  maintenancePhase?: boolean;
 }
 
 export interface BootstrapRuntimeContractsV1 {

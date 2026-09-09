@@ -31,6 +31,7 @@ import { stateTimestamp, stateVersion } from './io';
 import { hasLocalPreferenceFields, splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
 import { preserveCurrentRunId, preserveOneMcpReportId, withProjectStateLock } from './project-state-lock';
+import { safeRunIdSegment } from './run-id-segment';
 import { defaultStateForStack } from '../capabilities';
 
 function defaultMobileState(): Rec {
@@ -117,16 +118,23 @@ function normalizeLegacyStack(state: Rec): boolean {
  * An all-whitespace id is deliberately left alone rather than trimmed to '':
  * `preserveCurrentRunId` treats it as absent and rescues the on-disk id, which
  * is the better answer than publishing a blank pointer.
+ *
+ * The charset is `safeRunIdSegment` (run-id-segment.ts), the same leaf
+ * `safePathSegment` delegates to — inlined here would drift the moment either
+ * copy moved. Do not hard-reject `^\d{13}$`; legacy and ISO ids stay.
  */
 function canonicalizeRunPointer(state: Rec): boolean {
   const raw = state.currentRunId;
   if (typeof raw === 'number' && Number.isFinite(raw)) {
-    state.currentRunId = String(Math.trunc(raw));
+    state.currentRunId = safeRunIdSegment(String(Math.trunc(raw)));
     return true;
   }
-  if (typeof raw === 'string' && raw.trim() && raw !== raw.trim()) {
-    state.currentRunId = raw.trim();
-    return true;
+  if (typeof raw === 'string' && raw.trim()) {
+    const next = safeRunIdSegment(raw.trim());
+    if (raw !== next) {
+      state.currentRunId = next;
+      return true;
+    }
   }
   return false;
 }
@@ -139,15 +147,22 @@ export function legacyStatePath(cwd: string): string {
   return path.join(cwd, LEGACY_STATE_FILE);
 }
 
+function withCanonicalRunPointer(state: Rec): Rec {
+  canonicalizeRunPointer(state);
+  return state;
+}
+
 export function readState(cwd: string): Rec {
   const currentPath = statePath(cwd);
-  if (fs.existsSync(currentPath)) return stripLocalPreferenceFields(readJson(currentPath, {}));
+  if (fs.existsSync(currentPath)) {
+    return withCanonicalRunPointer(stripLocalPreferenceFields(readJson(currentPath, {})));
+  }
 
   const oldPath = legacyStatePath(cwd);
   if (fs.existsSync(oldPath)) {
     const legacy = readJson<Rec>(oldPath, {});
     if (legacy && typeof legacy === 'object') legacy.legacyStateFile = LEGACY_STATE_FILE;
-    return stripLocalPreferenceFields(legacy);
+    return withCanonicalRunPointer(stripLocalPreferenceFields(legacy));
   }
 
   const legacyPath = path.join(cwd, LEGACY_LOCK_FILE);

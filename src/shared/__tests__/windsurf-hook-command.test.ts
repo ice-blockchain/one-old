@@ -13,6 +13,7 @@ import {
   isGeneratedWindsurfWorkspaceHooks,
   matchesDevinUserHookCommand,
   matchesWindsurfUserHookCommand,
+  pluginRootFromTrafficOneHookCommand,
   windsurfUserHookCommand,
   windsurfWorkspaceHookCommand,
   windsurfWorkspaceHooksJson,
@@ -29,6 +30,19 @@ function legacyCommand(pluginRoot: string, runtime: string, subcommand: string):
   const quote = (value: string): string => `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
   return `TRAFFIC_ONE_PLUGIN_ROOT=${quote(pluginRoot)} TRAFFIC_ONE_HOST=windsurf node ${quote(path.join(pluginRoot, 'scripts', runtime))} ${subcommand} --host=windsurf`;
 }
+
+test('pluginRootFromTrafficOneHookCommand recovers portable and legacy roots, not near-collisions', () => {
+  const pluginRoot = path.resolve('/plugin/root');
+  assert.equal(pluginRootFromTrafficOneHookCommand(windsurfUserHookCommand(pluginRoot, 'pre_run_command')), pluginRoot);
+  assert.equal(
+    pluginRootFromTrafficOneHookCommand(legacyCommand(pluginRoot, 'windsurf-hook-runtime.cjs', 'pre_run_command')),
+    pluginRoot,
+  );
+  assert.equal(
+    pluginRootFromTrafficOneHookCommand('node "/other/plugin/scripts/windsurf-hook-runtime.cjs" pre_run_command --host=windsurf'),
+    null,
+  );
+});
 
 test('windsurfUserHookCommand stamps plugin root and host env', () => {
   const cmd = windsurfUserHookCommand('/plugin/root', 'pre_run_command');

@@ -324,6 +324,32 @@ test('quick-fix requires and hashes a nonempty parent-bounded maintenance scope'
   });
 });
 
+test('senior bounded-maintenance is refused on a new-project that is not in maintenance', () => {
+  withProject((cwd) => {
+    assert.equal(ensureRunBootstrap(cwd, 'G', 'senior-frontend', STATE, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: 'policy-greenfield',
+      boundedOutputs: ['src/News.tsx'],
+      boundedAllowlist: ['src/News.tsx'],
+    }), null);
+    const snapshot = readArchitectureRunSnapshot(cwd, 'G');
+    if (snapshot) {
+      const materials = resolvedRoleMaterials(cwd, 'senior-frontend', {}, 'codex', snapshot.profile);
+      assert.ok(materials);
+      assert.equal(
+        workUnitForRole(cwd, 'G', 'senior-frontend', null, materials, snapshot, {
+          boundedOutputs: ['src/News.tsx'],
+          boundedAllowlist: ['src/News.tsx'],
+        }),
+        null,
+        'workUnitForRole must not take the senior bounded branch without maintenancePhase',
+      );
+    }
+  });
+});
+
 test('frontend maintenance can publish and re-read an exact bounded WorkUnit without compiled architecture', () => {
   withProject((cwd) => {
     const state = {
@@ -735,6 +761,7 @@ function subagentPolicyFixture(cwd: string, runId: string) {
   const state = {
     ...STATE,
     currentRunId: runId,
+    lifecycle: { phase: 'maintenance', source: 'test' },
     performance: {
       level: 'balanced',
       source: 'prompted',

@@ -11,6 +11,7 @@ import { isPathWithin, projectRelativeHookPath, resolveProjectRoot } from '../..
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
   hasMaterializedProjectAssets,
+  materializedFileHashesDrifted,
   materializedFromDifferentPluginBuild,
   type MaterializeOutcome,
   materializeProjectAssets,
@@ -84,7 +85,8 @@ function materializeProjectMemoryPath(
     // change already does.
     if (isMaterialized(state)
       && hasMaterializedProjectAssets(projectRoot, state)
-      && !materializedFromDifferentPluginBuild(projectRoot)) {
+      && !materializedFromDifferentPluginBuild(projectRoot)
+      && !materializedFileHashesDrifted(projectRoot)) {
       reportOneMcp(projectRoot, state, trigger);
       return null;
     }

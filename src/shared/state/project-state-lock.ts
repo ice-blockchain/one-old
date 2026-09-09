@@ -20,6 +20,7 @@ import { STATE_FILE } from '../../config/paths';
 import { readOwnerEntry } from '../bounded-read';
 import { trustworthyAgeSince } from '../clock-skew';
 import { ensureDir } from '../fsjson';
+import { safeRunIdSegment } from './run-id-segment';
 
 interface ProjectStateLock {
   readonly dirPath: string;
@@ -252,7 +253,11 @@ export function preserveCurrentRunId(current: unknown, replacement: unknown): Re
   const next = record(replacement) ? { ...(replacement as Rec) } : {};
   if (runIdValue(next.currentRunId)) return next; // replacement carries an id (possibly a legit new one)
   const currentId = runIdValue(record(current)?.currentRunId);
-  if (currentId) next.currentRunId = currentId; // never let a stale snapshot blank a live id
+  // Rescue is the only arm that publishes an on-disk id the replacement never
+  // saw. writeState already canonicalize's a replacement that CARRIES an id;
+  // a planted `foo/../bar` on disk would otherwise be re-persisted verbatim
+  // when some other field is written.
+  if (currentId) next.currentRunId = safeRunIdSegment(currentId);
   return next;
 }
 

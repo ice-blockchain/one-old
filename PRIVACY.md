@@ -160,7 +160,7 @@ To send nothing at all, decline the plugin for that project.
 | `runs/<id>/` | Per-run artifacts, claims, ledger | Ignored |
 | `runs/<id>/debug/decisions.jsonl` | The decision log — append-only, on by default, bounded by bytes | Ignored |
 | `debug/` | Project-level debug, including `hook-trace.jsonl` when the tracer is armed | Ignored |
-| `reports/`, `backups/`, `one-mcp-report.json` | Reports, backups, report status | Ignored |
+| `reports/`, `backups/`, `one-mcp-report.json`, `.onboarding-main-sessions.json` | Reports, backups, report status, Cursor pre-onboarding main-session store | Ignored |
 
 **Before you have answered the use-plugin question, Traffic One writes nothing
 into your project — not even a marker.** That is enforced by a write fence on the
@@ -224,10 +224,11 @@ This is the section that matters most, because a file in your repository can be
 pushed to a shared remote and read by everyone with access to it.
 
 `.traffic-one/` is **not** ignored wholesale. The generated `.gitignore` block
-ignores exactly `runs/`, `reports/`, `backups/`, `debug/` and
-`one-mcp-report.json`. Everything else under `.traffic-one/` is tracked on
-purpose — the root `AGENTS.md` Traffic One materializes references the rules,
-skills and digests on 15 lines, and a fresh clone with those files ignored gets
+ignores exactly `runs/`, `reports/`, `backups/`, `debug/`,
+`one-mcp-report.json` and `.onboarding-main-sessions.json`. Everything else
+under `.traffic-one/` is tracked on purpose — the root `AGENTS.md` Traffic One
+materializes references the rules, skills and digests on 15 lines, and a fresh
+clone with those files ignored gets
 a kernel pointing at roughly 50 files that are not in the repository.
 
 ### `.traffic-one/.one.json` is committed, and your first prompt is not in it

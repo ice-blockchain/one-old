@@ -15,7 +15,7 @@ import { stateTimestamp } from '../io';
 import {
   getSpawnIndex,
 } from '../materialization';
-import { writeState } from '../normalize';
+import { patchState } from '../normalize';
 
 import {
   ensureCurrentRunId,
@@ -431,7 +431,11 @@ export function ensureRunAgentClaimResult(
   // safe: gate-enforcement.ts's claimMintDeny retries and then DENIES the spawn on
   // `unavailable`, while `precondition-failed` lets it proceed — a spawn allowed
   // over an unrecorded run is exactly the child that binds no role.
-  if (!writeState(cwd, source)) return unavailable<Rec>('run-state-write-refused');
+  // Owned fields only: a whole-object writeState(source) would publish a snapshot
+  // that may already be stale relative to concurrent .one.json writers.
+  if (!patchState(cwd, { currentRunId: runId, spawnIndex: source.spawnIndex })) {
+    return unavailable<Rec>('run-state-write-refused');
+  }
 
   return minted;
 }

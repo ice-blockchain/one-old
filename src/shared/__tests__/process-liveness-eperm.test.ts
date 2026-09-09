@@ -97,7 +97,10 @@ const SRC_ROOT = path.resolve(__dirname, '..', '..');
 // which is the direction the assertions below refuse for this class, and
 // `stopOwnedServer` skips its SIGKILL outright on that answer. Fifteen is the
 // count on the census's own terms; fourteen was the regex's.
-const COPY_COUNT = 15;
+// 13 after Phase 5: prefs-store, cache-lock, and ensure.ts `processAlive`
+// wrappers no longer contain `kill(pid, 0)` — they call `ownerLiveness` in
+// per-user-dir-lock.ts, where EPERM is `not-ours` (0700 per-user roots only).
+const COPY_COUNT = 13;
 
 interface Copy {
   readonly file: string;
@@ -293,7 +296,7 @@ test('no copy treats EPERM as evidence of death — every copy, called', () => {
 // succeeds. Both paths must answer "alive", which is what makes this assertion
 // meaningful whoever runs it, while the guard below records which path was
 // actually exercised so a root-only CI cannot quietly reduce it to the easy one.
-test('a live process owned by another uid reads as alive', () => {
+test('a live process owned by another uid is not a holder of a 0700 per-user root', () => {
   let observed: string | null = null;
   try {
     process.kill(1, 0);
@@ -302,9 +305,11 @@ test('a live process owned by another uid reads as alive', () => {
   }
   assert.ok(observed === null || observed === 'EPERM',
     `pid 1 must be alive for this to measure anything, got ${observed}`);
-  assert.equal(processAlive(1), true,
+  // ensure.ts `processAlive` is the per-user-root wrapper: EPERM is not-ours.
+  // Shared project `.traffic-one/` copies still treat EPERM as alive (census above).
+  assert.equal(processAlive(1), observed === null,
     observed === 'EPERM'
-      ? 'kill(1,0) raised EPERM and the predicate must still call pid 1 alive'
+      ? 'kill(1,0) raised EPERM: a 0700 per-user root must not treat pid 1 as its holder'
       : 'running as root: kill(1,0) succeeded, so pid 1 is alive by the easy path');
 });
 

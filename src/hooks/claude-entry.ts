@@ -12,8 +12,9 @@ import { dispatchSubcommand } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { selectAdapter } from '../adapters/select';
 import { detectHost } from '../shared/host';
-import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { hasValidPreToolPayload, isFailClosedRecoveryExemption, isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
+import { authFallbackMessage, safeHookFallbackStandsDown } from './auth-fallback';
+import { guardedMain } from './entry-guard';
+import { hasValidPreToolPayload, isGatePreToolSubcommand, nestedPreToolDeny, safeFailClosedRecoveryExemption } from './fail-closed';
 import { ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
 import { markCodexHookContext } from '../shared/codex-hook-evidence';
 
@@ -38,24 +39,27 @@ export async function runClaudeHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
-  const host = detectHost(env, ['--host', subcommand]); // never cursor here
-  if (isGatePreToolSubcommand(subcommand)
-    && !hasValidPreToolPayload(stdin, subcommand, 'nested')
-    && !isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) {
-    return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
-  }
-  // This subcommand is wired only to the exact managed MCP matcher. Deny before
-  // module loading so pluginUse opt-out or a damaged runtime cannot reopen it.
-  if (subcommand === 'check-one-mcp-tool') {
-    return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude', ONE_MCP_AGENT_TOOL_DENY_REASON), exitCode: 0 };
-  }
+  // detectHost reads env. A throw here used to escape the never-throw contract
+  // (hostile/unreadable env) and skip the catch's fail-closed deny.
+  let host: ReturnType<typeof detectHost> = 'claude';
   try {
+    host = detectHost(env, ['--host', subcommand]); // never cursor here
+    if (isGatePreToolSubcommand(subcommand)
+      && !hasValidPreToolPayload(stdin, subcommand, 'nested')
+      && !safeFailClosedRecoveryExemption(stdin, subcommand, 'nested')) {
+      return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
+    }
+    // This subcommand is wired only to the exact managed MCP matcher. Deny before
+    // module loading so pluginUse opt-out or a damaged runtime cannot reopen it.
+    if (subcommand === 'check-one-mcp-tool') {
+      return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude', ONE_MCP_AGENT_TOOL_DENY_REASON), exitCode: 0 };
+    }
     const adapter = selectAdapter(host === 'codex' ? 'codex' : 'claude');
     const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatchSubcommand(adapter, handlers, subcommand, { stdin, argv: [subcommand] });
     return { stdout, exitCode: 0 };
   } catch {
-    if (hookFallbackStandsDown(stdin, env)) return { stdout: '', exitCode: 0 };
+    if (safeHookFallbackStandsDown(stdin, env)) return { stdout: '', exitCode: 0 };
     if (subcommand === 'session-start') {
       const message = authFallbackMessage(stdin, env);
       return { stdout: message ? sessionStartFallback(message, host) : '', exitCode: 0 };
@@ -65,7 +69,7 @@ export async function runClaudeHook(
       // is damaged, exactly the case PRE_TOOL_REMEDIATION tells the user to
       // run doctor for. Recognize that exact recovery command here so it is
       // not itself denied by the failure it is meant to diagnose.
-      if (isFailClosedRecoveryExemption(stdin, subcommand, 'nested')) return { stdout: '', exitCode: 0 };
+      if (safeFailClosedRecoveryExemption(stdin, subcommand, 'nested')) return { stdout: '', exitCode: 0 };
       return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
     }
     return { stdout: '', exitCode: 0 };
@@ -86,14 +90,39 @@ function readStdin(): Promise<string> {
   });
 }
 
+function claudePreToolDeny(subcommand: string | undefined): string {
+  const host = detectHost(process.env, subcommand === undefined ? [] : ['--host', subcommand]);
+  return nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude');
+}
+
 export async function main(): Promise<void> {
   const subcommand = process.argv[2];
-  const stdin = await readStdin();
-  const { stdout } = await runClaudeHook(subcommand, stdin);
-  if (stdout) process.stdout.write(stdout);
-  process.exitCode = 0;
+  try {
+    const stdin = await readStdin();
+    const out = await guardedMain({
+      subcommand,
+      stdin,
+      isPreTool: isGatePreToolSubcommand(subcommand),
+      surface: 'nested',
+      deny: { stdout: claudePreToolDeny(subcommand), exitCode: 0 },
+      noop: { stdout: '', exitCode: 0 },
+      run: () => runClaudeHook(subcommand, stdin),
+    });
+    if (out.stdout) process.stdout.write(out.stdout);
+    process.exitCode = 0;
+  } catch {
+    try {
+      if (isGatePreToolSubcommand(subcommand)) process.stdout.write(claudePreToolDeny(subcommand));
+    } catch { /* last-ditch write must not reject */ }
+    process.exitCode = 0;
+  }
 }
 
 if (require.main === module) {
-  void main();
+  void main().catch(() => {
+    try {
+      if (isGatePreToolSubcommand(process.argv[2])) process.stdout.write(claudePreToolDeny(process.argv[2]));
+    } catch { /* */ }
+    process.exitCode = 0;
+  });
 }

@@ -19,9 +19,17 @@ export interface WriteOutcome {
   expected?: boolean;
   /** The phrase the deny was required to contain, echoed for the assertion. */
   denyMatch?: string;
-  // Recorded from HookResult.denyId — run-sim calls planWriteGate directly, not
-  // runPipeline, so the decision-log is never written for scripted writes.
+  /**
+   * The handler id the row required (`ScriptedWrite.expectHandler`), echoed so
+   * assertions can pin the producer without re-deriving it.
+   */
+  expectHandler?: string;
+  // Recorded from HookResult after runPipeline(stampDeny): denyId is the gate's
+  // declared id (or the pipeline crash id), and gateId is the producing handler.
   denyId?: string;
+  // The handler `id` stampDeny set. Absent on an allow. A crash deny still
+  // names the handler that threw — denyId is then `pipeline-handler-crashed`.
+  gateId?: string;
   // Runtime spawnIndex is 1-based (`nextSpawnIndex` uses Math.max(..., 1)).
   // The plan's "spawnIndex 0" means first spawn / first attempt, which is
   // `spawnIndex === 1` here, or the first write of this role in the transcript.
@@ -109,6 +117,12 @@ export interface ScriptedWrite {
    * reason would still look green.
    */
   denyMatch?: string;
+  /**
+   * The handler id that must produce the deny (e.g. `plan-guard.write`).
+   * Presence of a deny is not enough: a crash or a different pipeline handler
+   * must not satisfy the row.
+   */
+  expectHandler?: string;
 }
 
 // One 'prompt' maintenance leg as it actually routed. The assertion reads these

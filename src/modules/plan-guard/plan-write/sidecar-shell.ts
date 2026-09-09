@@ -104,6 +104,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { canonicalizeStateDirSegments, mentionsStateDirSegment, STATE_DIR } from '../../../config/paths';
 import { isDoctorIdArgument } from '../../../shared/doctor-command';
 import {
   COMMAND_WORD_PREFIX,
@@ -111,7 +112,7 @@ import {
   DESTRUCTIVE_VERBS,
   findWriteAction,
   gitWorktreeRewritePathspecs,
-  HEREDOC_INTERPRETER_RE,
+  heredocOperatorUnspanned,
   INTERPRETER_NAMES,
   NAMED_OUTPUT_TOOLS,
   namedOutputDestinations,
@@ -132,6 +133,7 @@ import {
   unescapeDoubleQuoted,
   VERB_ANCHOR,
 } from '../../../shared/shell-vocabulary';
+import { stripHeredocBodies } from '../../../shared/feature-source';
 import { runtimeOwnedRunSidecar } from '../plan-readiness/contracts';
 
 const RUNS_DIR = '.traffic-one/runs';
@@ -237,7 +239,7 @@ function withNestedShellBodies(command: string): string {
       // went to `noop`. Never the rest of the line either, because
       // `cp x y && bash -c '…'` must still be judged on the half that is not
       // the nest.
-      if (!body.includes('.traffic-one')) return whole;
+      if (!mentionsStateDirSegment(body)) return whole;
       const quoted = single !== undefined ? single.length : (doubled as string).length;
       return `${whole.slice(0, whole.length - quoted - 2)}''`;
     });
@@ -368,21 +370,18 @@ const shellTokens = shellWordsOf;
 /**
  * Heredoc BODIES are data, not commands: a reviewer digest written as
  * `cat > …/reviewer.md <<'EOF'` whose findings quote `rm -rf .traffic-one/runs/…`
- * must not be refused for quoting it (the class observed in 8c-codex). The
- * caller already extracts the bodies, so drop those lines rather than re-parse
- * the heredoc grammar here.
+ * must not be refused for quoting it (the class observed in 8c-codex).
  *
- * Unless an INTERPRETER is reading them, in which case they are the command and
- * dropping them is how the whole channel went unseen.
+ * Strip by SPAN (`stripHeredocBodies`), not by text equality with body lines —
+ * a body line that happens to equal a real command line must not drop the
+ * command. Interpreter/shell readers keep their bodies (they are the command);
+ * that exception is per-heredoc inside `stripHeredocBodies`.
+ *
+ * `heredocBody` is accepted because callers still pass the extracted payload;
+ * the span walk does not need it.
  */
-function withoutHeredocLines(command: string, heredocBody: string): string {
-  if (!heredocBody) return command;
-  if (HEREDOC_INTERPRETER_RE.test(command)) return command;
-  const bodyLines = new Set(heredocBody.split('\n'));
-  return command
-    .split('\n')
-    .filter((line) => !bodyLines.has(line))
-    .join('\n');
+function withoutHeredocLines(command: string, _heredocBody: string): string {
+  return stripHeredocBodies(command);
 }
 
 function relativeTarget(operand: string, workdir: string, projectRoot: string): string | null {
@@ -472,7 +471,7 @@ function readableScope(rel: string): string | null {
  * `r9-permit-glob-finished` is the row that pins it (mutant M22, killed).
  */
 function globbedScope(rel: string): string | null {
-  const segments = rel.split('/').filter((segment) => segment !== '' && segment !== '.');
+  const segments = canonicalizeStateDirSegments(rel).split('/').filter((segment) => segment !== '' && segment !== '.');
   const required = RUNS_DIR.split('/');
   for (let index = 0; index < required.length; index += 1) {
     const segment = segments[index];
@@ -498,7 +497,7 @@ function globbedScope(rel: string): string | null {
  * ancestors are what the pattern names.
  */
 function globCoversPath(glob: string, sidecar: string): boolean {
-  const pattern = glob.split('/').filter((segment) => segment !== '' && segment !== '.');
+  const pattern = canonicalizeStateDirSegments(glob).split('/').filter((segment) => segment !== '' && segment !== '.');
   const parts = sidecar.split('/');
   if (pattern.length > parts.length) return false;
   return pattern.every((segment, index) => globSegmentMatches(segment, parts[index]!));
@@ -507,11 +506,12 @@ function globCoversPath(glob: string, sidecar: string): boolean {
 function runsTreeScope(rel: string): string | null {
   const literal = rel.replace(/(?:\/\*)+$/, '');
   if (literal !== rel && literal === '') return null;
-  const covers = literal === ''
-    || literal === '.traffic-one'
-    || literal === RUNS_DIR
-    || literal.startsWith(`${RUNS_DIR}/`);
-  return covers ? literal : null;
+  const folded = canonicalizeStateDirSegments(literal);
+  const covers = folded === ''
+    || folded === STATE_DIR
+    || folded === RUNS_DIR
+    || folded.startsWith(`${RUNS_DIR}/`);
+  return covers ? folded : null;
 }
 
 /**
@@ -586,7 +586,8 @@ function liveRunId(value: unknown, projectRoot: string): string {
 }
 
 function sidecarsUnder(projectRoot: string, rel: string): string[] {
-  const scope = rel === '' || rel === '.traffic-one' ? RUNS_DIR : rel;
+  const folded = canonicalizeStateDirSegments(rel);
+  const scope = folded === '' || folded === STATE_DIR ? RUNS_DIR : folded;
   const found: string[] = [];
   let seen = 0;
   const visit = (relDir: string, depth: number): void => {
@@ -937,7 +938,16 @@ export function shellRuntimeSidecarDestruction(
   // command that spells a `.traffic-one` path is now asked whatever its verb is,
   // which is the same two-test pre-filter `reset-record-shell.ts` uses
   // (`MENTIONS_RE || DESTRUCTIVE_VERB_RE`) and for the same measured reason.
-  if (!DESTRUCTIVE_VERB_RE.test(scanned) && !scanned.includes('.traffic-one')) return [];
+  if (!DESTRUCTIVE_VERB_RE.test(scanned) && !mentionsStateDirSegment(scanned)
+    && !heredocOperatorUnspanned(command)) return [];
+  // Real `<<` / `<<-` and no body span: the strip cannot be verified. Fail
+  // closed the same way an unreadable glob does — name the live sidecars.
+  // Quoted / comment / arithmetic `<<` are not operators (`heredocOperatorUnspanned`).
+  if (heredocOperatorUnspanned(command)) {
+    const live = liveRunId(currentRunId, projectRoot);
+    const scope = live ? `${RUNS_DIR}/${live}` : RUNS_DIR;
+    return sidecarsUnder(projectRoot, scope).sort().slice(0, Math.max(1, limit));
+  }
   const live = liveRunId(currentRunId, projectRoot);
   const otherRun = (sidecar: string): boolean => {
     if (!live) return false;

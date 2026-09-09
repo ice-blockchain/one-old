@@ -21,11 +21,15 @@ import {
 import {
   lighthouseCommand,
 } from './lighthouse';
+import {
+  attachStackLighthouseFromArtifact,
+  stackLighthouseFollowUpHint,
+} from './lighthouse-artifact';
 import { browserCommand } from './browser';
 import { nativeCommand } from './native';
 import { runStackChecks, stackReportStatus } from './stack';
 import { emitProgress } from './report-publish';
-import { qaReportV2Path } from '../../shared/qa-report-v2';
+import { qaReportV2Path, type QaReportV2 } from '../../shared/qa-report-v2';
 import { acquireQaRunLock, qaRunLockDispossessed, releaseQaRunLock } from './lock';
 
 export async function main(
@@ -126,7 +130,20 @@ export async function main(
       discloseScan(stack.run.scanQualification);
       const checks = await runStackChecks(args, stack.run.contract.requiredChecks);
       const status = stackReportStatus(checks);
-      const published = publishStackReport(args, stack.run, status, checks);
+      // none/nonvisual + performance.required has no served listener. Attach a
+      // raw Lighthouse JSON already in this run QA directory — the same
+      // `--artifact` conversion the follow-up `lighthouse` command uses, without
+      // owned-listener identity. Do not start a preview or force a route matrix.
+      let lighthouse: QaReportV2['lighthouse'] | undefined;
+      let attachError: { code: number; message: string } | undefined;
+      if (args.artifact) {
+        const attached = attachStackLighthouseFromArtifact(args, stack.run);
+        if (attached.ok) lighthouse = attached.lighthouse;
+        else attachError = attached;
+      }
+      const published = publishStackReport(args, stack.run, status, checks, lighthouse);
+      const needsLighthouse = stack.run.contract.performance.required
+        && !published.report.lighthouse?.evidencePath;
       process.stdout.write(`${JSON.stringify({
         ok: published.ok,
         status: published.report.status,
@@ -144,10 +161,33 @@ export async function main(
         ...(published.report.settledWithIncompleteScan
           ? { settledWithIncompleteScan: published.report.settledWithIncompleteScan }
           : {}),
+        ...(published.report.lighthouse
+          ? { lighthouse: published.report.lighthouse }
+          : {}),
+        ...(needsLighthouse
+          ? { hint: stackLighthouseFollowUpHint(args.runId) }
+          : {}),
+        ...(attachError
+          ? { artifact: { ok: false, message: attachError.message } }
+          : {}),
         ...(published.ok ? {} : { validation: { code: published.code, message: published.message } }),
       })}\n`);
       for (const advisory of published.advisories) emitProgress(`stack: ${advisory}`);
       return published.ok ? 0 : 1;
+    }
+    // Stack contracts have no JS build output to manifest. Convert `--artifact`
+    // against the stack report (no `build.url`) instead of failing `loadRun`.
+    if (args.command === 'lighthouse') {
+      const contract = readVerificationContract(args.projectRoot, args.runId);
+      if (contract && !contract.browserRequired && contract.uiImpact !== 'native-ui') {
+        const stack = loadStackRun(args);
+        if (!stack.ok) {
+          process.stderr.write(`qa-evidence: cannot load run — ${stack.reason}\n`);
+          return 2;
+        }
+        discloseScan(stack.run.scanQualification);
+        return lighthouseCommand(args, stack.run);
+      }
     }
     // Answer "does this contract even want browser evidence?" BEFORE demanding a
     // build manifest: an api-only project has no JS build output, so `loadRun`

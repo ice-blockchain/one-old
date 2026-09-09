@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -35,6 +36,56 @@ test('Codex E2E isolates its model sidecar through the standard state home', () 
   const caseFolder = path.join(os.tmpdir(), 't1-env-codex-models');
   const env = buildCaseEnv(defaultConfig(), caseFolder, '', 'codex');
   assert.equal(env.XDG_STATE_HOME, path.join(caseFolder, 'xdg-state'));
+});
+
+// isolateStateHome (default true) must pin HOME/USERPROFILE to the case folder.
+// documentedBinDir() is `$HOME/.traffic-one/bin`; leaving HOME as the developer
+// home is how ensureRunnerShims used to write the real bin directory.
+test('default isolateStateHome pins HOME and USERPROFILE to the case folder', () => {
+  const caseFolder = path.join(os.tmpdir(), 't1-env-home-pin');
+  const isolated = buildCaseEnv(defaultConfig(), caseFolder, '', 'pure-node');
+  const caseHome = path.join(caseFolder, 'home');
+  assert.equal(isolated.HOME, caseHome);
+  assert.equal(isolated.USERPROFILE, caseHome);
+
+  const unisolated = buildCaseEnv(
+    { ...defaultConfig(), isolateStateHome: false },
+    caseFolder,
+    '',
+    'pure-node',
+  );
+  // Off omits the keys rather than pointing them at the real home.
+  assert.equal(unisolated.HOME, undefined);
+  assert.equal(unisolated.USERPROFILE, undefined);
+});
+
+test('isolateStateHome forwards rustup and cargo homes when HOME is remapped', () => {
+  const realHome = process.env.TRAFFIC_ONE_TEST_UNPINNED_HOME || os.homedir();
+  const defaultCargo = path.join(realHome, '.cargo');
+  const defaultRustup = path.join(realHome, '.rustup');
+  const caseFolder = path.join(os.tmpdir(), 't1-env-rustup');
+  const isolated = buildCaseEnv(defaultConfig(), caseFolder, '', 'pure-node');
+  if (fs.existsSync(defaultCargo)) {
+    assert.equal(isolated.CARGO_HOME, defaultCargo);
+  }
+  if (fs.existsSync(defaultRustup)) {
+    assert.equal(isolated.RUSTUP_HOME, defaultRustup);
+  }
+  assert.notEqual(isolated.CARGO_HOME, path.join(caseFolder, 'home', '.cargo'));
+  assert.notEqual(isolated.RUSTUP_HOME, path.join(caseFolder, 'home', '.rustup'));
+});
+
+test('isolateStateHome forwards a real Playwright browser cache when HOME is remapped', () => {
+  const realHome = process.env.TRAFFIC_ONE_TEST_UNPINNED_HOME || os.homedir();
+  const defaultCache = process.platform === 'darwin'
+    ? path.join(realHome, 'Library', 'Caches', 'ms-playwright')
+    : path.join(realHome, '.cache', 'ms-playwright');
+  const caseFolder = path.join(os.tmpdir(), 't1-env-pw-browsers');
+  const isolated = buildCaseEnv(defaultConfig(), caseFolder, '', 'pure-node');
+  if (fs.existsSync(defaultCache)) {
+    assert.equal(isolated.PLAYWRIGHT_BROWSERS_PATH, defaultCache);
+  }
+  assert.notEqual(isolated.PLAYWRIGHT_BROWSERS_PATH, path.join(caseFolder, 'home'));
 });
 
 // The qa-evidence stack runner spawns `pytest`/`ruff` by bare name, so the

@@ -266,6 +266,94 @@ test('codex: Stop deny carries the block AND the marked additionalContext eviden
   assert.match(String(out.hookSpecificOutput?.additionalContext), /^<!-- traffic-one-hook-context:v1 event=Stop -->/);
 });
 
+test('claude: unknown MCP write/shell args classify; name-only unknown stays other', () => {
+  const write = claude.parse({
+    stdin: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'mcp__filesystem__write_file',
+      tool_input: { path: '/a.ts', content: 'export const x = 1;' },
+    }),
+    argv: [],
+  });
+  assert.equal(write.tool?.class, 'file-write');
+  assert.equal(write.tool?.rawName, 'mcp__filesystem__write_file');
+  assert.equal(write.tool?.filePath, '/a.ts');
+
+  const shell = claude.parse({
+    stdin: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'mcp__shell__run',
+      tool_input: { command: 'npm test' },
+    }),
+    argv: [],
+  });
+  assert.equal(shell.tool?.class, 'shell');
+  assert.equal(shell.tool?.command, 'npm test');
+
+  const other = claude.parse({
+    stdin: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'mcp__search__query',
+      tool_input: { query: 'todos' },
+    }),
+    argv: [],
+  });
+  assert.equal(other.tool?.class, 'other');
+
+  const builtin = claude.parse({
+    stdin: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: '/a.ts', content: 'x', command: 'echo hi' },
+    }),
+    argv: [],
+  });
+  assert.equal(builtin.tool?.class, 'file-write');
+});
+
+test('claude: NotebookEdit lifts notebook_path/new_source into filePath/content', () => {
+  const parsed = claude.parse({
+    stdin: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'NotebookEdit',
+      tool_input: { notebook_path: '/nb.ipynb', new_source: 'print(1)' },
+    }),
+    argv: [],
+  });
+  assert.equal(parsed.tool?.class, 'file-write');
+  assert.equal(parsed.tool?.rawName, 'NotebookEdit');
+  assert.equal(parsed.tool?.filePath, '/nb.ipynb');
+  assert.equal(parsed.tool?.content, 'print(1)');
+
+  const camel = claude.parse({
+    stdin: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'NotebookEdit',
+      tool_input: { notebookPath: '/other.ipynb', newSource: 'print(2)' },
+    }),
+    argv: [],
+  });
+  assert.equal(camel.tool?.filePath, '/other.ipynb');
+  assert.equal(camel.tool?.content, 'print(2)');
+
+  // Existing Write keys stay first so Write/Edit remain byte-identical.
+  const write = claude.parse({
+    stdin: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: {
+        file_path: '/a.ts',
+        content: 'x',
+        notebook_path: '/other.ipynb',
+        new_source: 'y',
+      },
+    }),
+    argv: [],
+  });
+  assert.equal(write.tool?.filePath, '/a.ts');
+  assert.equal(write.tool?.content, 'x');
+});
+
 test('claude: a Stop payload parses to the Stop event (never misparsed as PreToolUse)', () => {
   const parsed = claude.parse({
     stdin: JSON.stringify({ hook_event_name: 'Stop', cwd: '/tmp/p', stop_hook_active: true }),

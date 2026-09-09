@@ -170,6 +170,31 @@ test('the tester cannot claim TESTS_GREEN on an excused test check without sayin
       !disclosed.includes('tester-no-test-evidence-disclosure'),
       'and disclosing it must be enough to proceed — the ruling is DISCLOSE, not REFUSE',
     );
+
+    const heredoc = (shellBody: string): string[] => planReadinessViolations({
+      filePath: `.traffic-one/digests/${RUN_ID}/tester.md`,
+      content: '',
+      shellBody,
+      projectRoot: cwd,
+      state: STATE,
+      writingFeatureSource: false,
+      block: (name: string) => name,
+    });
+
+    const quietHeredoc = heredoc('verdict: TESTS_GREEN\n- All checks green.\n');
+    assert.ok(
+      quietHeredoc.includes('tester-no-test-evidence-disclosure'),
+      `an undisclosed TESTS_GREEN heredoc must be refused, got: ${quietHeredoc.join(' | ')}`,
+    );
+
+    const disclosedHeredoc = heredoc(
+      'verdict: TESTS_GREEN\n'
+      + '- NO_TEST_EVIDENCE — stack-test was excused: this project declares no test command, so no tests ran.\n',
+    );
+    assert.ok(
+      !disclosedHeredoc.includes('tester-no-test-evidence-disclosure'),
+      'and disclosing it in the heredoc must be enough to proceed — the ruling is DISCLOSE, not REFUSE',
+    );
   });
 });
 

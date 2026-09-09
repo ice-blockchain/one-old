@@ -191,9 +191,10 @@
 import * as crypto from 'crypto';
 import * as os from 'os';
 
-import { readJsonResult } from '../fsjson';
+import { readJsonResult, writeTextFile } from '../fsjson';
 import { oneSettingsPath, updateOneSettings } from '../one-settings';
-import { projectRootHash } from '../state/local-prefs/prefs-store';
+import { projectRootHash, projectRootHashAliases } from '../state/local-prefs/prefs-store';
+import { sha256 } from '../text';
 import {
   OVERRIDE_RECONCILIATION_MAC_DOMAIN,
   ensureOverrideKey,
@@ -201,6 +202,8 @@ import {
   overrideMacMatches,
   readOverrideKey,
 } from './keys';
+import { overrideQuarantineSidecarPath } from './paths';
+import { readRegularFileOrThrow } from '../bounded-read';
 import {
   establishOverrideMintCounter,
   readOverrideMintCounter,
@@ -208,7 +211,8 @@ import {
 } from './mint-counter';
 import type { OverrideLedgerKind } from './token';
 
-export const OVERRIDE_RECONCILIATION_VERSION = 1 as const;
+export const OVERRIDE_RECONCILIATION_VERSION_LEGACY = 1 as const;
+export const OVERRIDE_RECONCILIATION_VERSION = 2 as const;
 
 /** The top-level `one.json` key this module owns. Sibling of the mint counter's,
  *  and in the same envelope for the same reason: it has to survive `rm -rf` of
@@ -221,7 +225,7 @@ export const OVERRIDE_RECONCILE_SECTION = 'overrideReconciliations';
  * under `JSON.stringify`, so unlike a nested object they sign deterministically.
  */
 export interface OverrideReconciliation {
-  readonly v: typeof OVERRIDE_RECONCILIATION_VERSION;
+  readonly v: typeof OVERRIDE_RECONCILIATION_VERSION | typeof OVERRIDE_RECONCILIATION_VERSION_LEGACY;
   readonly projectKey: string;
   readonly reconciledAt: string;
   readonly issuedByUser: string;
@@ -261,24 +265,21 @@ export interface OverrideReconciliation {
   /**
    * Every run in the project at that moment. Permanently ineligible.
    *
-   * There is no `quarantineComplete` flag beside this, and there was: a boolean
-   * documented as a live safety property ("a reconciliation that could not name
-   * what it quarantines forgives nothing") that no producer in the product could
-   * ever set to false, because both callers refuse outright when the runs cannot
-   * be enumerated (`runOverrideReconcile`) or exceed the bound
-   * (`recordOverrideReconciliation`, below). A filter over a value that is always
-   * `true` reads like a defence and is dead code; the refusals are the real
-   * invariant and they are where it is stated.
+   * v1 inlined the names (capped at MAX_QUARANTINED_RUNS). v2 signs
+   * `quarantinedRunsDigest` of a sidecar and resolves this array after the
+   * MAC verifies. Membership is still tested against this signed list.
    */
   readonly quarantinedRuns: string[];
+  /** sha256 of the sidecar's canonical bytes. Required on v2; absent on v1. */
+  readonly quarantinedRunsDigest?: string;
   readonly mac: string;
 }
 
 /**
- * A quarantine list has to be bounded — it is signed, stored in a file
- * settlement parses, and built from a directory anyone can fill. A project with
- * more runs than this cannot be reconciled, which is a refusal the operator can
- * see and act on rather than a silent partial quarantine.
+ * Offer threshold for retention pruning before reconcile, not a hard cap.
+ * v1 inlined names in one.json and refused above this; v2 signs a sidecar
+ * digest, so a project with more runs can still be reconciled. Doctor offers
+ * the retention sweep when the on-disk count exceeds this.
  */
 export const MAX_QUARANTINED_RUNS = 256;
 
@@ -303,15 +304,51 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
+export function quarantinedRunsCanonical(runs: readonly string[]): string {
+  return [...runs].map((run) => run.trim()).filter(Boolean).sort().join('\n') + (runs.length ? '\n' : '');
+}
+
+export function quarantinedRunsDigest(runs: readonly string[]): string {
+  return sha256(quarantinedRunsCanonical(runs));
+}
+
+export function writeQuarantinedRunsSidecar(
+  projectRoot: string,
+  runs: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): { readonly digest: string } | null {
+  const digest = quarantinedRunsDigest(runs);
+  const file = overrideQuarantineSidecarPath(projectRoot, digest, env);
+  if (!writeTextFile(file, quarantinedRunsCanonical(runs))) return null;
+  return { digest };
+}
+
+export function readQuarantinedRunsSidecar(
+  projectRoot: string,
+  digest: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] | null {
+  if (!digest || !/^[0-9a-f]{64}$/.test(digest)) return null;
+  try {
+    const text = readRegularFileOrThrow(overrideQuarantineSidecarPath(projectRoot, digest, env));
+    if (sha256(text) !== digest) return null;
+    return text.split('\n').map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
 function parseReconciliation(
   value: unknown,
-  projectKey: string,
+  acceptedKeys: ReadonlySet<string>,
   key: string,
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
 ): OverrideReconciliation | null {
   const raw = asRecord(value);
   if (!raw) return null;
-  if (raw.v !== OVERRIDE_RECONCILIATION_VERSION) return null;
-  if (raw.projectKey !== projectKey) return null;
+  if (raw.v !== OVERRIDE_RECONCILIATION_VERSION && raw.v !== OVERRIDE_RECONCILIATION_VERSION_LEGACY) return null;
+  if (typeof raw.projectKey !== 'string' || !acceptedKeys.has(raw.projectKey)) return null;
   if (typeof raw.ledgerKind !== 'string'
     || typeof raw.ledgerDigest !== 'string'
     || typeof raw.suppressedSnapshotDigest !== 'string'
@@ -322,9 +359,19 @@ function parseReconciliation(
     || typeof raw.counterState !== 'string'
     || !Number.isInteger(raw.counterCount)
     || !Number.isInteger(raw.vouchableMints)
-    || !isStringArray(raw.quarantinedRuns)
     || typeof raw.reconciledAt !== 'string') return null;
+  if (raw.v === OVERRIDE_RECONCILIATION_VERSION) {
+    if (typeof raw.quarantinedRunsDigest !== 'string') return null;
+    if (raw.quarantinedRuns !== undefined && !isStringArray(raw.quarantinedRuns)) return null;
+  } else if (!isStringArray(raw.quarantinedRuns)) {
+    return null;
+  }
   if (!overrideMacMatches(raw, key, raw.mac, OVERRIDE_RECONCILIATION_MAC_DOMAIN)) return null;
+  if (raw.v === OVERRIDE_RECONCILIATION_VERSION) {
+    const runs = readQuarantinedRunsSidecar(projectRoot, raw.quarantinedRunsDigest as string, env);
+    if (!runs) return null;
+    return { ...raw, quarantinedRuns: runs } as unknown as OverrideReconciliation;
+  }
   return raw as unknown as OverrideReconciliation;
 }
 
@@ -349,7 +396,9 @@ export function readOverrideReconciliations(
   env: NodeJS.ProcessEnv = process.env,
 ): OverrideReconciliationRead {
   const projectKey = projectRootHash(projectRoot);
-  const stored = storedEntries(projectKey, env);
+  const acceptedKeys = new Set(projectRootHashAliases(projectRoot));
+  acceptedKeys.add(projectKey);
+  const stored = [...acceptedKeys].flatMap((alias) => storedEntries(alias, env));
   // Before the key read, not after: a project with nothing to verify must not
   // pay a stat and a read of the key file on the settlement path, and almost
   // every project has nothing to verify forever.
@@ -362,7 +411,7 @@ export function readOverrideReconciliations(
   const entries: OverrideReconciliation[] = [];
   let unverifiable = 0;
   for (const value of stored) {
-    const parsed = parseReconciliation(value, projectKey, key);
+    const parsed = parseReconciliation(value, acceptedKeys, key, projectRoot, env);
     if (parsed) entries.push(parsed); else unverifiable += 1;
   }
   return { entries, unverifiable };
@@ -494,7 +543,7 @@ export interface RecordReconciliationInput {
 
 export type RecordReconciliationResult =
   | { readonly ok: true; readonly entry: OverrideReconciliation }
-  | { readonly ok: false; readonly reason: 'no-key' | 'too-many-runs' | 'write-failed' };
+  | { readonly ok: false; readonly reason: 'no-key' | 'too-many-runs' | 'write-failed' | 'sidecar-write-failed' };
 
 /**
  * Append one reconciliation. Called by the doctor's operator command and by
@@ -526,7 +575,8 @@ export function recordOverrideReconciliation(
   // a gate on the hot path.
   const key = ensureOverrideKey(env);
   if (!key) return { ok: false, reason: 'no-key' };
-  if (input.quarantinedRuns.length > MAX_QUARANTINED_RUNS) return { ok: false, reason: 'too-many-runs' };
+  const sidecar = writeQuarantinedRunsSidecar(input.projectRoot, input.quarantinedRuns, env);
+  if (!sidecar) return { ok: false, reason: 'sidecar-write-failed' };
   // PIN THE COUNTER FIRST, and refuse the whole acknowledgement if it cannot be
   // pinned. An acknowledgement of an illegible ledger forgives a state in which
   // the mint comparison is not asked, so the counter is the witness holding that
@@ -569,16 +619,20 @@ export function recordOverrideReconciliation(
     // acknowledgement that described the older reading would forgive nothing.
     counterState: counter.state,
     counterCount: counter.count ?? -1,
-    quarantinedRuns: [...input.quarantinedRuns].sort(),
+    quarantinedRunsDigest: sidecar.digest,
   };
-  const entry = {
+  const stored = {
     ...unsigned,
     mac: overrideMac(unsigned, key, OVERRIDE_RECONCILIATION_MAC_DOMAIN),
+  };
+  const entry = {
+    ...stored,
+    quarantinedRuns: [...input.quarantinedRuns].sort(),
   } as OverrideReconciliation;
   try {
     updateOneSettings({
       [OVERRIDE_RECONCILE_SECTION]: {
-        [projectKey]: [...storedEntries(projectKey, env), entry],
+        [projectKey]: [...storedEntries(projectKey, env), stored],
       },
     }, env);
   } catch {

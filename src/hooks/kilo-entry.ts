@@ -10,8 +10,9 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { obj } from '../shared/obj';
 import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
-import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { hasValidPreToolPayload, isFailClosedRecoveryExemption, wrapperPreToolDeny } from './fail-closed';
+import { authFallbackMessage, safeHookFallbackStandsDown } from './auth-fallback';
+import { guardedMain } from './entry-guard';
+import { hasValidPreToolPayload, safeFailClosedRecoveryExemption, wrapperPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -51,7 +52,7 @@ export async function runKiloHook(
   if (!subcommand) return { stdout: KILO_NOOP, exitCode: 0 };
   if (subcommand === 'before-tool-use'
     && !hasValidPreToolPayload(stdin, subcommand, 'wrapper')
-    && !isFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) {
+    && !safeFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) {
     return { stdout: KILO_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };
   }
   try {
@@ -62,13 +63,13 @@ export async function runKiloHook(
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand, '--host=kilo'] });
     return { stdout: stdout || KILO_NOOP, exitCode: 0 };
   } catch {
-    if (hookFallbackStandsDown(stdin, env)) return { stdout: KILO_NOOP, exitCode: 0 };
+    if (safeHookFallbackStandsDown(stdin, env)) return { stdout: KILO_NOOP, exitCode: 0 };
     if (subcommand === 'session-start' || subcommand === 'system-transform') {
       const message = authFallbackMessage(stdin, env);
       return { stdout: message ? sessionStartFallback(message) : KILO_NOOP, exitCode: 0 };
     }
     if (subcommand === 'before-tool-use') {
-      if (isFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) return { stdout: KILO_NOOP, exitCode: 0 };
+      if (safeFailClosedRecoveryExemption(stdin, subcommand, 'wrapper')) return { stdout: KILO_NOOP, exitCode: 0 };
       return { stdout: KILO_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };
     }
     if (subcommand === 'user-prompt-submit') {
@@ -93,12 +94,33 @@ function readStdin(): Promise<string> {
 
 export async function main(): Promise<void> {
   const subcommand = subcommandFromArgs(process.argv.slice(2));
-  const stdin = await readStdin();
-  const { stdout } = await runKiloHook(subcommand, stdin);
-  process.stdout.write(stdout);
-  process.exitCode = 0;
+  try {
+    const stdin = await readStdin();
+    const out = await guardedMain({
+      subcommand,
+      stdin,
+      isPreTool: subcommand === 'before-tool-use',
+      surface: 'wrapper',
+      deny: { stdout: KILO_PRE_TOOL_FAIL_CLOSED, exitCode: 0 },
+      noop: { stdout: KILO_NOOP, exitCode: 0 },
+      run: () => runKiloHook(subcommand, stdin),
+    });
+    process.stdout.write(out.stdout);
+    process.exitCode = 0;
+  } catch {
+    try {
+      process.stdout.write(subcommand === 'before-tool-use' ? KILO_PRE_TOOL_FAIL_CLOSED : KILO_NOOP);
+    } catch { /* last-ditch write must not reject */ }
+    process.exitCode = 0;
+  }
 }
 
 if (require.main === module) {
-  void main();
+  void main().catch(() => {
+    try {
+      const subcommand = subcommandFromArgs(process.argv.slice(2));
+      process.stdout.write(subcommand === 'before-tool-use' ? KILO_PRE_TOOL_FAIL_CLOSED : KILO_NOOP);
+    } catch { /* */ }
+    process.exitCode = 0;
+  });
 }

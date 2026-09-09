@@ -98,6 +98,33 @@ test('install preserves custom Cascade entries, refreshes owned entries, and is 
   });
 });
 
+test('install replaces a third historical Traffic One root that is not the stamp', () => {
+  withHome((env) => {
+    const hooksFile = windsurfHooksPath(env);
+    const current = env.TRAFFIC_ONE_PLUGIN_ROOT!;
+    const stamped = path.join(path.dirname(current), 'stamped-plugin');
+    const third = path.join(path.dirname(current), 'third-plugin');
+    const stamp = path.join(env.HOME!, '.traffic-one', 'windsurf-plugin-root');
+    fs.mkdirSync(path.dirname(stamp), { recursive: true });
+    fs.writeFileSync(stamp, `${stamped}\n`, 'utf8');
+    fs.mkdirSync(path.dirname(hooksFile), { recursive: true });
+    fs.writeFileSync(hooksFile, JSON.stringify({ hooks: { pre_run_command: [
+      { command: 'python3 custom.py' },
+      { command: 'node "/other/plugin/scripts/windsurf-hook-runtime.cjs" pre_run_command --host=windsurf' },
+      { command: windsurfUserHookCommand(stamped, 'pre_run_command') },
+      { command: windsurfUserHookCommand(third, 'pre_run_command') },
+    ] } }, null, 2), 'utf8');
+    assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
+    const entries = (JSON.parse(fs.readFileSync(hooksFile, 'utf8')) as { hooks: Record<string, Array<{ command: string }>> })
+      .hooks.pre_run_command ?? [];
+    assert.equal(entries.filter((entry) => entry.command === 'python3 custom.py').length, 1);
+    assert.equal(entries.filter((entry) => entry.command.includes('/other/plugin/')).length, 1);
+    assert.equal(entries.filter((entry) => entry.command === windsurfUserHookCommand(stamped, 'pre_run_command')).length, 0);
+    assert.equal(entries.filter((entry) => entry.command === windsurfUserHookCommand(third, 'pre_run_command')).length, 0);
+    assert.equal(entries.filter((entry) => entry.command === windsurfUserHookCommand(current, 'pre_run_command')).length, 1);
+  });
+});
+
 test('uninstall removes only owned entries', () => {
   withHome((env) => {
     const hooksFile = windsurfHooksPath(env);
@@ -149,5 +176,116 @@ test('uninstall removes only owned entries', () => {
       false,
     );
     assert.equal(doctorWrapper(env).code, 1);
+  });
+});
+
+test('uninstall leaves a JSON-array hooks.json untouched', () => {
+  withHome((env) => {
+    const hooksFile = windsurfHooksPath(env);
+    fs.mkdirSync(path.dirname(hooksFile), { recursive: true });
+    fs.writeFileSync(hooksFile, '[]\n', 'utf8');
+    const result = uninstallWrapper(env, ['uninstall', '--yes']);
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /hooks left untouched at .* \(must contain a JSON object\)/);
+    assert.equal(fs.readFileSync(hooksFile, 'utf8'), '[]\n');
+  });
+});
+
+test('uninstall leaves a malformed hooks.json untouched and still clears the other surfaces', () => {
+  withHome((env) => {
+    assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
+    const hooksFile = windsurfHooksPath(env);
+    const rulesFile = windsurfGlobalRulesPath(env);
+    const garbage = '{not json';
+    fs.writeFileSync(hooksFile, garbage, 'utf8');
+    const beforeRules = fs.readFileSync(rulesFile, 'utf8');
+    assert.match(beforeRules, /traffic-one:windsurf:start/);
+
+    const result = uninstallWrapper(env, ['uninstall', '--yes']);
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /hooks left untouched at .* \(malformed JSON\)/);
+    assert.match(result.stdout, /Devin Local hooks removed/);
+    assert.match(result.stdout, /global rule removed/);
+    assert.equal(fs.readFileSync(hooksFile, 'utf8'), garbage);
+    assert.equal(/traffic-one:windsurf:start/.test(fs.readFileSync(rulesFile, 'utf8')), false);
+  });
+});
+
+test('uninstall leaves a symlinked hooks.json and its target untouched', () => {
+  withHome((env) => {
+    assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
+    const hooksFile = windsurfHooksPath(env);
+    const target = path.join(path.dirname(hooksFile), 'hooks.real.json');
+    const original = fs.readFileSync(hooksFile, 'utf8');
+    fs.renameSync(hooksFile, target);
+    fs.symlinkSync(target, hooksFile);
+
+    const result = uninstallWrapper(env, ['uninstall', '--yes']);
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /hooks left untouched at .* \(symlink\)/);
+    assert.match(result.stdout, /global rule removed/);
+    assert.equal(fs.lstatSync(hooksFile).isSymbolicLink(), true);
+    assert.equal(fs.readFileSync(target, 'utf8'), original);
+  });
+});
+
+test('install and uninstall refuse a START without a following END', () => {
+  withHome((env) => {
+    const rulesFile = windsurfGlobalRulesPath(env);
+    const body = 'keep me\n<!-- traffic-one:windsurf:end -->\nkeep\n<!-- traffic-one:windsurf:start -->\norphan\n';
+    fs.mkdirSync(path.dirname(rulesFile), { recursive: true });
+    fs.writeFileSync(rulesFile, body, 'utf8');
+
+    const installed = installWrapper(env, ['install', '--yes']);
+    assert.equal(installed.code, 1);
+    assert.match(installed.stdout, /START marker without a following END/);
+    assert.match(installed.stdout, /left untouched/);
+    assert.equal(fs.readFileSync(rulesFile, 'utf8'), body);
+
+    const uninstalled = uninstallWrapper(env, ['uninstall', '--yes']);
+    assert.equal(uninstalled.code, 1);
+    assert.match(uninstalled.stdout, /global rule left untouched at .* \(START marker without a following END\)/);
+    assert.equal(fs.readFileSync(rulesFile, 'utf8'), body);
+    const hooks = JSON.parse(fs.readFileSync(windsurfHooksPath(env), 'utf8')) as { hooks?: Record<string, unknown> };
+    assert.deepEqual(hooks.hooks || {}, {}, 'hooks still uninstall when rules refuse');
+  });
+});
+
+test('install and uninstall refuse duplicate Traffic One markers', () => {
+  withHome((env) => {
+    const rulesFile = windsurfGlobalRulesPath(env);
+    const body = [
+      '<!-- traffic-one:windsurf:start -->',
+      'first',
+      '<!-- traffic-one:windsurf:end -->',
+      '<!-- traffic-one:windsurf:start -->',
+      'second',
+      '<!-- traffic-one:windsurf:end -->',
+      '',
+    ].join('\n');
+    fs.mkdirSync(path.dirname(rulesFile), { recursive: true });
+    fs.writeFileSync(rulesFile, body, 'utf8');
+
+    const installed = installWrapper(env, ['install', '--yes']);
+    assert.equal(installed.code, 1);
+    assert.match(installed.stdout, /duplicate Traffic One markers/);
+    assert.equal(fs.readFileSync(rulesFile, 'utf8'), body);
+
+    const uninstalled = uninstallWrapper(env, ['uninstall', '--yes']);
+    assert.equal(uninstalled.code, 1);
+    assert.match(uninstalled.stdout, /global rule left untouched at .* \(duplicate Traffic One markers\)/);
+    assert.equal(fs.readFileSync(rulesFile, 'utf8'), body);
+  });
+});
+
+test('a well-formed owned block still replaces and uninstalls when END is searched from START', () => {
+  withHome((env) => {
+    const rulesFile = windsurfGlobalRulesPath(env);
+    assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
+    const first = fs.readFileSync(rulesFile, 'utf8');
+    assert.equal(installWrapper(env, ['install', '--yes']).code, 0);
+    assert.equal(fs.readFileSync(rulesFile, 'utf8'), first);
+    assert.equal(uninstallWrapper(env, ['uninstall', '--yes']).code, 0);
+    assert.equal(/traffic-one:windsurf:(start|end)/.test(fs.readFileSync(rulesFile, 'utf8')), false);
   });
 });

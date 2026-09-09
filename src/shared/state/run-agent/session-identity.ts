@@ -72,6 +72,13 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
     payload.session_id, payload.sessionId, payload.id,
     data.conversation_id, data.conversationId, payload.conversation_id, payload.conversationId,
     nestedValue(data, ['session', 'id']), nestedValue(payload, ['session', 'id']),
+    // Windsurf / Cascade: the host-supplied trajectory IS the session.
+    // firstString skips the empty synthetic Devin-bridge value. Must not be
+    // read as parentSessionId — that made isSubagent true on every genuine
+    // Cascade payload and stood the onboarding/auth gates down (measured:
+    // windsurf-entry genuine-trajectory pre_run_command returned exit 0).
+    data.trajectory_id, data.trajectoryId,
+    payload.trajectory_id, payload.trajectoryId,
   );
   const parentSessionId = firstString(
     data.parent_session_id, data.parentSessionId,

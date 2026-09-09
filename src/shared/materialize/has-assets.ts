@@ -7,11 +7,12 @@ import * as path from 'path';
 
 import { BOOTSTRAP_SKILLS, PROJECT_UNAVAILABLE_SKILLS } from '../../config/skill-filters';
 import { capabilityStateForRun } from '../architecture-contract';
-import { readRegularFileOrThrow } from '../bounded-read';
+import { readRegularBytesOrThrow, readRegularFileOrThrow } from '../bounded-read';
 import { toPosix } from '../fs-text';
 import { detectHost } from '../host';
 import { activeSkillsForProject } from '../skill-filters';
 import { stackSpecForState } from '../stacks';
+import { sha256 } from '../text';
 import { isGenerated } from './generated';
 import { pluginContentHash } from '../build-provenance';
 
@@ -28,7 +29,77 @@ function readManifest(cwd: string): Rec | null {
 
 function trackedSet(manifest: Rec, key: 'rules' | 'skills'): Set<string> {
   const value = manifest[key];
-  return new Set(Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
+  return new Set(trackedList(manifest, key));
+}
+
+function trackedList(manifest: Rec, key: 'rules' | 'skills'): string[] {
+  const value = manifest[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+function fileBytesHash(absPath: string): string | null {
+  try {
+    return sha256(readRegularBytesOrThrow(absPath));
+  } catch {
+    return null;
+  }
+}
+
+interface TrackedFile {
+  readonly key: string;
+  readonly abs: string;
+}
+
+function trackedMaterializedFiles(cwd: string, rules: readonly string[], skills: readonly string[]): TrackedFile[] {
+  const out: TrackedFile[] = [];
+  for (const relPath of rules) {
+    out.push({ key: toPosix(relPath), abs: path.join(cwd, '.traffic-one', relPath) });
+  }
+  for (const name of skills) {
+    out.push({ key: `skills/${name}/SKILL.md`, abs: path.join(cwd, '.traffic-one', 'skills', name, 'SKILL.md') });
+  }
+  const agents = path.join(cwd, 'AGENTS.md');
+  // Root AGENTS.md is runtime-owned only while it still carries the generated
+  // marker. A user-authored file is Phase 6's problem — do not hash it, and do
+  // not treat its absence from the stamp as drift.
+  if (isGenerated(agents)) {
+    out.push({ key: 'AGENTS.md', abs: agents });
+  }
+  return out;
+}
+
+/**
+ * Per-file sha256 of the runtime-owned materialized bytes: every tracked rule,
+ * each skill's SKILL.md, and generated root AGENTS.md. Keys are posix paths
+ * matching `manifest.rules`, `skills/<name>/SKILL.md`, and `AGENTS.md`.
+ *
+ * Same hash family as everywhere else (`sha256` in text.ts) over the file's
+ * raw bytes (`readRegularBytesOrThrow`). Sorted so the stamp is byte-stable
+ * across runs.
+ */
+export function materializedFileHashes(
+  cwd: string,
+  rules: readonly string[],
+  skills: readonly string[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const file of trackedMaterializedFiles(cwd, rules, skills)) {
+    const hash = fileBytesHash(file.abs);
+    if (hash) out[file.key] = hash;
+  }
+  return Object.fromEntries(Object.entries(out).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function parseFileHashes(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [key, hash] of Object.entries(value as Rec)) {
+    if (!key || typeof hash !== 'string' || !SHA256_HEX.test(hash)) return null;
+    out[key] = hash;
+  }
+  return out;
 }
 
 /**
@@ -131,6 +202,58 @@ export function materializedFromDifferentPluginBuild(cwd: string): boolean {
   if (!manifest || manifest.generatedBy !== 'traffic-one') return false;
   const stamped = typeof manifest.pluginContentHash === 'string' ? manifest.pluginContentHash.trim() : '';
   return stamped !== installed;
+}
+
+/**
+ * THE BYTE-IDENTITY SIGNAL: did an agent (or anyone) edit a runtime-owned
+ * materialized file while leaving it present?
+ *
+ * A sibling of `materializedFromDifferentPluginBuild`, folded into the same
+ * conjunction the same way — answering true is permission to try again, not a
+ * repair. `hasMaterializedProjectAssets` is presence-only: a truncated rule,
+ * a rewritten SKILL.md, or a generated AGENTS.md whose body moved all still
+ * pass it. Without this, those edits stick for the life of the plugin build.
+ *
+ * Same three quiet rules as the build comparison, for the same reason:
+ *   - the plugin root cannot state a build identity (`null`) — reconverging
+ *     every hook against a root the writer refuses would never self-heal,
+ *     because a refusal writes no stamp.
+ *   - no manifest, or a manifest this product did not write. Not ours.
+ *   - every stamped hash still matches the bytes on disk. The steady state.
+ *
+ * An ABSENT `fileHashes` on a real Traffic One manifest is stale, and that is
+ * the transition: every project already on disk was materialized before this
+ * field existed, so each one re-converges EXACTLY ONCE against a healthy root.
+ * The pass rewrites the manifest — the new field alone changes its bytes, so
+ * `manifestUnchanged` in materialize.ts is false even when every rule and
+ * skill is byte-identical — and the stamp lands, after which this goes quiet
+ * for those bytes. Treating the absent field as fresh would leave every
+ * existing install unfenced forever.
+ *
+ * A malformed stamp (not a string-to-sha256 map) is the same as absent.
+ * A generated AGENTS.md that drifted is in scope; a user-authored
+ * non-generated one is not (Phase 6). Missing files are already
+ * `hasMaterializedProjectAssets`'s job and also read as drift here.
+ *
+ * Hash-drift MUST call the existing writer. It must not grow a delete or
+ * overwrite path of its own: KNOWN-ISSUES #11 holds because
+ * `materializeProjectAssets` still refuses a torn resupply set and writes
+ * nothing.
+ */
+export function materializedFileHashesDrifted(cwd: string): boolean {
+  const installed = pluginContentHash();
+  if (!installed) return false;
+  const manifest = readManifest(cwd);
+  if (!manifest || manifest.generatedBy !== 'traffic-one') return false;
+  const stamped = parseFileHashes(manifest.fileHashes);
+  if (!stamped) return true;
+  for (const file of trackedMaterializedFiles(cwd, trackedList(manifest, 'rules'), trackedList(manifest, 'skills'))) {
+    const expected = stamped[file.key];
+    if (!expected) return true;
+    const live = fileBytesHash(file.abs);
+    if (!live || live !== expected) return true;
+  }
+  return false;
 }
 
 export function hasMaterializedProjectAssets(cwd: string, state?: Rec): boolean {

@@ -12,6 +12,7 @@ import { paidFallbackCompletionFromMaintenance } from '../maintenance/fallback-p
 import { pluginVersion } from '../../config/plugin-identity';
 import { movePath, readJson, readJsonResult, writeJson } from '../fsjson';
 import { overrideEvidenceChecks, runQuarantinedByOverrideReconciliation, runUsedOperatorOverride } from '../override';
+import { signVerifiedSettlement } from '../override/settlement-mac';
 import { withProjectStateLock } from '../state/project-state-lock';
 import { strictRunVerificationEvidence } from '../strict-verification-evidence';
 
@@ -49,7 +50,8 @@ function parseSettlement(value: unknown, runId: string): RunSettlementV2 | null 
     || Number(raw.revision) < 1
     || typeof raw.updatedAt !== 'string'
     || typeof raw.settlementHash !== 'string') return null;
-  const { settlementHash: observed, ...canonical } = raw;
+  if (raw.settlementMac !== undefined && typeof raw.settlementMac !== 'string') return null;
+  const { settlementHash: observed, settlementMac: _mac, ...canonical } = raw;
   if (settlementHash(canonical) !== observed) return null;
   if (raw.status === 'verified' && (
     Number(raw.activeClaims) > 0
@@ -437,14 +439,11 @@ export function writeRunSettlement(
       // Not immutable to anything holding a text editor, and the qualifier is
       // load-bearing rather than pedantic: `settlementHash` is an UNKEYED digest
       // over the record with sorted keys, so a twenty-line script produces a
-      // settlement this parser accepts, in any status it likes. That is the
-      // product's pre-existing forgery floor — the same floor that lets
-      // fabricated evidence certify a fresh run id — and no guard in this
-      // function raises it. What the refusal above adds is that damaging a
-      // record no longer converts it into a blank slate; what it cannot add is
-      // authenticity. Anywhere this immutability is cited as the REASON for
-      // another refusal, the citation has to carry that (runners/doctor/
-      // unblock.ts's `run-already-verified`, which is where it did not).
+      // settlement this parser accepts, in any status it likes. Authenticity of
+      // a `verified` certificate is a separate `settlementMac` (override/
+      // settlement-mac.ts). What the refusal above adds is that damaging a
+      // record no longer converts it into a blank slate. `--unblock` treats an
+      // unsigned `verified` as planted.
       //
       // The single exception is the ledger's own resume edge: transitionRunStatus
       // sets `authorizedResume` only after the run-ledger state machine accepted
@@ -684,7 +683,13 @@ export function writeRunSettlement(
         revision: (previous?.revision || 0) + 1,
         updatedAt: new Date().toISOString(),
       };
-      const candidate: RunSettlementV2 = { ...withoutHash, settlementHash: settlementHash(withoutHash) };
+      const hashed: RunSettlementV2 = { ...withoutHash, settlementHash: settlementHash(withoutHash) };
+      const settlementMac = hashed.status === 'verified'
+        ? signVerifiedSettlement(projectRoot, hashed)
+        : null;
+      const candidate: RunSettlementV2 = settlementMac
+        ? { ...hashed, settlementMac }
+        : hashed;
       // The `| null` return already existed for the `catch` below; the fence's
       // refusal (fsjson.ts: an unanswered consent question, a planted symlink, a
       // path escaping the state dir) was the one outcome it never carried.

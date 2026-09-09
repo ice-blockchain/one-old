@@ -28,7 +28,7 @@ import * as path from 'path';
 import { appendTextFile, writeJson, writeTextFile } from '../fsjson';
 import { withMachineFileLock } from '../one-settings';
 import { errnoOf } from '../state/state-write-log';
-import { projectRootHash } from '../state/local-prefs/prefs-store';
+import { projectRootHash, projectRootHashAliases } from '../state/local-prefs/prefs-store';
 import { ensureOverrideKey, overrideMac, overrideMacMatches, readOverrideKey } from './keys';
 import { readOverrideMintCounter, recordOverrideMint } from './mint-counter';
 // Runtime import, and it does not close a cycle: reconcile.ts's only reference
@@ -218,6 +218,8 @@ export function readOverrideLedgerResult(
   env: NodeJS.ProcessEnv = process.env,
 ): OverrideLedgerRead {
   const { ledger: file, key: projectKey } = overrideProjectPaths(projectRoot, env);
+  const acceptedKeys = new Set(projectRootHashAliases(projectRoot));
+  acceptedKeys.add(projectKey);
   let text: string;
   try {
     if (fs.statSync(file).size > MAX_LEDGER_BYTES) return { kind: 'oversized', entries: [] };
@@ -264,7 +266,7 @@ export function readOverrideLedgerResult(
     // counter — is answered by integrity.ts, which is where every judgement
     // about the record as a WHOLE lives.
     if (!key
-      || token.projectKey !== projectKey
+      || !acceptedKeys.has(token.projectKey)
       || !overrideMacMatches(parsed as Record<string, unknown>, key, token.mac)) {
       entries.push({ outcome: 'forged', token, raw });
       continue;

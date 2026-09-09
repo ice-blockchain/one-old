@@ -399,7 +399,31 @@ export type CodexMcpRegistration =
   | 'skipped-no-root'
   | 'failed';
 
-type CodexOneMcpRemoval = 'removed' | 'absent' | 'modified' | 'failed';
+type CodexMcpRemoval = 'removed' | 'absent' | 'modified' | 'failed';
+
+function hasCodexManagedMcpMarkers(config: string): boolean {
+  return config.includes(CODEX_MCP_MANAGED_BEGIN) || config.includes(CODEX_MCP_MANAGED_END);
+}
+
+// Compare-and-swap so a user/Codex edit that landed after our snapshot is not
+// overwritten. Both removers share this: they already decided the next bytes
+// under the config lock, and only this commit may miss if the file moved.
+function commitCodexConfigIfUnchanged(
+  cfgPath: string,
+  existing: string,
+  next: string,
+): 'removed' | 'modified' {
+  const stat = fs.statSync(cfgPath);
+  const tmp = `${cfgPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, next, { encoding: 'utf8', mode: stat.mode & 0o777 });
+    if (readRegularFileOrThrow(cfgPath) !== existing) return 'modified';
+    fs.renameSync(tmp, cfgPath);
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }
+  }
+  return 'removed';
+}
 
 export function ensureCodexMcpServerRegistered(
   env: NodeJS.ProcessEnv = process.env,
@@ -473,7 +497,7 @@ export function ensureCodexOneMcpServerRegistered(env: NodeJS.ProcessEnv = proce
 // duplicate block, or same-name unmarked table is left untouched.
 export function removeCodexOneMcpServerRegistration(
   env: NodeJS.ProcessEnv = process.env,
-): CodexOneMcpRemoval {
+): CodexMcpRemoval {
   try {
     const cfgPath = codexConfigPath(env);
     return withCodexMcpLock(cfgPath, () => {
@@ -488,18 +512,42 @@ export function removeCodexOneMcpServerRegistration(
           : 'absent';
       }
       if (existing.indexOf(block, first + block.length) >= 0) return 'modified';
-      const next = `${existing.slice(0, first)}${existing.slice(first + block.length)}`;
-      const stat = fs.statSync(cfgPath);
-      const tmp = `${cfgPath}.${process.pid}.${Date.now()}.tmp`;
-      try {
-        fs.writeFileSync(tmp, next, { encoding: 'utf8', mode: stat.mode & 0o777 });
-        // Do not overwrite a user/Codex edit that landed after our snapshot.
-        if (readRegularFileOrThrow(cfgPath) !== existing) return 'modified';
-        fs.renameSync(tmp, cfgPath);
-      } finally {
-        try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }
+      return commitCodexConfigIfUnchanged(
+        cfgPath,
+        existing,
+        `${existing.slice(0, first)}${existing.slice(first + block.length)}`,
+      );
+    });
+  } catch {
+    return 'failed';
+  }
+}
+
+// Sibling of removeCodexOneMcpServerRegistration, not a substitute. That
+// remover matches the constant generated public-MCP blob (fixed endpoint);
+// this one owns the opencode-worker table whose inner bytes include Node and
+// plugin paths that SessionStart refreshes. Ownership is the unique
+// CODEX_MCP_MANAGED_BEGIN..END pair already used to locate/replace the block
+// on register — not a reconstructed codexMcpServerBlock() and not a TOML
+// parse of [mcp_servers.opencode-worker]. An unmarked same-name table stays;
+// duplicate or unmatched markers stay ('modified').
+export function removeCodexMcpServerRegistration(
+  env: NodeJS.ProcessEnv = process.env,
+): CodexMcpRemoval {
+  try {
+    const cfgPath = codexConfigPath(env);
+    return withCodexMcpLock(cfgPath, () => {
+      if (!fs.existsSync(cfgPath)) return 'absent';
+      const existing = readRegularFileOrThrow(cfgPath);
+      const managedBlock = managedCodexMcpBlock(existing);
+      if (!managedBlock) {
+        return hasCodexManagedMcpMarkers(existing) ? 'modified' : 'absent';
       }
-      return 'removed';
+      return commitCodexConfigIfUnchanged(
+        cfgPath,
+        existing,
+        `${existing.slice(0, managedBlock.start)}${existing.slice(managedBlock.end)}`,
+      );
     });
   } catch {
     return 'failed';

@@ -50,7 +50,12 @@
 import * as path from 'path';
 
 import { oneSettingsPath } from '../one-settings';
-import { projectRootHash } from '../state/local-prefs/prefs-store';
+import {
+  legacyProjectRootHash,
+  migrateHashNamedFolder,
+  migrateMiscasedPrefsBucket,
+  projectRootHash,
+} from '../state/local-prefs/prefs-store';
 
 /** The machine dir entry this module owns; also the MACHINE_OWNED_ENTRIES key. */
 export const OVERRIDE_DIR_NAME = 'overrides';
@@ -76,17 +81,10 @@ export function overrideKeyPath(env: NodeJS.ProcessEnv = process.env): string {
  * one consent answer. Re-deriving the hash here would let the two disagree on a
  * symlinked checkout.
  *
- * It inherits that function's documented CASE asymmetry too, and this is the
- * consumer that makes the asymmetry expensive to repair — though NOT for the
- * reason this note used to give. "Relocating buckets invalidates tokens already
- * in operators' hands" is false for the obvious one-line change (switching to
- * `realpathSync.native`): MEASURED, the canonical spelling hashes identically
- * under both implementations, so a token minted under a project's true spelling
- * keeps matching and only MISCASED buckets move. The cost is that a machine
- * which has only ever used the miscased spelling has its LIVE bucket there, and
- * moving it takes the ledger and the mint counter to a fresh empty pair — an
- * erasure of this feature's own audit trail, shipped as an upgrade. Read
- * projectRootHash's note before changing how the name is derived.
+ * The hash now case-folds via `realpathSync.native`. A one-time rename moves a
+ * leftover miscased-hash folder onto the canonical name (prefs first, then
+ * this ledger) so the live audit trail is not erased. Tokens minted under the
+ * old hash still match: readers accept `projectRootHashAliases`.
  */
 export function overrideProjectDir(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
   return overrideProjectPaths(projectRoot, env).dir;
@@ -112,8 +110,12 @@ export function overrideProjectPaths(
   projectRoot: string,
   env: NodeJS.ProcessEnv = process.env,
 ): OverrideProjectPaths {
+  const from = migrateMiscasedPrefsBucket(projectRoot, env);
   const key = projectRootHash(projectRoot);
-  const dir = path.join(overrideRoot(env), key);
+  const parent = overrideRoot(env);
+  migrateHashNamedFolder(parent, key, legacyProjectRootHash(projectRoot));
+  if (from) migrateHashNamedFolder(parent, key, from);
+  const dir = path.join(parent, key);
   return { key, dir, ledger: path.join(dir, 'overrides.jsonl'), snapshots: path.join(dir, 'snapshots') };
 }
 
@@ -136,6 +138,29 @@ export function overrideLedgerPath(projectRoot: string, env: NodeJS.ProcessEnv =
  */
 export function overrideSnapshotDir(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
   return overrideProjectPaths(projectRoot, env).snapshots;
+}
+
+/**
+ * Sidecar directory for a reconciliation's quarantined-run list.
+ *
+ * Lives under `overrides/quarantines/<projectKey>/`, NOT inside the per-project
+ * bucket (`overrides/<projectKey>/`). The acknowledgement is in one.json so it
+ * survives `rm -rf` of that bucket; the sidecar has to survive the same wipe
+ * or the signed digest would verify a list nobody can read and the entry
+ * would drop out of `readOverrideReconciliations` — which is how a bucket
+ * wipe used to silence the acknowledgement that is supposed to contradict it.
+ */
+export function overrideQuarantineDir(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(overrideRoot(env), 'quarantines', projectRootHash(projectRoot));
+}
+
+/** One sidecar, named by the digest the acknowledgement signs. */
+export function overrideQuarantineSidecarPath(
+  projectRoot: string,
+  digest: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(overrideQuarantineDir(projectRoot, env), digest);
 }
 
 /** The pre-override snapshot for one token, beside its ledger line. */

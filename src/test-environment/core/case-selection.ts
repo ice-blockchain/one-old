@@ -33,6 +33,16 @@ export function caseSelectedByRun(c: Case, config: RootTestConfig): boolean {
 }
 
 /**
+ * Exit 2 when an invocation selected nothing — a usage error, not a green
+ * empty run. Used by run.ts after selectRuns and after the execute loop.
+ * `--reassert` does not go through this: a prior empty results.json is a
+ * different question and must not be relabelled as "no cases selected".
+ */
+export function usageIfNoCases(planned: { length: number }): number | null {
+  return planned.length === 0 ? 2 : null;
+}
+
+/**
  * Every case this invocation would actually RUN the given assertion against.
  *
  * Declining a case is not the same as excluding it: a declined case's whole

@@ -288,7 +288,7 @@ export function legacyCustomBackendMigration(
         && Number(raw.revision) >= 1
         && typeof raw.updatedAt === 'string'
         && typeof raw.settlementHash === 'string') {
-        const { settlementHash: observed, ...canonical } = raw;
+        const { settlementHash: observed, settlementMac: _settlementMac, ...canonical } = raw;
         if (contractHash(canonical) === observed) {
           lifecycleStatus = raw.status;
           lifecycleValid = [

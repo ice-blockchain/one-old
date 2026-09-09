@@ -520,6 +520,11 @@ export function nativeGreenfield(host: HostId): string {
     ...DEFAULT_SEED,
     performance: 'low',
     team: { mode: 'main-agent', approved: true },
+    // Single-surface native. Keeping DEFAULT_SEED's `frontend: 'react-vite'`
+    // made capabilityProfileForProject report unsupported-hybrid, so
+    // computeOnboarding stalled on `architecture-target` and every case on
+    // this fixture characterized onboarding-gate instead of plan-static.
+    frontend: 'none',
     mobile: { enabled: true, framework: 'react-native-expo' },
   });
   stampFixtureOnboardingCompletion(dir);
@@ -654,8 +659,9 @@ export function cursorModelChoiceDelivered(host: HostId): string {
 
 /** Onboarding complete with a deploy-relevant stamp already in committed state.
  * The three `deploy-gate-*` causes form a ladder — shipper approval, then a
- * fresh passing security check, then a fingerprint that matches the worktree —
- * so each variant seeds exactly the rung above the one it characterizes.
+ * fresh passing --strict security check, then a fingerprint that matches the
+ * worktree — so each variant seeds exactly the rung above the one it
+ * characterizes.
  *
  * `Date.now()` at BUILD time is deliberate and safe: both windows are 10
  * minutes wide and a whole corpus run takes ~10 seconds, so a stamp minted here
@@ -670,6 +676,7 @@ export function deployStamped(host: HostId, rung: 'approved' | 'security-passed'
       ? {
         lastSecurityCheckStatus: 'passed',
         lastSecurityCheckAt: now,
+        lastSecurityCheckStrict: true,
         // A literal that cannot equal computeProjectFingerprint's sha256 hex,
         // so this rung lands on the fingerprint MISMATCH cause rather than
         // depending on the fixture tree's actual hash.

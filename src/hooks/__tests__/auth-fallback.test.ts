@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { authFallbackMessage, fallbackCwd, hookFallbackStandsDown } from '../auth-fallback';
+import { authFallbackMessage, fallbackCwd, hookFallbackStandsDown, safeHookFallbackStandsDown } from '../auth-fallback';
 import { recordPluginUseChoice } from '../../shared/state/plugin-use';
 
 test('fallbackCwd understands host cwd and Cursor workspace roots', () => {
@@ -45,6 +45,28 @@ test('auth crash fallback stays silent for pluginUse decline before reading auth
     assert.match(authFallbackMessage(JSON.stringify({ cwd }), env), /authentication is required/i);
     assert.equal(hookFallbackStandsDown(nestedPayload, env), false);
     assert.match(authFallbackMessage(nestedPayload, env), /authentication is required/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('safeHookFallbackStandsDown never throws on empty, garbage, or huge stdin', () => {
+  const env = process.env;
+  for (const stdin of ['', '{', '[]', 'null', 'not-json', 'x'.repeat(1_000_000)]) {
+    assert.equal(typeof safeHookFallbackStandsDown(stdin, env), 'boolean', stdin.slice(0, 16) || '(empty)');
+  }
+});
+
+test('safeHookFallbackStandsDown returns false when hookFallbackStandsDown throws', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-stand-down-throw-'));
+  try {
+    const stdin = JSON.stringify({ cwd: dir });
+    const hostile = new Proxy({} as NodeJS.ProcessEnv, {
+      get() { throw new Error('hostile env'); },
+    });
+    assert.throws(() => hookFallbackStandsDown(stdin, hostile));
+    assert.equal(safeHookFallbackStandsDown(stdin, hostile), false);
+    assert.equal(authFallbackMessage(stdin, hostile), '');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

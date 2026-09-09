@@ -9,7 +9,7 @@ import { samePlatformPath } from './path-identity';
 type Rec = Record<string, unknown>;
 
 export const CODEX_TRAFFIC_ONE_PLUGIN_ID = 'traffic-one@traffic-one-local';
-export const CODEX_HOOK_EXPECTED_COUNT = 16 as const;
+export const CODEX_HOOK_EXPECTED_COUNT = 23 as const;
 
 const EXPECTED_SUFFIXES = [
   'pre_tool_use:0:0',
@@ -20,6 +20,13 @@ const EXPECTED_SUFFIXES = [
   'pre_tool_use:4:0',
   'pre_tool_use:5:0',
   'pre_tool_use:6:0',
+  'pre_tool_use:7:0',
+  'pre_tool_use:7:1',
+  'pre_tool_use:7:2',
+  'pre_tool_use:7:3',
+  'pre_tool_use:8:0',
+  'pre_tool_use:8:1',
+  'pre_tool_use:9:0',
   'post_tool_use:0:0',
   'post_tool_use:0:1',
   'post_tool_use:1:0',
@@ -39,7 +46,7 @@ export type CodexHookTrustStatus = 'managed' | 'trusted' | 'modified' | 'untrust
 export type CodexHookTrustProbe = {
   evaluation: 'verified';
   source: 'codex-hooks-list';
-  expectedCount: 16;
+  expectedCount: 23;
   counts: {
     discovered: number;
     trusted: number;

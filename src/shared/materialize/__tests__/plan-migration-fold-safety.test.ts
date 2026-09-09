@@ -29,7 +29,13 @@ import { createRequire } from 'node:module';
 import * as os from 'os';
 import * as path from 'path';
 
-import { containedIn, migrateArchitectureDocsToPlan, planMigrationNotice } from '../plan-migration';
+import {
+  MIGRATED_SECTION_BLOCK_WARN,
+  consumeArchitectureFoldNotice,
+  containedIn,
+  migrateArchitectureDocsToPlan,
+  planMigrationNotice,
+} from '../plan-migration';
 import { readFileNoFollow } from '../../fs-nofollow';
 import { parsePlanDelegationUnits } from '../../opencode-roles/plan-units';
 import { readVerificationPlanIntent } from '../../verification-plan-intent';
@@ -641,10 +647,11 @@ test('MAJOR B: on a case-FOLDING volume the exact predicate is reachable behavio
 
     assert.deepEqual(result?.migrated, ['architecture.md'],
       'the package document is NOT folded: its resolved path re-spells the project root, and containment is exact');
-    assert.deepEqual(result?.retained, [], 'and the refusal is silent — the only name available is the one that '
-      + 'must not be spoken, which is why item 10 carries this cost instead');
-    assert.equal(planMigrationNotice(result).includes('packages'), false,
-      'the notice reports the fold that happened and says NOTHING about the package tree that was skipped');
+    assert.deepEqual(result?.retained, [{ relPath: 'packages', reason: 'packages-case-mismatch' }],
+      'the case-mismatched packages symlink is reported, not silently refused');
+    assert.ok(planMigrationNotice(result).includes('`packages`'),
+      'the notice names the packages symlink that was skipped');
+    assert.match(planMigrationNotice(result), /different case/);
     assert.equal(fs.readFileSync(pkgDoc, 'utf8'), '# UI\n\nPACKAGE BYTES, in a package this project really owns.\n',
       'the document stays byte-identical where it is');
     assert.equal(planOf(project).includes('PACKAGE BYTES'), false);
@@ -1085,5 +1092,38 @@ test('two folded documents in one pass stay separable, and each keeps its own by
       'the document without a trailing newline gets exactly one, so the next heading is not glued to its last line');
     assert.ok(plan.includes('ui bytes\n'), 'and the second document keeps its own');
     assert.equal(plan.match(/^## Migrated Legacy Plan Notes$/gm)?.length, 1);
+  });
+});
+
+test('a fold writes a consume-once notice that names the ### heading', () => {
+  withDir((dir) => {
+    stateHolding(dir);
+    write(path.join(dir, 'architecture.md'), '# Legacy\n\nfolded bytes\n');
+    const result = migrateArchitectureDocsToPlan(dir);
+    assert.deepEqual(result?.migrated, ['architecture.md']);
+    const notice = consumeArchitectureFoldNotice(dir);
+    assert.match(notice, /### architecture\.md/);
+    assert.match(notice, /folded into `\.traffic-one\/plan\.md`/);
+    assert.equal(consumeArchitectureFoldNotice(dir), '', 'the marker is gone after one consume');
+  });
+});
+
+test('the migrated-section block warning fires without deleting a carried version', () => {
+  withDir((dir) => {
+    stateHolding(dir);
+    const heading = '## Migrated Legacy Plan Notes';
+    const blocks = Array.from({ length: MIGRATED_SECTION_BLOCK_WARN }, (_, i) => (
+      `### architecture.md\n<!-- traffic-one:migrated architecture.md sha256:${String(i).padStart(16, '0')} -->\n\nv${i}\n`
+    )).join('\n');
+    write(path.join(dir, '.traffic-one', 'plan.md'), `# Traffic One Plan\n\n${heading}\n\n${blocks}\n<!-- traffic-one:migrated-notes:end -->\n`);
+    write(path.join(dir, 'architecture.md'), '# New\n\nbrand new version\n');
+    const result = migrateArchitectureDocsToPlan(dir);
+    assert.ok(result?.migrated.includes('architecture.md'));
+    const notice = planMigrationNotice(result);
+    assert.match(notice, /will not delete a carried version/);
+    assert.match(notice, new RegExp(`${MIGRATED_SECTION_BLOCK_WARN + 1} \`###\` blocks`));
+    const plan = planOf(dir);
+    assert.ok(plan.includes('v0'), 'older carried versions stay');
+    assert.ok(plan.includes('brand new version'));
   });
 });

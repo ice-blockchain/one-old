@@ -23,3 +23,5 @@ export const ALL_CASES: Case[] = [
   ...EXISTING_PROJECT_CASES,
   ...FEATURE_AUTH_CASES,
 ];
+
+export const ALL_CASE_IDS: readonly string[] = ALL_CASES.map((c) => c.id);

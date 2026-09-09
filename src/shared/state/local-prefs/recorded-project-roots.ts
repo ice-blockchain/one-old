@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { projectRootHash } from './prefs-store';
+import { migrateMiscasedPrefsBucket, projectRootHashAliases } from './prefs-store';
 import { readProjectRootSidecar } from './project-root-sidecar';
 import { globalTrafficOneDir } from '../traffic-one-paths';
 
@@ -70,6 +70,22 @@ function listRecordedProjectRootsFromDir(
     return [];
   }
 
+  for (const hash of names) {
+    const sidecarRoot = readProjectRootSidecar(path.join(projectsDir, hash));
+    // Only a known hash ALIAS of the sidecar path may be renamed. A bucket
+    // named for project A whose sidecar was overwritten to point at project B
+    // is a hash-mismatch, not a case-alias leftover — migrating it would
+    // launder the mismatch into an `ok` sweep of B.
+    if (sidecarRoot && projectRootHashAliases(sidecarRoot).includes(hash)) {
+      migrateMiscasedPrefsBucket(sidecarRoot, env);
+    }
+  }
+  try {
+    names = fs.readdirSync(projectsDir);
+  } catch {
+    return [];
+  }
+
   const found: RecordedProjectRoot[] = [];
   for (const hash of names) {
     const bucket = path.join(projectsDir, hash);
@@ -95,7 +111,7 @@ function listRecordedProjectRootsFromDir(
       found.push({ hash, root, status: 'not-a-directory' });
       continue;
     }
-    if (projectRootHash(root) !== hash) {
+    if (!projectRootHashAliases(root).includes(hash)) {
       found.push({ hash, root, status: 'hash-mismatch' });
       continue;
     }

@@ -19,7 +19,7 @@ import { STACK_IDS } from '../../config/stacks';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { detectMode } from '../../shared/detection';
 import { exec } from '../../shared/exec';
-import { hasMaterializedProjectAssets, materializedFromDifferentPluginBuild, materializeProjectAssets, roleContractDirectoryRefusal, roleContractShortfallSentence, writeOpenCodeHostAssets } from '../../shared/materialize';
+import { hasMaterializedProjectAssets, materializedFileHashesDrifted, materializedFromDifferentPluginBuild, materializeProjectAssets, roleContractDirectoryRefusal, roleContractShortfallSentence, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { detectHost } from '../../shared/host';
 import { isUncertifiedHost, uncertifiedHostSessionBanner } from '../../shared/host/tiers';
 import { firstEmitThisSession } from '../../shared/once';
@@ -566,6 +566,10 @@ export function ensureSessionMaterialization(
   // same fact), and neither does a subagent's session. Converging here means the
   // first tool call of such a session already sees the new build's rules.
   //
+  // `materializedFileHashesDrifted` sits beside it for the same reason: a
+  // still-present rule/skill/AGENTS.md whose bytes moved is invisible to
+  // presence and to the build stamp, and SessionStart is the earliest repair.
+  //
   // Safe to make stricter HERE, unlike the spawn gate (modules/agent-model/
   // converge.ts, which deliberately does NOT carry this term): nothing on this
   // path denies. A root that cannot converge — torn, unverified, a source
@@ -573,7 +577,8 @@ export function ensureSessionMaterialization(
   // already-current answer above.
   if (isMaterialized(state)
     && hasMaterializedProjectAssets(cwd, state)
-    && !materializedFromDifferentPluginBuild(cwd)) {
+    && !materializedFromDifferentPluginBuild(cwd)
+    && !materializedFileHashesDrifted(cwd)) {
     reportOneMcp(cwd, state, 'session materialization already current');
     return false;
   }

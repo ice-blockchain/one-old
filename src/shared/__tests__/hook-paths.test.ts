@@ -114,6 +114,21 @@ test('findProjectRootForHookFile + projectRelativeHookPath resolve nested .traff
   }
 });
 
+test('projectRelativeHookPath folds a case-variant .traffic-one segment to the canonical spelling', () => {
+  assert.equal(
+    projectRelativeHookPath('/proj', '/proj', '.Traffic-One/.one.json'),
+    '.traffic-one/.one.json',
+  );
+  assert.equal(
+    projectRelativeHookPath('/proj', '/proj', 'a/b/.TRAFFIC-ONE/runs/R/assignments.json'),
+    'a/b/.traffic-one/runs/R/assignments.json',
+  );
+  assert.equal(
+    projectRelativeHookPath('/proj', '/proj', '.traffic-one-backup/.one.json'),
+    '.traffic-one-backup/.one.json',
+  );
+});
+
 test('projectRelativeHookPath repairs a Kilo macOS absolute path with its slash stripped', () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-rootless-')));
   try {
@@ -123,6 +138,40 @@ test('projectRelativeHookPath repairs a Kilo macOS absolute path with its slash 
     assert.equal(resolveProjectRoot(root, rootless), root);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('projectRelativeHookPath does not double a workspace-relative path when cwd is a package', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-p2d-pkg-')));
+  const pkg = path.join(root, 'packages', 'api-client');
+  try {
+    fs.mkdirSync(path.join(pkg, 'src'), { recursive: true });
+    const rel = 'packages/api-client/src/CoursesAPI.ts';
+    assert.equal(projectRelativeHookPath(pkg, root, rel), rel);
+    assert.equal(projectRelativeHookPath(root, root, rel), rel);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('projectRelativeHookPath does not rewrite a cwd-segment-prefixed relative that exists', () => {
+  // cwd=/app + rel=app/x → rootless /app/x sits inside cwd, which is the
+  // stripped-slash shape — but app/x under /app is /app/app/x. Repair only
+  // when the relative join does not exist. /tmp + tmp/<id>/x.ts is the same
+  // prefix collision and is writable.
+  const cwd = fs.realpathSync('/tmp');
+  const unique = `t1-p2d-rel-${process.pid}-${Date.now()}`;
+  const rel = `tmp/${unique}/x.ts`;
+  const intended = path.join(cwd, rel);
+  try {
+    fs.mkdirSync(path.dirname(intended), { recursive: true });
+    fs.writeFileSync(intended, 'relative', 'utf8');
+    assert.equal(fs.existsSync(intended), true);
+    assert.equal(fs.existsSync(path.resolve(path.sep, rel)), false);
+    assert.equal(projectRelativeHookPath(cwd, cwd, rel), rel);
+    assert.equal(resolveProjectRoot(cwd, rel), cwd);
+  } finally {
+    fs.rmSync(path.join(cwd, 'tmp', unique), { recursive: true, force: true });
   }
 });
 

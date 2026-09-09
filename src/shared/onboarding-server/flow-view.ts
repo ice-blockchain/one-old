@@ -2,6 +2,7 @@
 // Wizard view shapes, team lineup, device identity, and step metadata
 // enrichment for the onboarding flow.
 
+import { hybridUiTargetAsk, splitHybridOfferText } from '../capabilities/hybrid-target';
 import {  detectMode } from '../detection';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
@@ -362,9 +363,14 @@ export function enrichStepMeta(
   state: Rec,
   env: NodeJS.ProcessEnv,
   target: LocalPreferenceTarget,
+  cwd?: string,
 ): StepMeta {
   if (step === 'team-confirmation') enrichTeamMeta(meta, state, env, target);
   if (step === 'performance') enrichPerformanceMeta(meta, state, env, target);
+  if (step === 'architecture-target' && cwd) {
+    const ask = hybridUiTargetAsk(cwd, state);
+    if (ask?.split) meta.question = `${meta.question}${splitHybridOfferText(ask.split)}`;
+  }
   return meta;
 }
 

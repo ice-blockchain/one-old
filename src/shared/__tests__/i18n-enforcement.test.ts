@@ -98,6 +98,30 @@ test('React child copy requires Trans while t remains valid for string-valued pr
   });
 });
 
+test('JSX template-literal children are hardcoded copy; interpolation-only is not', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-i18n-tmpl-'));
+  try {
+    const contract = compileArchitecture(cwd, 'R', STATE, INPUT);
+    const flagged = analyzeI18nSourceText('apps/web/src/pages/Tmpl.tsx', [
+      "import { Trans } from 'react-i18next';",
+      'export function Tmpl({ name }: { name: string }) {',
+      '  return (',
+      '    <main>',
+      '      <p>{`Welcome`}</p>',
+      '      <p>{`Hello ${name}`}</p>',
+      '      <p>{`${name}`}</p>',
+      '    </main>',
+      '  );',
+      '}',
+    ].join('\n'), contract.profile, contract.i18n);
+    const copy = flagged.findings.filter((finding) => finding.id === 'STRUCT_HARDCODED_COPY');
+    assert.equal(copy.length, 2, 'Welcome and Hello ${name} are copy; `${name}` is not');
+    assert.ok(copy.every((finding) => finding.message.includes('hardcoded')));
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('Swift String Catalog validation checks every declared localization', () => {
   const state = {
     mode: 'new-project',

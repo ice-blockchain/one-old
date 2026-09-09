@@ -127,6 +127,13 @@ export function disableProject(env: NodeJS.ProcessEnv = process.env, argv: reado
 }
 
 export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, argv: readonly string[] = process.argv.slice(2)): RunnerOutput {
+  if (!argv.includes('--yes')) {
+    return {
+      code: 2,
+      stderr: 'Refusing to uninstall without explicit consent. Re-run with `uninstall --yes` to remove the global Kilo Traffic One wrapper.\n',
+      stdout: '',
+    };
+  }
   const file = kiloGlobalPluginPath(env);
   if (!fs.existsSync(file)) return { code: 0, stdout: `No Traffic One Kilo wrapper installed at ${file}\n` };
   const owner = readOwner(file);
@@ -196,7 +203,7 @@ export function run(args: readonly string[] = process.argv.slice(2), env: NodeJS
   if (command === 'disable') return disableProject(env, args);
   if (command === 'uninstall') return uninstallWrapper(env, args);
   if (command === 'doctor') return doctorWrapper(env, args);
-  return { code: 2, stdout: '', stderr: 'Usage: kilo-host.cjs <install --yes|enable --cwd <project> --yes|disable --cwd <project> --yes|uninstall|doctor [--cwd <project>]> [--force]\n' };
+  return { code: 2, stdout: '', stderr: 'Usage: kilo-host.cjs <install --yes|enable --cwd <project> --yes|disable --cwd <project> --yes|uninstall --yes|doctor [--cwd <project>]> [--force]\n' };
 }
 
 export function main(): number {

@@ -29,7 +29,7 @@
 // windows-tree-kill.test.ts already hold those. This file is about the
 // arithmetic between them and the window.
 
-import * as assert from 'assert';
+import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import { test } from 'node:test';
@@ -204,15 +204,15 @@ const ROSTER: ReadonlyArray<{ module: string; sites: number; note: string }> = [
   { module: 'shared/verification-contract/git.ts', sites: 6, note: 'bounded: every git execFileSync carries timeout 3_000' },
   { module: 'shared/architecture-contract/baseline.ts', sites: 6, note: 'bounded: every git execFileSync carries timeout 3_000' },
   { module: 'shared/host/plan.ts', sites: 3, note: 'bounded: sqlite3 -readonly probes at timeout 2_000' },
-  { module: 'shared/one-mcp/cache-lock.ts', sites: 1, note: 'bounded: sleepSync inside a retry loop with a constant attempt count' },
   { module: 'shared/one-settings.ts', sites: 1, note: 'bounded: sleepSync inside a retry loop with a constant attempt count' },
   { module: 'shared/run-model-policy.ts', sites: 1, note: 'bounded: sleepSync inside a retry loop with a constant attempt count' },
   { module: 'shared/state/codex-model-observation.ts', sites: 1, note: 'bounded: sleepSync inside a retry loop with a constant attempt count' },
-  { module: 'shared/state/local-prefs/prefs-store.ts', sites: 1, note: 'bounded: sleepSync inside a retry loop with a constant attempt count' },
   { module: 'shared/state/project-state-lock.ts', sites: 1, note: 'bounded: sleepSync inside the acquisition loop, itself deadline-bounded' },
   { module: 'shared/state/run-agent/locks.ts', sites: 1, note: 'bounded: sleepSync inside the acquisition loop, itself deadline-bounded' },
   { module: 'shared/state/run-agent/mutation-result.ts', sites: 1, note: 'bounded: UNAVAILABLE_RETRY_BACKOFF_MS x UNAVAILABLE_RETRY_ATTEMPTS' },
   // ---- imported, never called from this runner ----
+  { module: 'shared/per-user-dir-lock.ts', sites: 1, note: 'bounded: Atomics.wait inside sleepSync, itself deadline-bounded by the lock acquisition loop (retryMs vs deadline)' },
+  { module: 'shared/node-floor.ts', sites: 5, note: 'not-called: every spawnSync match is inside nodeFloorGuardSource() emitted launcher strings. The QA runner never executes that generated ES5.' },
   { module: 'shared/exec.ts', sites: 1, note: 'not-called: the runner reaches this module only through spawn-tool\'s resolveWindowsCommand, which calls exec.which — a PATH walk in fs, no child. exec.run/runResult, the 60 s spawnSync, is on no path from qa-evidence.' },
   { module: 'shared/spawn-tool.ts', sites: 3, note: 'not-called: native-process.ts imports the escaping and resolution helpers only; spawnTool itself is never invoked from this runner.' },
   { module: 'shared/runner-shims.ts', sites: 2, note: 'not-called: the shim spawns the runner and is the PARENT process — it holds no lock, and the runner it starts does not import back into it. One of the two sites is inside the shim SOURCE this module emits, which never executes here at all.' },

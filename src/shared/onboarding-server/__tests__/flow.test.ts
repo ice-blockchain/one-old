@@ -1754,3 +1754,60 @@ test('`finalize` still HEALS a stacked-torn `.one.json`, which is why refusing t
       'and the bytes it replaced were preserved beside it, byte for byte');
   });
 });
+
+function plantSplitHybrid(cwd: string): void {
+  fs.mkdirSync(path.join(cwd, 'apps/web/app'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'apps/web/package.json'), JSON.stringify({
+    dependencies: { next: '16.0.0', react: '19.0.0' },
+  }));
+  fs.mkdirSync(path.join(cwd, 'apps/mobile'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'apps/mobile/package.json'), JSON.stringify({
+    dependencies: { expo: '55.0.0', react: '19.0.0', 'react-native': '0.83.0' },
+  }));
+}
+
+test('hybrid web+native asks for architectureTarget in the wizard, with the two answers', () => {
+  withProject({
+    mode: 'existing-codebase',
+    stack: 'custom-frontend',
+    frontend: 'nextjs',
+    backend: 'none',
+  }, (cwd) => {
+    plantSplitHybrid(cwd);
+    const view = computeOnboarding(cwd);
+    assert.equal(view.done, false);
+    assert.equal(view.step, 'architecture-target');
+    assert.match(view.meta.question, /web UI and a mobile UI/);
+    assert.match(view.meta.question, /apps\/web/);
+    assert.match(view.meta.question, /workspace members/);
+    assert.deepEqual(
+      (view.meta.options || []).map((option) => option.id),
+      ['web-ui', 'native-ui'],
+    );
+    assert.equal(applyAnswer(cwd, 'architecture-target', 'native-ui').ok, true);
+    assert.equal(readState(cwd).architectureTarget, 'native-ui');
+    assert.notEqual(computeOnboarding(cwd).step, 'architecture-target');
+  });
+});
+
+test('hybrid web+native on a new project asks before finalize', () => {
+  withProject(null, (cwd) => {
+    assert.ok(applyAnswer(cwd, 'open-code', 'not_now').ok);
+    assert.ok(applyAnswer(cwd, 'performance', 'high').ok);
+    assert.ok(applyAnswer(cwd, 'team-confirmation', { action: 'approve' }).ok);
+    assert.ok(applyAnswer(cwd, 'project-context', { answers: { audience: 'devs' }, summary: 'a hybrid app' }).ok);
+    assert.ok(applyAnswer(cwd, 'mobile', 'web_only').ok);
+    assert.ok(applyAnswer(cwd, 'code-graph', 'gitnexus').ok);
+    plantSplitHybrid(cwd);
+    assert.equal(computeOnboarding(cwd).step, 'architecture-target');
+    assert.ok(applyAnswer(cwd, 'architecture-target', 'web-ui').ok);
+    assert.equal(computeOnboarding(cwd).step, 'finalize');
+  });
+});
+
+test('architecture-target rejects an unknown value and does not write', () => {
+  withProject({ mode: 'existing-codebase', stack: 'custom-frontend' }, (cwd) => {
+    assert.equal(applyAnswer(cwd, 'architecture-target', 'both').ok, false);
+    assert.equal(readState(cwd).architectureTarget, undefined);
+  });
+});

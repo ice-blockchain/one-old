@@ -18,7 +18,7 @@ import { resolveToolScope, workspaceMemberRefusal } from '../../shared/tool-scop
 
 type Rec = Record<string, unknown>;
 
-export const DEPLOY_RE = /(^|[\s;&|])(vercel\s+(deploy|--prod)|eas\s+build\s+.*--auto-submit|eas\s+submit|supabase\s+db\s+push\s+--linked|supabase\s+functions\s+deploy\s+\S+\s+--linked|gh\s+release\s+create|fly\s+deploy|wrangler\s+deploy|npm\s+publish|pnpm\s+publish)\b/;
+export const DEPLOY_RE = /(^|[\s;&|])(vercel\s+(deploy|--prod)|eas\s+build\s+.*--auto-submit|eas\s+submit|eas\s+update|supabase\s+db\s+push(?:\s+--linked)?|supabase\s+functions\s+deploy\s+\S+(?:\s+--linked)?|gh\s+release\s+create|fly\s+deploy|wrangler\s+deploy|netlify\s+deploy\s+.*--prod|firebase\s+deploy|npm\s+publish|pnpm\s+publish|yarn\s+publish|bun\s+publish)\b/;
 
 const SHIPPER_APPROVAL_WINDOW_MS = 10 * 60 * 1000;
 const SECURITY_CHECK_WINDOW_MS = 10 * 60 * 1000;
@@ -55,6 +55,18 @@ function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
       reason: 'Deploy gate: the Traffic One pre-deployment security check has not passed in the last 10 minutes. Run '
         + `\`${SECURITY_RUN_CMD}\` `
         + 'from the project root, address any findings, then deploy through `senior-shipper`.',
+      denyId: 'deploy-gate-security-check-stale',
+    };
+  }
+
+  // A non-strict stamp can still write lastSecurityCheckStatus:"passed". Deploy
+  // authorization requires the --strict run the shipper remediation names.
+  if (state.lastSecurityCheckStrict !== true) {
+    return {
+      ok: false,
+      reason: 'Deploy gate: the last security check was not a --strict run, so it cannot authorize deploy. Run '
+        + `\`${SECURITY_RUN_CMD}\` `
+        + 'from the project root, then deploy through `senior-shipper`.',
       denyId: 'deploy-gate-security-check-stale',
     };
   }

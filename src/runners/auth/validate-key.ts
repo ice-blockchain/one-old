@@ -114,6 +114,7 @@
 // captive portal or proxy interstitial can never be.
 
 import { DEFAULT_ENDPOINT } from '../../config/one-mcp';
+import { recordUnknownAuthGate401 } from '../../shared/auth/auth-gate-drift';
 import { mcpPost } from './mcp-client';
 
 export type KeyValidation =
@@ -125,12 +126,13 @@ export type KeyValidation =
  * authoritative statement ABOUT THE KEY. One table, so adding a server code is
  * one line here and a named test rather than a scattered condition.
  *
- * DRIFT, stated because nothing detects it: this is a cross-repository contract
- * with no shared artifact and no version. If the server ever renames
- * `invalid_token`, revocation silently stops working and no test in this repo
- * goes red — the client would simply grace every rejection. __tests__/
- * validate-key.test.ts pins the four strings verbatim so a deliberate change is
- * at least a conversation; it cannot make an undeclared one visible.
+ * DRIFT: this is a cross-repository contract with no shared artifact and no
+ * version. If the server ever renames `invalid_token`, revocation still fails
+ * closed to grace — but an unknown `error.code` now writes a doctor finding
+ * and a log line (shared/auth/auth-gate-drift.ts) instead of staying silent.
+ * __tests__/validate-key.test.ts pins the four strings verbatim so a
+ * deliberate change is a conversation; a shared contract fixture is a
+ * server-repo follow-up.
  */
 export const AUTH_GATE_401_CODES: Readonly<Record<string, 'rejects-the-key' | 'says-nothing-about-the-key'>> = {
   no_user: 'says-nothing-about-the-key',
@@ -158,6 +160,17 @@ export function authGateErrorCode(body: string): string | null {
 export function isAuthoritativeKeyRejection(body: string): boolean {
   const code = authGateErrorCode(body);
   return code !== null && AUTH_GATE_401_CODES[code] === 'rejects-the-key';
+}
+
+/**
+ * A 401 envelope whose `error.code` this client has never heard of — the
+ * silent-grace case KNOWN-ISSUES #8 named. Null when there is no code, or
+ * when the code is one of the four this table understands.
+ */
+export function unrecognizedAuthGate401Code(body: string): string | null {
+  const code = authGateErrorCode(body);
+  if (code === null) return null;
+  return Object.prototype.hasOwnProperty.call(AUTH_GATE_401_CODES, code) ? null : code;
 }
 
 /**
@@ -202,6 +215,8 @@ export interface AuthProbeOptions {
    * one, and a cursor minted for another user is rejected server-side.
    */
   cursor?: string;
+  /** Where the unknown-401 sidecar is written. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface AuthProbe {
@@ -258,6 +273,13 @@ export async function probeAuthenticatedUpdates(
 
   if (statusCode === 401 || statusCode === 403) {
     if (isAuthoritativeKeyRejection(body)) return { validation: { ok: false, reason: 'invalid-api-key' } };
+    // Unknown codes still grant grace — an unparseable revocation must not
+    // lock the fleet out. Make the drift visible: a doctor finding + a log
+    // line, never a quiet grant.
+    if (statusCode === 401) {
+      const unknown = unrecognizedAuthGate401Code(body);
+      if (unknown) recordUnknownAuthGate401(unknown, options.env ?? process.env);
+    }
     // The error string names the code so `doctor` and a bug report can tell an
     // outage from a proxy; it never carries server prose or the key.
     return {

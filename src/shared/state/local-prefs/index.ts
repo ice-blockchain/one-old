@@ -13,6 +13,7 @@ import { readOneSettings, writeOneSection } from '../../one-settings';
 import {
   codeGraphProviderFromValue,
 } from '../canonicalize';
+import { safeRunIdSegment } from '../run-id-segment';
 
 import {
   HOST_PREF_KEYS,
@@ -104,9 +105,10 @@ function readRawState(cwd: string): Rec {
 
 function normalizeRuntimeIds(state: Rec): Rec {
   if (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId)) {
-    state.currentRunId = String(Math.trunc(state.currentRunId));
+    state.currentRunId = safeRunIdSegment(String(Math.trunc(state.currentRunId)));
   } else if (typeof state.currentRunId === 'string') {
-    state.currentRunId = state.currentRunId.trim();
+    const trimmed = state.currentRunId.trim();
+    state.currentRunId = trimmed ? safeRunIdSegment(trimmed) : trimmed;
   }
   return state;
 }
@@ -126,11 +128,15 @@ export {
 export {
   PROJECT_PREFS_LOCK_TIMEOUT_MS,
   defaultProjectPrefsPath,
+  legacyProjectRootHash,
+  migrateHashNamedFolder,
+  migrateMiscasedPrefsBucket,
   normalizeProjectPrefs,
   prefsCapableRoot,
   prefsCreateRefused,
   projectPrefsPath,
   projectRootHash,
+  projectRootHashAliases,
   readProjectPrefs,
   writeProjectPrefs,
 } from './prefs-store';

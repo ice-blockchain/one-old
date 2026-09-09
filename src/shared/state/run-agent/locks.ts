@@ -147,7 +147,11 @@ function reclaimStaleOwnedDirLock(lockDir: string, staleMs: number): boolean {
     // No pid, no liveness claim: `illegible` cannot assert a holder is alive, so
     // it must not be able to veto on one either.
     const ownerMayBeAlive = owner.kind !== 'illegible' && !processDefinitelyDead(owner.pid);
-    if ((ownerAgeMs !== null && ownerAgeMs <= staleMs) || ownerMayBeAlive) return false;
+    // A SIGKILLed holder is gone at any age — the stamp only delayed a reclaim
+    // that liveness already authorized. Illegible sentinels still need the age
+    // gate: a torn mid-write is milliseconds old and must not be stolen.
+    if (ownerMayBeAlive) return false;
+    if (owner.kind === 'illegible' && ownerAgeMs !== null && ownerAgeMs <= staleMs) return false;
     // Unchanged, and load-bearing: unlinking the EXACT sentinel this reaper
     // observed is the compare-and-swap for the new paths too. A second reaper's
     // unlink raises ENOENT and it gives up, and a returning holder whose lease

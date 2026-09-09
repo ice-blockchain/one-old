@@ -8,10 +8,10 @@ import * as path from 'path';
 
 import { readRegularFile } from '../../bounded-read';
 
-// Same realpath rule as projectRootHash in prefs-store.ts.
+// Same realpath rule as projectRootHash in prefs-store.ts (on-disk case).
 export function resolvedProjectRoot(cwd: string): string {
   try {
-    return fs.realpathSync(path.resolve(cwd));
+    return fs.realpathSync.native(path.resolve(cwd));
   } catch {
     return path.resolve(cwd);
   }

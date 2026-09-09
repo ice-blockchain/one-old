@@ -4,8 +4,8 @@
 //
 //   shared/paths.ts        projectRoot()        CANONICALIZES (realpath on every exit)
 //   shared/hook/paths.ts   resolveProjectRoot() PRESERVES the caller's spelling
-//   local-prefs            projectRootHash()    realpath THEN sha256 — folds
-//                                               symlinks, does NOT fold CASE
+//   local-prefs            projectRootHash()    realpathSync.native THEN sha256
+//                                               — folds symlinks AND on-disk CASE
 //
 // The settled part first, so nobody re-litigates it: a divergent spelling does
 // NOT break mutual exclusion. Every lock in the runDir family is a DIRECTORY,
@@ -304,7 +304,7 @@ test('the retention sweep can still tell a genuine nested project from a leak un
   }
 });
 
-// ── projectRootHash: symlinks fold, CASE does not ────────────────────────────
+// ── projectRootHash: symlinks fold, CASE folds via native realpath ───────────
 
 test('projectRootHash folds symlink spellings into one bucket', () => {
   const raw = rawTempRoot();
@@ -330,19 +330,11 @@ test('projectRootHash folds symlink spellings into one bucket', () => {
   }
 });
 
-// KNOWN, ACCEPTED ASYMMETRY — pinned so it cannot be "fixed" silently.
-//
-// `fs.realpathSync` (the JS implementation) resolves symlinks but returns the
-// caller's CASE; `fs.realpathSync.native` returns the on-disk case. On a
-// case-insensitive volume that makes `/u/Proj` and `/u/proj` one directory with
-// TWO buckets — two consent records, two prefs files, two override ledgers.
-//
-// Switching projectRootHash to `.native` is not a canonicalization improvement,
-// it is a RELOCATION of every existing bucket: consent reverts to unanswered,
-// wizard answers vanish, and every issued override token stops matching
-// (override/token.ts compares `projectKey` to this hash). A real fix reads both
-// spellings and migrates. Until then this test is the tripwire.
-test('projectRootHash does NOT case-fold, and switching to realpathSync.native would relocate every bucket', () => {
+// CASE FOLDS via realpathSync.native. The JS realpath still returns the
+// caller's spelling; native returns the on-disk case. projectRootHash uses
+// native so `/u/Proj` and `/u/proj` share one bucket on a case-insensitive
+// volume. A leftover folder hashed from the JS spelling is renamed once.
+test('projectRootHash case-folds with realpathSync.native on a case-insensitive volume', () => {
   const raw = rawTempRoot();
   try {
     const real = fs.realpathSync(raw);
@@ -352,22 +344,21 @@ test('projectRootHash does NOT case-fold, and switching to realpathSync.native w
 
     const caseInsensitive = fs.existsSync(lowered);
     if (!caseInsensitive) {
-      // A case-SENSITIVE volume: the two spellings are genuinely two directories,
-      // so one bucket each is the correct answer and there is nothing to migrate.
       assert.throws(() => fs.realpathSync(lowered), 'FIXTURE the lowercased name is a different, absent path');
       return;
     }
 
     assert.equal(fs.realpathSync(lowered), lowered,
-      'the JS realpath returns the spelling it was GIVEN — this is the whole asymmetry');
+      'the JS realpath still returns the spelling it was GIVEN');
     assert.equal(fs.realpathSync.native(lowered), onDisk,
       'the native realpath returns the ON-DISK case');
-    assert.notEqual(projectRootHash(lowered), projectRootHash(onDisk),
-      'one directory, two buckets: two consent records and two override ledgers for one project');
-    assert.notEqual(projectRootHash(lowered), require('crypto').createHash('sha256').update(onDisk).digest('hex'),
-      'switching this function to realpathSync.native RELOCATES the lowercased spelling’s bucket — '
-      + 'consent resets to unanswered and every issued override token stops matching. '
-      + 'Any real fix must READ BOTH SPELLINGS AND MIGRATE.');
+    assert.equal(projectRootHash(lowered), projectRootHash(onDisk),
+      'one directory, one bucket: miscased and on-disk spellings must hash together');
+    assert.equal(
+      projectRootHash(lowered),
+      require('crypto').createHash('sha256').update(onDisk).digest('hex'),
+      'the bucket name is sha256 of the native realpath',
+    );
   } finally {
     fs.rmSync(raw, { recursive: true, force: true });
   }

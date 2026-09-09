@@ -14,7 +14,12 @@ import { ONE_MCP_MANAGED_TOOLS, ONE_MCP_SERVER_NAME } from '../../config/one-mcp
 // v2 (1.0.44): adds the Stop → onboarding-stop group (appended LAST, so all 15
 // v1 positional identities and their trusted hashes are unchanged; the one new
 // entry arrives untrusted and Codex prompts once for it).
-export const CODEX_HOOK_ABI_VERSION = 2;
+// v3 appends the mcp__.* PreToolUse group after groups 0–6 so those keys stay
+// unchanged; four new keys pre_tool_use:7:0–7:3 arrive untrusted.
+// v4 appends NotebookEdit (onboarding + model-choice) and
+// MultiEdit|NotebookEdit (plan-write) AFTER mcp__.* so groups 0–7 keep their
+// keys; three new keys pre_tool_use:8:0, 8:1, 9:0 arrive untrusted.
+export const CODEX_HOOK_ABI_VERSION = 4;
 
 function regexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -191,6 +196,40 @@ export const PRE_TOOL_USE: HookGroup[] = [
   {
     matcher: 'Glob|Grep',
     entries: [{ subcommand: 'pre-graphify-hint' }],
+  },
+  // MCP tools are absent from the built-in matcher lists. A dedicated `mcp__.*`
+  // group AFTER the managed matcher (that row stays first and exclusive to
+  // `check-one-mcp-tool`) so Codex keys `pre_tool_use:0`–`6` stay unchanged.
+  // Routes them through the same onboarding / model-choice / plan-write /
+  // library gates the built-ins already hit. Not on `check-agent-model`: MCP
+  // is not a spawn. Do not change this row or the `.*` child-model row —
+  // later ABI versions APPEND after it.
+  {
+    matcher: 'mcp__.*',
+    entries: [
+      { subcommand: 'check-onboarding-gate', statusMessage: 'Checking onboarding gate...' },
+      { subcommand: 'check-model-choice-gate', statusMessage: 'Checking model choice gate...' },
+      { subcommand: 'check-plan-write', statusMessage: 'Validating plan gate...' },
+      { subcommand: 'check-library-allowlist', statusMessage: 'Checking library allowlist...' },
+    ],
+  },
+  // NotebookEdit is absent from groups 0–7. Appended AFTER mcp__.* so Codex
+  // keys `pre_tool_use:0`–`7` stay unchanged. Same gates and statusMessages
+  // as group 2. Not on `check-agent-model` (not a spawn) or
+  // `check-library-allowlist` (not a shell).
+  {
+    matcher: 'NotebookEdit',
+    entries: [
+      { subcommand: 'check-onboarding-gate', statusMessage: 'Checking onboarding gate...' },
+      { subcommand: 'check-model-choice-gate', statusMessage: 'Checking model choice gate...' },
+    ],
+  },
+  // MultiEdit is on the onboarding matcher (group 2) but absent from
+  // plan-write (group 4). NotebookEdit is on neither of those existing
+  // strings. Append both here — do not edit groups 0–7.
+  {
+    matcher: 'MultiEdit|NotebookEdit',
+    entries: [{ subcommand: 'check-plan-write', statusMessage: 'Validating plan gate...' }],
   },
 ];
 

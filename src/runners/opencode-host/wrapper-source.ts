@@ -5,6 +5,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { PRE_TOOL_REMEDIATION, preToolFailureReason } from '../../hooks/fail-closed';
 import {
   OPENCODE_HOOK_CHAT_MESSAGE,
   OPENCODE_HOOK_EVENT,
@@ -41,7 +42,7 @@ export function wrapperSource(pluginRoot: string, installedAt = new Date().toISO
 const TRAFFIC_ONE_WRAPPER_OWNER = ${JSON.stringify(owner)};
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, appendFileSync } from 'node:fs';
+import { existsSync, appendFileSync, readdirSync } from 'node:fs';
 import * as nodeFs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -68,6 +69,7 @@ const TRAFFIC_ONE_ACTIVATION_REL = ${JSON.stringify(OPENCODE_HOST_PROJECT_MARKER
 const TRAFFIC_ONE_MANAGED_MCP_TOOLS = new Set(${JSON.stringify(
   ONE_MCP_MANAGED_TOOLS.map((tool) => `${ONE_MCP_SERVER_NAME}_${tool}`),
 )});
+let TRAFFIC_ONE_NODE = '';
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -121,10 +123,18 @@ function disabledTrafficOneRoot(dir) {
   return Boolean(marker && marker.enabled === false);
 }
 
-function findTrafficOneRoot(start) {
-  let current = path.resolve(start || process.cwd());
+function resolvedPath(value) {
+  try { return nodeFs.realpathSync(value); } catch { return path.resolve(value); }
+}
+
+function resolvedHomeRoot() {
   const home = firstString(process.env.HOME, process.env.USERPROFILE);
-  const homeRoot = home ? path.resolve(home) : '';
+  return home ? resolvedPath(home) : '';
+}
+
+function findTrafficOneRoot(start) {
+  let current = resolvedPath(start || process.cwd());
+  const homeRoot = resolvedHomeRoot();
   for (let i = 0; i < 40; i += 1) {
     if (homeRoot && current === homeRoot) return '';
     if (disabledTrafficOneRoot(current)) return '';
@@ -137,9 +147,8 @@ function findTrafficOneRoot(start) {
 }
 
 function trafficOneDisabledFor(start) {
-  let current = path.resolve(start || process.cwd());
-  const home = firstString(process.env.HOME, process.env.USERPROFILE);
-  const homeRoot = home ? path.resolve(home) : '';
+  let current = resolvedPath(start || process.cwd());
+  const homeRoot = resolvedHomeRoot();
   for (let i = 0; i < 40; i += 1) {
     if (homeRoot && current === homeRoot) return false;
     if (disabledTrafficOneRoot(current)) return true;
@@ -154,9 +163,8 @@ function trafficOneDisabledFor(start) {
 function fallbackWorkspaceRoot(start) {
   const raw = firstString(start);
   if (!raw) return '';
-  const current = path.resolve(raw);
-  const home = firstString(process.env.HOME, process.env.USERPROFILE);
-  const homeRoot = home ? path.resolve(home) : '';
+  const current = resolvedPath(raw);
+  const homeRoot = resolvedHomeRoot();
   if (homeRoot && current === homeRoot) return '';
   return current;
 }
@@ -246,6 +254,91 @@ function debugLog(event, data) {
   } catch {}
 }
 
+function uniqueStrings(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const text = firstString(value);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+
+function isNodeExecutable(command) {
+  if (!command) return false;
+  const result = spawnSync(command, ['--version'], {
+    encoding: 'utf8',
+    timeout: 5000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.error || result.status !== 0) return false;
+  const version = firstString(result.stdout, result.stderr).trim();
+  return /^v\\d+\\.\\d+\\.\\d+/.test(version);
+}
+
+function pathNodeCandidates() {
+  const names = process.platform === 'win32' ? ['node.exe', 'node.cmd', 'node'] : ['node'];
+  const dirs = firstString(process.env.PATH).split(path.delimiter).filter(Boolean);
+  return dirs.flatMap((dir) => names.map((name) => path.join(dir, name)));
+}
+
+function nvmNodeCandidates() {
+  const home = firstString(process.env.HOME, process.env.USERPROFILE);
+  if (!home) return [];
+  const versionsDir = path.join(home, '.nvm', 'versions', 'node');
+  try {
+    return readdirSync(versionsDir)
+      .filter((name) => name && !name.startsWith('.'))
+      .sort((left, right) => {
+        const parse = (name) => {
+          const match = /^v?(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?/.exec(name);
+          return match ? [Number(match[1]), Number(match[2] || 0), Number(match[3] || 0)] : [0, 0, 0];
+        };
+        const a = parse(left);
+        const b = parse(right);
+        return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
+      })
+      .map((name) => path.join(versionsDir, name, 'bin', process.platform === 'win32' ? 'node.exe' : 'node'));
+  } catch {
+    return [];
+  }
+}
+
+function commonNodeCandidates() {
+  if (process.platform === 'win32') return [];
+  return [
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+    '/opt/local/bin/node',
+    '/run/current-system/sw/bin/node',
+  ];
+}
+
+function resolveNodeExecutable() {
+  if (TRAFFIC_ONE_NODE) return TRAFFIC_ONE_NODE;
+  const candidates = uniqueStrings([
+    process.env.TRAFFIC_ONE_NODE,
+    process.env.TRAFFIC_ONE_NODE_PATH,
+    process.env.NODE,
+    process.env.npm_node_execpath,
+    process.execPath,
+    ...pathNodeCandidates(),
+    ...commonNodeCandidates(),
+    ...nvmNodeCandidates(),
+  ]);
+  for (const candidate of candidates) {
+    if (!isNodeExecutable(candidate)) continue;
+    TRAFFIC_ONE_NODE = candidate;
+    debugLog('node-resolved', { nodePath: candidate, execPath: process.execPath });
+    return candidate;
+  }
+  debugLog('node-resolve-failed', { execPath: process.execPath, path: process.env.PATH || null });
+  return '';
+}
+
 function trafficOneHookEnv(projectRoot) {
   const base = {
     ...process.env,
@@ -268,18 +361,23 @@ function trafficOneHookEnv(projectRoot) {
 function runTrafficOne(subcommand, payload) {
   const projectRoot = trafficOneRootFor(payload.cwd || process.cwd());
   if (!projectRoot) { debugLog('skip-no-root', { subcommand, cwd: payload.cwd || null }); return { kind: 'noop' }; }
+  const nodePath = resolveNodeExecutable();
+  if (!nodePath) {
+    const reason = ${JSON.stringify(`Traffic One OpenCode pre-tool gate could not find a Node.js runtime, so this tool call is blocked fail-closed. ${PRE_TOOL_REMEDIATION}`)};
+    return subcommand === 'before-tool-use' ? { kind: 'deny', reason } : { kind: 'noop' };
+  }
   const input = JSON.stringify({ ...payload, cwd: projectRoot, projectRoot, workspaceRoot: projectRoot });
-  // ELECTRON_RUN_AS_NODE makes process.execPath behave as node when OpenCode runs
-  // the plugin inside an Electron node-service (where execPath is the Electron
-  // binary, not node); ignored by plain node/bun, so it is safe everywhere.
-  const result = spawnSync(process.execPath, [TRAFFIC_ONE_RUNTIME, subcommand, '--host=opencode'], {
+  const result = spawnSync(nodePath, [TRAFFIC_ONE_RUNTIME, subcommand, '--host=opencode'], {
     input,
     encoding: 'utf8',
     timeout: 30000,
     env: trafficOneHookEnv(projectRoot),
   });
   if (result.error || result.status !== 0) {
-    debugLog('spawn-fail', { subcommand, projectRoot, execPath: process.execPath, status: result.status, error: result.error ? String(result.error.message || result.error) : null, stderr: String(result.stderr || '').slice(0, 500) });
+    debugLog('spawn-fail', { subcommand, projectRoot, execPath: process.execPath, nodePath, status: result.status, error: result.error ? String(result.error.message || result.error) : null, stderr: String(result.stderr || '').slice(0, 500) });
+    if (subcommand === 'before-tool-use') {
+      return { kind: 'deny', reason: ${JSON.stringify(preToolFailureReason('OpenCode'))} };
+    }
     return { kind: 'noop' };
   }
   try {
@@ -288,6 +386,9 @@ function runTrafficOne(subcommand, payload) {
     return parsed;
   } catch {
     debugLog('parse-fail', { subcommand, projectRoot, stdout: String(result.stdout || '').slice(0, 500) });
+    if (subcommand === 'before-tool-use') {
+      return { kind: 'deny', reason: ${JSON.stringify(preToolFailureReason('OpenCode'))} };
+    }
     return { kind: 'noop' };
   }
 }

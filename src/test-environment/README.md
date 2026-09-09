@@ -29,7 +29,8 @@ compiler change an N-case edit.
 
 **Requirements.** `dist` must be built (materialization resolves rules and
 skills from the plugin root with no `src/` fallback — the runner builds it for
-you), plus `go` on PATH and two toolchains installed once at the runs root:
+you), plus `go` and `cargo` (with the clippy and rustfmt components) on PATH,
+and two toolchains installed once at the runs root:
 `@playwright/test` + Chromium, which `createRequire` resolves from every case
 project, and a Python venv at `<runs-dir>/.venv`, whose `bin` `buildCaseEnv`
 prepends to PATH so the stack runner's bare `pytest`/`ruff` resolve with no

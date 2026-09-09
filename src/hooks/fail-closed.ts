@@ -374,6 +374,8 @@ function shellCommandBatchForSurface(
 // `doctor --unblock <gateId>` is likewise absent, from tool-classify.ts's
 // grammar and therefore from here: it is the one doctor invocation that writes,
 // and an agent able to mint its own override has a bypass, not an escape hatch.
+// The PreToolUse deny is namesDoctorUnblock / doctor-unblock-agent-mint, not
+// an exemption row.
 interface RecoveryRunner {
   readonly id: string;
   /** The runner's own exact argv grammar. Biased to DENY; see tool-classify.ts. */
@@ -635,6 +637,20 @@ export function isFailClosedRecoveryExemption(
   const commands = shellCommandBatchForSurface(data, String(subcommand || ''), surface);
   if (!commands || commands.length === 0) return false;
   return commands.every(isRecoveryCommand);
+}
+
+// Honor a recognized recovery command; if the check itself throws, fail closed
+// (do not exempt). A throw here must not disable the pre-tool deny.
+export function safeFailClosedRecoveryExemption(
+  stdin: string,
+  subcommand: string | undefined,
+  surface: PreToolPayloadSurface,
+): boolean {
+  try {
+    return isFailClosedRecoveryExemption(stdin, subcommand, surface);
+  } catch {
+    return false;
+  }
 }
 
 export function preToolFailureReason(host: string): string {

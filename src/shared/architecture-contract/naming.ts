@@ -353,6 +353,7 @@ export function moduleOutput(
     if (['python', 'django', 'fastapi'].includes(profile.backendFramework)) {
       return `${sourceRoot}/${snake(module.name)}${ext}`;
     }
+    if (profile.backendFramework === 'rust') return `${sourceRoot}/${snake(module.name)}${ext}`;
     if (['laravel', 'php'].includes(profile.backendFramework)) {
       return `${sourceRoot}/Services/${name}${ext}`;
     }

@@ -396,9 +396,14 @@ function explicitToolTargets(
     || parsedToolInput(ctx.input.tool) || {};
   const workdir = ctx.input.tool?.workdir
     || stringValue(toolInput.workdir ?? toolInput.working_dir ?? toolInput.workingDir ?? toolInput.cwd);
+  // Host-relative paths are relative to the hook's actual cwd, not `ctx.cwd`.
+  // `buildContext` rewrites `ctx.cwd` to `paths.projectRoot(input)`, and a
+  // file-path hint can land that guess on a monorepo package.json. Joining
+  // `packages/api-client/src/X.ts` against that package doubles the prefix.
+  const hostCwd = path.resolve(ctx.input.cwd || ctx.cwd);
   const base = workdir
-    ? (path.isAbsolute(workdir) ? path.resolve(workdir) : path.resolve(ctx.cwd, workdir))
-    : path.resolve(ctx.cwd);
+    ? (path.isAbsolute(workdir) ? path.resolve(workdir) : path.resolve(hostCwd, workdir))
+    : hostCwd;
   const targets: ToolScopeTarget[] = [];
 
   if (workdir) addTarget(targets, workdir, 'workdir', true);
@@ -604,7 +609,7 @@ function workspaceAnchoring(
  * boundary.
  */
 export function resolveToolScope(ctx: Ctx): ToolScopeResolution {
-  const rawCwd = path.resolve(ctx.cwd);
+  const rawCwd = path.resolve(ctx.input.cwd || ctx.cwd);
   const { base, targets: relativeTargets, unresolvedWriteTargets } = explicitToolTargets(ctx);
   const targets = relativeTargets.map((target) => absoluteTarget(base, target));
   const externalTargets = targets.filter((target) => !targetIsNonProject(target));

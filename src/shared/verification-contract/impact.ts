@@ -1051,7 +1051,9 @@ export function browserRequired(impact: UiImpact): boolean {
  *
  *   - `unit-or-component-tests` (was on `nonvisual`) was a second NAME for the
  *     evidence `stack-test` already resolves — the project's own `test` script,
- *     `go test`, `pytest`, `cargo test`, `php artisan test`, the JVM wrappers.
+ *     `go test`, `pytest`, `cargo test`, `cargo clippy`, `cargo fmt --check`,
+ *     `php artisan test`, the JVM wrappers. Rust's three cargo forms are the
+ *     stack-test / stack-lint / stack-format producers for a Cargo.toml crate.
  *     Nothing had an arm for the second name, so it resolved `not-applicable`
  *     with no justification and validateQaReportV2 rejected
  *     `required-check-failed` on EVERY nonvisual run — the base impact of any

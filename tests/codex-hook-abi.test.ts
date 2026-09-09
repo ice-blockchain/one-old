@@ -13,7 +13,9 @@ import {
   CODEX_TRAFFIC_ONE_HOOK_KEYS,
 } from '../src/runners/doctor/codex-hook-trust';
 import abiFixtureV1Json from './fixtures/codex-hook-abi.v1.json';
-import abiFixtureJson from './fixtures/codex-hook-abi.v2.json';
+import abiFixtureV2Json from './fixtures/codex-hook-abi.v2.json';
+import abiFixtureV3Json from './fixtures/codex-hook-abi.v3.json';
+import abiFixtureJson from './fixtures/codex-hook-abi.v4.json';
 
 type Rec = Record<string, unknown>;
 type CodexVersion = '0.133' | '0.145';
@@ -39,11 +41,13 @@ interface AbiFixture {
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ABI_FIXTURE = abiFixtureJson as AbiFixture;
 const ABI_FIXTURE_V1 = abiFixtureV1Json as AbiFixture;
+const ABI_FIXTURE_V2 = abiFixtureV2Json as AbiFixture;
+const ABI_FIXTURE_V3 = abiFixtureV3Json as AbiFixture;
 const ABI_MIGRATION_GUIDANCE =
   'Codex hook ABI drift detected: bump CODEX_HOOK_ABI_VERSION and ship a trust-state migration.';
 const DEFAULT_TIMEOUT_SEC = 600;
 const CODEX_0145_DEFAULT_ADDITIONAL_CONTEXT_LIMIT = 2_500;
-const HOOKS_JSON_SHA256 = 'e292958c20a40430496ed585f1d6ad996549af775debe14c6f4eec80665b234c';
+const HOOKS_JSON_SHA256 = '4e27f34486e5c82b9dce6d7e3ba968ae265ec94112440f4466dcb02bd4bec529';
 
 const EVENT_LABELS: Readonly<Record<string, string>> = {
   PreToolUse: 'pre_tool_use',
@@ -289,26 +293,54 @@ function hookHandler(
   );
 }
 
-test('Codex hook ABI fixture v2 is complete and tied to the source version', () => {
+test('historical ABI v2 fixture still has exactly 16 entries', () => {
+  assert.equal(ABI_FIXTURE_V2.version, 2);
+  assert.equal(ABI_FIXTURE_V2.entries.length, 16, 'ABI v2.json must remain the 16-entry snapshot');
+});
+
+test('historical ABI v3 fixture still has exactly 20 entries', () => {
+  assert.equal(ABI_FIXTURE_V3.version, 3);
+  assert.equal(ABI_FIXTURE_V3.entries.length, 20, 'ABI v3.json must remain the 20-entry snapshot');
+  for (const key of ['pre_tool_use:7:0', 'pre_tool_use:7:1', 'pre_tool_use:7:2', 'pre_tool_use:7:3'] as const) {
+    assert.ok(
+      ABI_FIXTURE_V3.entries.some((entry) => entry.key === key),
+      `ABI v3 must pin the appended mcp__.* handler ${key}`,
+    );
+  }
+});
+
+test('Codex hook ABI fixture v4 is complete and tied to the source version', () => {
   assert.equal(
     ABI_FIXTURE.version,
     CODEX_HOOK_ABI_VERSION,
     ABI_MIGRATION_GUIDANCE,
   );
-  assert.equal(ABI_FIXTURE.entries.length, 16, 'ABI v2 must contain exactly 16 entries');
+  assert.equal(ABI_FIXTURE.entries.length, 23, 'ABI v4 must contain exactly 23 entries');
   assert.equal(
     new Set(ABI_FIXTURE.entries.map(({ key }) => key)).size,
     ABI_FIXTURE.entries.length,
-    'ABI v2 keys must be unique',
+    'ABI v4 keys must be unique',
   );
   assert.ok(
     ABI_FIXTURE.entries.some(({ key }) => key === 'pre_tool_use:2:1'),
-    'ABI v2 must pin the second handler in PreToolUse group 2',
+    'ABI v4 must pin the second handler in PreToolUse group 2',
   );
+  for (const key of ['pre_tool_use:7:0', 'pre_tool_use:7:1', 'pre_tool_use:7:2', 'pre_tool_use:7:3'] as const) {
+    assert.ok(
+      ABI_FIXTURE.entries.some((entry) => entry.key === key),
+      `ABI v4 must keep the v3 mcp__.* handler ${key}`,
+    );
+  }
+  for (const key of ['pre_tool_use:8:0', 'pre_tool_use:8:1', 'pre_tool_use:9:0'] as const) {
+    assert.ok(
+      ABI_FIXTURE.entries.some((entry) => entry.key === key),
+      `ABI v4 must pin the appended NotebookEdit/MultiEdit handler ${key}`,
+    );
+  }
   assert.equal(
     ABI_FIXTURE.entries[ABI_FIXTURE.entries.length - 1]!.key,
     'stop:0:0',
-    'the v2 Stop entry must be appended LAST so every v1 positional identity survives',
+    'Stop remains the last event in the walk; the v4 append is PreToolUse groups 8–9',
   );
   const entryFields = [
     'key',
@@ -343,13 +375,42 @@ test('Codex hook ABI fixture v2 is complete and tied to the source version', () 
 test('ABI v2 preserves every v1 positional identity byte-for-byte', () => {
   assert.equal(ABI_FIXTURE_V1.entries.length, 15);
   assert.deepEqual(
-    ABI_FIXTURE.entries.slice(0, ABI_FIXTURE_V1.entries.length),
+    ABI_FIXTURE_V2.entries.slice(0, ABI_FIXTURE_V1.entries.length),
     ABI_FIXTURE_V1.entries,
     `${ABI_MIGRATION_GUIDANCE}\nthe v2 fixture may only APPEND — v1 entries changed`,
   );
 });
 
-test('doctor hook-trust expected keys stay in sync with ABI fixture v2', () => {
+// Appending a PreToolUse group inserts four entries before PostToolUse in the
+// walk, so array positions of post/session/stop shift while their KEYS stay
+// the same. Compare by key — not array-prefix equality.
+test('ABI v3 preserves every v2 key identity (hash/command/matcher/subcommand)', () => {
+  const v3ByKey = new Map(ABI_FIXTURE_V3.entries.map((entry) => [entry.key, entry]));
+  for (const v2Entry of ABI_FIXTURE_V2.entries) {
+    const v3Entry = v3ByKey.get(v2Entry.key);
+    assert.ok(v3Entry, `${ABI_MIGRATION_GUIDANCE}\nv3 is missing v2 key ${v2Entry.key}`);
+    assert.deepEqual(
+      v3Entry,
+      v2Entry,
+      `${ABI_MIGRATION_GUIDANCE}\nv2 key ${v2Entry.key} identity changed`,
+    );
+  }
+});
+
+test('ABI v4 preserves every v3 key identity (hash/command/matcher/subcommand)', () => {
+  const v4ByKey = new Map(ABI_FIXTURE.entries.map((entry) => [entry.key, entry]));
+  for (const v3Entry of ABI_FIXTURE_V3.entries) {
+    const v4Entry = v4ByKey.get(v3Entry.key);
+    assert.ok(v4Entry, `${ABI_MIGRATION_GUIDANCE}\nv4 is missing v3 key ${v3Entry.key}`);
+    assert.deepEqual(
+      v4Entry,
+      v3Entry,
+      `${ABI_MIGRATION_GUIDANCE}\nv3 key ${v3Entry.key} identity changed`,
+    );
+  }
+});
+
+test('doctor hook-trust expected keys stay in sync with ABI fixture v4', () => {
   assert.equal(
     CODEX_TRAFFIC_ONE_HOOK_KEYS.length,
     CODEX_HOOK_EXPECTED_COUNT,
@@ -365,7 +426,7 @@ test('doctor hook-trust expected keys stay in sync with ABI fixture v2', () => {
   );
 });
 
-test('generated hooks preserve Codex hook ABI v2 under 0.133 and 0.145 normalization', () => {
+test('generated hooks preserve Codex hook ABI v4 under 0.133 and 0.145 normalization', () => {
   const { hooksFile, bytes } = generatedHooksArtifact();
   assert.equal(
     createHash('sha256').update(bytes).digest('hex'),
@@ -422,15 +483,17 @@ const COUNT_BEARING_IDIOMS: readonly RegExp[] = [
 // mention found in either file. The per-file minimum is only a floor against an
 // edit that deletes the last mention outright (or rewrites it into an idiom
 // COUNT_BEARING_IDIOMS no longer recognizes), which would leave this test
-// vacuously green. README.md, audited here, states the count 4 times; the doctor
-// skill's prose is owned elsewhere and is free to state it once, so its floor is
-// the weakest one that still proves a mention exists.
+// vacuously green. README.md, audited here, states the count 4 times; the
+// shipped Codex instructions state it 3 times; the doctor skill's prose is
+// owned elsewhere and is free to state it once, so its floor is the weakest
+// one that still proves a mention exists.
 const DOC_HOOK_COUNT_FILES: Readonly<Record<string, number>> = {
   'README.md': 4,
   'src/modules/skills/skills-catalog/traffic-one-doctor/SKILL.md': 1,
+  'src/gen/static/plugin-instructions.md': 3,
 };
 
-test('README.md and the shipped doctor skill state the real Codex hook count', () => {
+test('README.md, plugin instructions, and the shipped doctor skill state the real Codex hook count', () => {
   for (const [relPath, minMatches] of Object.entries(DOC_HOOK_COUNT_FILES)) {
     const normalized = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8').replace(/\s+/g, ' ');
     let found = 0;

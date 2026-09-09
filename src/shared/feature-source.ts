@@ -4,6 +4,7 @@
 // how to extract write targets from apply_patch text / shell commands.
 // Ported 1:1 from scripts/hook-runtime/handlers/_helpers.cjs.
 
+import { canonicalizeStateDirSegments, STATE_DIR, STATE_DIR_SEGMENT_SOURCE } from '../config/paths';
 import { activeAgentRole, isSubagentSession } from './state';
 import type { RunAgentContext } from './state/run-agent';
 import { parseApplyPatch, patchOperationPaths } from './apply-patch';
@@ -15,18 +16,21 @@ import {
   DESTRUCTIVE_VERB,
   EVAL_FLAG,
   EVAL_WRITE_MATCH_SOURCE,
-  HEREDOC_OPERATOR_SOURCE,
   heredocReaderIsInterpreter,
+  visibleHeredocSites,
   INTERPRETER_NAME,
   IN_PLACE_EDITORS,
   IN_PLACE_EDITOR_RE,
   NAMED_OUTPUT_TOOL,
   namedOutputDestinations,
   OVERWRITE_TOOL,
+  pathIsReadOnlyInText,
   REPLACING_COMPRESSOR,
   SHELL_NAME,
+  SHELL_RESERVED_WORDS,
   trafficOnePathLiterals,
   trafficOnePathsNamedOutsideRead,
+  TRANSPARENT_COMMAND_PREFIXES,
   VERB_ANCHOR,
   withShellValuesResolved,
 } from './shell-vocabulary';
@@ -262,9 +266,22 @@ function interpreterEvalBodies(command: string): string[] {
 // `architecture-input-shell-unverified` — three spellings of one capability,
 // one of them in the vocabulary. The inverse question answers all three without
 // knowing any of them, and answers the fourth nobody has written yet.
+//
+// Case-fold (Phase 2c / 3d): TRAFFIC_ONE_PATH_RE is exact-case `.traffic-one`
+// by design — non-state paths stay exact-case (2c residual). The committed
+// state file is the exception. Known write verbs already fire
+// EVAL_BODY_WRITE_RE without a path, so `open('.Traffic-One/.one.json','w')`
+// denies. An unknown verb that ONLY names the folded path
+// (`zipfile.ZipFile('.Traffic-One/.one.json','w')`) never reaches that
+// alternation and never matches TRAFFIC_ONE_PATH_RE, so the inverse question
+// has to see the literal `stateFilePathLiterals` finds. Same
+// `pathIsReadOnlyInText` allowlist; `isStateFileWriteTarget` keeps the extra
+// literals on the state file itself.
 export function interpreterEvalWrite(command: string): boolean {
   return interpreterEvalBodies(command).some((body) => (
-    EVAL_BODY_WRITE_RE.test(body) || trafficOnePathsNamedOutsideRead(body).length > 0
+    EVAL_BODY_WRITE_RE.test(body)
+    || trafficOnePathsNamedOutsideRead(body).length > 0
+    || stateFileNamedOutsideRead(body)
   ));
 }
 
@@ -350,22 +367,119 @@ function destructiveShellVerb(scanned: string): boolean {
 // missing, so `fish -c 'rm <record>'` had its body stripped as data.
 const NESTED_SHELL_EXEC_RE = new RegExp(String.raw`\b${SHELL_NAME}\b(?:\\\n|[^\n;|&])*\s-[a-zA-Z]*c\b`);
 
-// Quoted spans are DATA to the outer shell: `awk '{ if (length > m) … }'`,
-// `echo "usage: cmd > out"`, and grep patterns must not read as redirects or
-// rm/cp/tee tokens. Observed 5cl-claude: the frontend's own collapse
-// self-check (`for f in $(find …); do wc -L "$f"; done` beside an awk
-// comparison) was denied as an "implementation write via shell command" — the
-// gate blocked exactly the read-only verification the workflow asks for.
-// Replace each span with a space to preserve token boundaries; keep the scan
-// raw when the command execs a nested shell, whose quoted body is real code.
+// Quoted spans are DATA to the outer shell UNLESS they sit in command position
+// (`"rm" -rf src`). Blanking every quote made that spelling invisible; unquoting
+// the whole text would make `git commit -m "rm -rf src/old"` look destructive.
+// Command position is after `^`, `;`, `&&`, `||`, `|`, `$(`, backtick, and after
+// a reserved word / assignment / transparent prefix (`env "rm"`). Other quoted
+// spans stay blanked. Nested-shell bodies stay raw — their quotes are code.
 function stripQuotedSegments(command: string): string {
   if (NESTED_SHELL_EXEC_RE.test(command)) return command;
-  return command.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, ' ');
+  return unquoteCommandPositionTokens(command);
+}
+
+function unquoteCommandPositionTokens(command: string): string {
+  let out = '';
+  let index = 0;
+  let commandPosition = true;
+  const finishToken = (token: string): void => {
+    const verb = token.replace(/^\\/, '').slice(token.replace(/^\\/, '').lastIndexOf('/') + 1);
+    commandPosition = TRANSPARENT_COMMAND_PREFIXES.has(verb)
+      || SHELL_RESERVED_WORDS.has(verb)
+      || /^[A-Za-z_]\w*=/.test(token);
+  };
+  while (index < command.length) {
+    const character = command[index]!;
+    if (character === ' ' || character === '\t') {
+      out += character;
+      index += 1;
+      continue;
+    }
+    if (character === ';' || character === '\n') {
+      out += character;
+      index += 1;
+      commandPosition = true;
+      continue;
+    }
+    if (character === '&' && command[index + 1] === '&') {
+      out += '&&';
+      index += 2;
+      commandPosition = true;
+      continue;
+    }
+    if (character === '|' && command[index + 1] === '|') {
+      out += '||';
+      index += 2;
+      commandPosition = true;
+      continue;
+    }
+    if (character === '|') {
+      out += '|';
+      index += 1;
+      commandPosition = true;
+      continue;
+    }
+    if (character === '&') {
+      out += character;
+      index += 1;
+      commandPosition = true;
+      continue;
+    }
+    if (character === '$' && command[index + 1] === '(') {
+      out += '$(';
+      index += 2;
+      commandPosition = true;
+      continue;
+    }
+    if (character === '`') {
+      out += '`';
+      index += 1;
+      commandPosition = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      const quote = character;
+      let inner = '';
+      index += 1;
+      while (index < command.length) {
+        const next = command[index]!;
+        if (quote === '"' && next === '\\') {
+          inner += command[index + 1] ?? '';
+          index += 2;
+          continue;
+        }
+        if (next === quote) { index += 1; break; }
+        inner += next;
+        index += 1;
+      }
+      if (commandPosition) {
+        out += inner;
+        finishToken(inner);
+      } else {
+        out += ' ';
+      }
+      continue;
+    }
+    let token = '';
+    while (index < command.length) {
+      const next = command[index]!;
+      // `$` starts a parameter (`$PKG`, `${FOO}`). Do not treat it as a token
+      // break: `$(` is already handled above, and breaking here never advances
+      // the index (`rm -rf …/$PKG` spun forever).
+      if (/[\s;&|`'"\n]/.test(next)) break;
+      token += next;
+      index += 1;
+    }
+    out += token;
+    if (commandPosition) finishToken(token);
+    else commandPosition = false;
+  }
+  return out;
 }
 
 export function shellCommandHasWritePrimitive(command: string): boolean {
   const scanned = stripQuotedSegments(command);
-  const hasOutputRedirect = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(scanned);
+  const hasOutputRedirect = /(?:^|[\s;&|\w"')}\x60])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(scanned);
   return hasOutputRedirect
     || /\btee\b/.test(scanned)
     || /\bcat\b[\s\S]*<</.test(scanned)
@@ -422,13 +536,20 @@ interface HeredocSpan {
  *
  * Walked once here so `stripHeredocBodies`, `heredocBodies` and the eval-body
  * scan cannot disagree about where a body starts and ends.
+ *
+ * Sites come from `visibleHeredocSites`: `<<` is found on the mask (quoted /
+ * comment / backtick / arithmetic `<<` stay invisible) and the operator is
+ * matched on the original at that index so delimiter quotes on `<<'EOF'`
+ * stay part of the operator. A visible `<<` that is not an operator (`cat <<`)
+ * is not a span — it must not swallow the next command as a "body".
  */
 function heredocSpans(command: string): HeredocSpan[] {
-  const heredocRe = new RegExp(HEREDOC_OPERATOR_SOURCE, 'g');
   const spans: HeredocSpan[] = [];
   let cursor = 0;
-  for (let m = heredocRe.exec(command); m; m = heredocRe.exec(command)) {
-    if (m.index < cursor) continue; // operator text inside an already-walked body
+  for (const site of visibleHeredocSites(command)) {
+    if (site.index < cursor) continue; // operator text inside an already-walked body
+    const m = site.match;
+    if (!m) continue;
     const term = m[1] || m[2] || m[3] || '';
     const operatorEnd = m.index + m[0].length;
     const bodyStart = command.indexOf('\n', operatorEnd);
@@ -440,7 +561,6 @@ function heredocSpans(command: string): HeredocSpan[] {
     spans.push({ bodyStart, bodyEnd, interpreterRead, unterminated: !terminator });
     if (!terminator) break;
     cursor = bodyEnd;
-    heredocRe.lastIndex = cursor;
   }
   return spans;
 }
@@ -510,6 +630,35 @@ export function shellWriteTargetsStateDir(command: unknown): boolean {
 }
 
 /**
+ * Redirect/tee whose every destination is the committed state file.
+ *
+ * Sibling of `shellWriteTargetsStateDir`: a heredoc whose BODY cites `src/`
+ * must not be treated as a feature-source shell write just because `.one.json`
+ * became a visible target. Interpreter/in-place/destructive primitives disable
+ * the carve-out — those still become gate targets and hit the state-file shell
+ * deny. This is NOT an allow; it only keeps architect-scope / run-team from
+ * judging the state file as product source.
+ */
+export function shellWriteTargetsStateFile(command: unknown): boolean {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const scanned = stripHeredocBodies(command);
+  if (interpreterEvalWrite(scanned)) return false;
+  if (inPlaceEditFlag(scanned)) return false;
+  if (destructiveShellVerb(scanned)) return false;
+  if (/(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(scanned)) return false;
+  const targets: string[] = [];
+  const redirectRe = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)((?:"[^"]+")|(?:'[^']+')|[^\s;&|<>]+)/g;
+  for (let m = redirectRe.exec(scanned); m; m = redirectRe.exec(scanned)) { if (m[1]) targets.push(m[1]); }
+  const teeRe = /\btee\b(?:\s+-[a-zA-Z]+)*\s+((?:"[^"]+")|(?:'[^']+')|[^\s;&|]+)/g;
+  for (let m = teeRe.exec(scanned); m; m = teeRe.exec(scanned)) { if (m[1]) targets.push(m[1]); }
+  if (targets.length === 0) return false;
+  return targets.every((raw) => {
+    const target = raw.replace(/^['"]|['"]$/g, '').replace(/\\/g, '/');
+    return isStateFileWriteTarget(target);
+  });
+}
+
+/**
  * Exact-ish Traffic One artifact targets named by a mutating shell command.
  * Heredoc bodies are stripped first so prose inside a digest cannot invent
  * extra targets — except when an interpreter or a shell is READING the heredoc,
@@ -540,9 +689,63 @@ export function shellWriteTargetsStateDir(command: unknown): boolean {
  * reviewer's findings is a visible write target: the finding-satisfiability
  * gate must judge it. It adds no ownership deny — fix-cycle notes match no
  * run-artifact/sidecar contract.
+ *
+ * `.one.json` is included so a shell redirect/tee/interpreter write of the
+ * committed state file is a per-target gate path. Case-fold (Phase 2c): the
+ * filter canonicalizes the state-dir segment and also admits `isStateFileWriteTarget`,
+ * so `.Traffic-One/.one.json` is visible. It is NOT feature source — readiness
+ * and run-team still key on FEATURE_SOURCE_RE / compiled roots, not this list.
  */
 const VISIBLE_WRITE_TARGET_RE =
-  /^(?:\/[^\s]*\/)?(?:\.\/)?\.traffic-one\/(?:(?:runs|digests|reports|fix-cycles)\/.+|deployments\.jsonl)$/;
+  /^(?:\/[^\s]*\/)?(?:\.\/)?\.traffic-one\/(?:(?:runs|digests|reports|fix-cycles)\/.+|deployments\.jsonl|\.one\.json)$/;
+
+const STATE_FILE_POSIX = `${STATE_DIR}/.one.json`;
+
+/** Project-relative or suffixed `.traffic-one/.one.json`, ASCII-case-folded. */
+export function isStateFileWriteTarget(target: string): boolean {
+  const normalized = target.replace(/\\/g, '/').replace(/^\.\//, '');
+  const folded = canonicalizeStateDirSegments(normalized);
+  return folded === STATE_FILE_POSIX || folded.endsWith(`/${STATE_FILE_POSIX}`);
+}
+
+function isVisibleWriteTarget(target: string): boolean {
+  const folded = canonicalizeStateDirSegments(target.replace(/\\/g, '/'));
+  return VISIBLE_WRITE_TARGET_RE.test(folded) || isStateFileWriteTarget(folded);
+}
+
+/**
+ * Inverse-question arm for the committed state file under 2c case-fold.
+ * `trafficOnePathsNamedOutsideRead` cannot see `.Traffic-One/.one.json`
+ * because TRAFFIC_ONE_PATH_RE is exact-case; this asks the same read
+ * question of the literals that extractor misses.
+ */
+function stateFileNamedOutsideRead(text: string): boolean {
+  return stateFilePathLiterals(text).some(
+    (literal) => isStateFileWriteTarget(literal) && !pathIsReadOnlyInText(text, literal),
+  );
+}
+
+/**
+ * State-file literals the shared extractor misses because TRAFFIC_ONE_PATH_RE
+ * is exact-case `.traffic-one`. Walks left for a directory prefix so
+ * `/abs/.Traffic-One/.one.json` stays one path. Fed to both the write-target
+ * extractor and `interpreterEvalWrite`'s inverse-question arm.
+ */
+function stateFilePathLiterals(text: string): string[] {
+  const re = new RegExp(`${STATE_DIR_SEGMENT_SOURCE}/\\.one\\.json`, 'g');
+  const found: string[] = [];
+  for (const match of text.matchAll(re)) {
+    const end = (match.index ?? 0) + match[0].length;
+    let start = match.index ?? 0;
+    while (start > 0) {
+      const previous = text[start - 1]!;
+      if (/[\s'"`,;|&<>()[\]{}=:]/.test(previous)) break;
+      start -= 1;
+    }
+    found.push(text.slice(start, end));
+  }
+  return found;
+}
 
 /**
  * NORMALISED BEFORE EXTRACTION, and the normalisation is shared rather than
@@ -566,9 +769,9 @@ export function shellTrafficOneWriteTargets(command: unknown): string[] {
   const scanned = withShellValuesResolved(stripHeredocBodies(command));
   if (!shellCommandHasWritePrimitive(scanned)) return [];
   const targets: string[] = [];
-  for (const literal of trafficOnePathLiterals(scanned)) {
+  for (const literal of [...trafficOnePathLiterals(scanned), ...stateFilePathLiterals(scanned)]) {
     const target = literal.replace(/["'`,;]+$/, '').replace(/\\/g, '/');
-    if (VISIBLE_WRITE_TARGET_RE.test(target)) targets.push(target);
+    if (isVisibleWriteTarget(target)) targets.push(target);
   }
   return [...new Set(targets)];
 }

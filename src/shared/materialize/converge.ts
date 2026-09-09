@@ -32,6 +32,7 @@ import {
 import {
   hasMaterializedProjectAssets,
   materializedContentIsIncomplete,
+  materializedFileHashesDrifted,
   materializedFromDifferentPluginBuild,
 } from './has-assets';
 import { roleContractShortfallSentence, roleContractsNeedConvergence } from './role-contract-status';
@@ -595,12 +596,23 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
   // this repo (shared/build-provenance.ts). This is where a user who upgraded stops
   // silently serving the previous release's rules and skills.
   //
-  // `roleContractsNeedConvergence` is the fifth, and it is the term that makes
+  // `materializedFileHashesDrifted` is the fifth, and it is the term that
+  // makes an AGENT EDIT of a still-present file visible. Presence, declared-set
+  // completeness, and plugin-build identity all pass for a project whose rule,
+  // skill, or generated AGENTS.md was rewritten or truncated in place: the
+  // files are on disk, the manifest still lists them, the build hash did not
+  // move. Only the per-file sha256 stamp disagrees. Answering true is
+  // permission to call the SAME writer — not a new delete/overwrite path —
+  // so a torn plugin root still refuses and leaves every project byte alone
+  // (KNOWN-ISSUES #11). Quiet when the root cannot state a build identity,
+  // same rule as the fourth term.
+  //
+  // `roleContractsNeedConvergence` is the sixth, and it is the term that makes
   // the host's per-role contracts a first-class part of "is this project
-  // current". The four above cannot see them: `hasMaterializedProjectAssets`
+  // current". The five above cannot see them: `hasMaterializedProjectAssets`
   // validates the manifest, root AGENTS.md/CLAUDE.md and every tracked rule and
   // skill, and role contracts are in none of those — so a project whose
-  // `.cursor/agents` is a plain file passes all four, forever, and the contracts
+  // `.cursor/agents` is a plain file passes all five, forever, and the contracts
   // that define every spawned role stay absent for the life of the plugin build.
   // Measured before this existed: `materialized` with ZERO contracts on disk and
   // `materializeProjectIfNeeded` returning null on the very next hook.
@@ -639,6 +651,7 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
     && hasMaterializedProjectAssets(cwd, state)
     && !materializedContentIsIncomplete(cwd, state)
     && !materializedFromDifferentPluginBuild(cwd)
+    && !materializedFileHashesDrifted(cwd)
     && !roleContractsShort) {
     reportOneMcp(cwd, state, trigger);
     return null;

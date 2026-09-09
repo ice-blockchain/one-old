@@ -1024,13 +1024,19 @@ test('recursive gitignore: the member body is the container authority RE-ANCHORE
 
   assertFixture('the container ignore authority', [
     ['it carries at least one pattern', () => authority.length > 0, true],
-    ['every pattern is a .traffic-one entry', () => authority.every((l) => l.startsWith('.traffic-one/')), true],
+    ['every pattern is a .traffic-one entry', () => authority.every((l) => l.includes('.traffic-one/')), true],
   ]);
 
   assert.equal(derived.length, authority.length,
     're-anchoring must not add or drop an entry — the authority decides WHAT git may ignore, this decides WHERE');
-  assert.deepEqual(derived, authority.map((line) => `**/${line}`),
-    'each pattern gains git’s match-in-all-directories prefix and nothing else');
+  // The container authority already ships `**/.traffic-one/…` (match in all
+  // directories). Re-anchoring only prefixes a leftover `.traffic-one/` line;
+  // an already-recursive line is left alone so we do not emit `**/**/`.
+  assert.deepEqual(
+    derived,
+    authority.map((line) => (line.startsWith('.traffic-one/') ? `**/${line}` : line)),
+    'each still-anchored pattern gains git’s match-in-all-directories prefix and nothing else',
+  );
   assert.deepEqual(
     WORKSPACE_MEMBER_GITIGNORE_BODY.split('\n').filter((l) => l.startsWith('#')),
     TRAFFIC_ONE_BLOCK_BODY.split('\n').filter((l) => l.startsWith('#')),
@@ -1802,11 +1808,16 @@ function conflictedRepo(root: string): string {
   return repo;
 }
 
-/** A Go-package-shaped stray: full state, no project marker of its own. */
+/** A Go-package-shaped stray: leaked new-project state, no project marker of its own. */
 function strayNestedRoot(parent: string): string {
   const stray = path.join(parent, 'strategies');
   write(path.join(stray, 'main.go'), 'package strategies\n');
-  writeStateFile(stray, { mode: 'new-project', stack: 'default', onboardingComplete: true });
+  // Same shape as the historical mercury/strategies leak and
+  // workspace-declaration.test.ts: `{ mode: 'new-project' }` without
+  // onboardingComplete. Completed onboarding is project evidence
+  // (`nestedRootHasProjectEvidence`) and would KEEP the tree even when the
+  // resolver climbs — which is a different population than this leak.
+  writeStateFile(stray, { mode: 'new-project' });
   return stray;
 }
 

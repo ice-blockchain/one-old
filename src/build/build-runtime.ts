@@ -42,6 +42,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'one-mcp-host.cjs': './runners/one-mcp-host/index.js',
   'traffic-one-cleanup.cjs': './runners/traffic-one-cleanup/index.js',
   'traffic-one-reset.cjs': './runners/traffic-one-reset/index.js',
+  'traffic-one-workspace.cjs': './runners/traffic-one-workspace/index.js',
   'traffic-one-uninstall.cjs': './runners/traffic-one-uninstall/index.js',
   'run-status.cjs': './runners/run-status/index.js',
   'qa-evidence-runner.cjs': './runners/qa-evidence/index.js',
@@ -166,6 +167,11 @@ export function assertSafeRuntimeOutput(outDir: string): string {
   // redirects outside the real repository must be rejected, not blessed.
   const generatedScripts = path.join(fs.realpathSync.native(REPO_ROOT), 'dist', 'scripts');
   if (isWithin(generatedScripts, candidate)) return candidate;
+
+  const home = canonicalPath(os.homedir());
+  if (candidate === home || isWithin(home, candidate)) {
+    throw new Error(`refusing to clean unsafe runtime output directory: ${candidate}`);
+  }
 
   const tempRoot = canonicalPath(os.tmpdir());
   if (isWithin(tempRoot, candidate) && candidate !== tempRoot) {

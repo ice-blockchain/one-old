@@ -5,7 +5,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { DEPLOY_RE, deployGate } from '../deploy-gate';
+import { pluginVersion } from '../../../config/plugin-identity';
 import { computeProjectFingerprint } from '../../../runners/security-check';
+import { stampState, type Report } from '../../../runners/security-check/lib';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 function withProject(stamps: Record<string, unknown>, fn: (cwd: string) => void): void {
@@ -32,10 +34,47 @@ function ctxFor(cwd: string, command: string): Ctx {
 const nowIso = (): string => new Date().toISOString();
 
 test('DEPLOY_RE matches the gated publish commands, not benign ones', () => {
-  for (const cmd of ['vercel deploy', 'vercel --prod', 'eas submit', 'fly deploy', 'wrangler deploy', 'npm publish', 'pnpm publish', 'gh release create v1']) {
+  for (const cmd of [
+    'vercel deploy',
+    'vercel --prod',
+    'eas submit',
+    'eas update',
+    'eas build --auto-submit',
+    'supabase db push',
+    'supabase db push --linked',
+    'supabase functions deploy my-fn',
+    'supabase functions deploy my-fn --linked',
+    'fly deploy',
+    'wrangler deploy',
+    'netlify deploy --prod',
+    'netlify deploy --dir dist --prod',
+    'firebase deploy',
+    'npm publish',
+    'pnpm publish',
+    'yarn publish',
+    'bun publish',
+    'gh release create v1',
+    'npm run build && vercel deploy',
+    'echo x; supabase db push',
+  ]) {
     assert.ok(DEPLOY_RE.test(cmd), `expected gated: ${cmd}`);
   }
-  for (const cmd of ['npm install', 'pnpm build', 'vercel dev', 'ls -la']) {
+  for (const cmd of [
+    'npm install',
+    'pnpm build',
+    'vercel',
+    'vercel dev',
+    'npx vercel',
+    'echo vercel',
+    'eas build',
+    'netlify deploy',
+    'netlify deploy --dir dist',
+    'supabase functions deploy',
+    'firebase serve',
+    'yarn install',
+    'bun install',
+    'ls -la',
+  ]) {
     assert.ok(!DEPLOY_RE.test(cmd), `expected benign: ${cmd}`);
   }
 });
@@ -72,7 +111,7 @@ test('deploy gate denies a future-dated shipper approval', () => {
 });
 
 test('deploy gate denies a future-dated security check even with a fresh shipper approval', () => {
-  withProject({ lastShipperApprovalAt: nowIso(), lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: futureIso() }, (cwd) => {
+  withProject({ lastShipperApprovalAt: nowIso(), lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: futureIso(), lastSecurityCheckStrict: true }, (cwd) => {
     // The fingerprint is stamped MATCHING, so the only thing left to refuse the
     // deploy is the security stamp's own date. Without that, this deploy is
     // allowed — which is the defect.
@@ -93,7 +132,7 @@ test('deploy gate denies a future-dated security check even with a fresh shipper
 // stamp that is not exactly `now`.
 test('a stamp inside the skew allowance is still an approval', () => {
   const nearFuture = new Date(Date.now() + 60_000).toISOString();
-  withProject({ lastShipperApprovalAt: nearFuture, lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: nearFuture }, (cwd) => {
+  withProject({ lastShipperApprovalAt: nearFuture, lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: nearFuture, lastSecurityCheckStrict: true }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.lastSecurityCheckFingerprint = computeProjectFingerprint(cwd).fingerprint;
@@ -111,7 +150,7 @@ test('deploy gate denies when shipper is fresh but the security check is missing
 });
 
 test('deploy gate denies when the worktree fingerprint changed after the security check', () => {
-  withProject({ lastShipperApprovalAt: nowIso(), lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: nowIso(), lastSecurityCheckFingerprint: 'stale-fingerprint' }, (cwd) => {
+  withProject({ lastShipperApprovalAt: nowIso(), lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: nowIso(), lastSecurityCheckStrict: true, lastSecurityCheckFingerprint: 'stale-fingerprint' }, (cwd) => {
     const r = deployGate(ctxFor(cwd, 'vercel deploy'));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(r.reason.includes('worktree changed'));
@@ -119,7 +158,7 @@ test('deploy gate denies when the worktree fingerprint changed after the securit
 });
 
 test('deploy gate allows a deploy with fresh shipper + passing fingerprint-matched security check', () => {
-  withProject({ lastShipperApprovalAt: nowIso(), lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: nowIso() }, (cwd) => {
+  withProject({ lastShipperApprovalAt: nowIso(), lastSecurityCheckStatus: 'passed', lastSecurityCheckAt: nowIso(), lastSecurityCheckStrict: true }, (cwd) => {
     // The fingerprint excludes the traffic-one stamp fields, so it is stable as
     // we write it back. Stamp the matching fingerprint, then the gate allows.
     const fp = computeProjectFingerprint(cwd).fingerprint;
@@ -128,5 +167,91 @@ test('deploy gate allows a deploy with fresh shipper + passing fingerprint-match
     state.lastSecurityCheckFingerprint = fp;
     fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
     assert.equal(deployGate(ctxFor(cwd, 'vercel deploy')).kind, 'noop');
+  });
+});
+
+test('deploy gate denies a fresh passing stamp that was not a --strict run', () => {
+  withProject({
+    lastShipperApprovalAt: nowIso(),
+    lastSecurityCheckStatus: 'passed',
+    lastSecurityCheckAt: nowIso(),
+    lastSecurityCheckStrict: false,
+  }, (cwd) => {
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.lastSecurityCheckFingerprint = computeProjectFingerprint(cwd).fingerprint;
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    const r = deployGate(ctxFor(cwd, 'vercel deploy'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.equal(r.denyId, 'deploy-gate-security-check-stale');
+      assert.ok(r.reason.includes('--strict'));
+    }
+  });
+});
+
+test('deploy gate denies a legacy stamp that omits lastSecurityCheckStrict', () => {
+  withProject({
+    lastShipperApprovalAt: nowIso(),
+    lastSecurityCheckStatus: 'passed',
+    lastSecurityCheckAt: nowIso(),
+  }, (cwd) => {
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.lastSecurityCheckFingerprint = computeProjectFingerprint(cwd).fingerprint;
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+    const r = deployGate(ctxFor(cwd, 'npm publish'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.equal(r.denyId, 'deploy-gate-security-check-stale');
+      assert.ok(r.reason.includes('--strict'));
+    }
+  });
+});
+
+test('a clean --strict stamp is accepted by the deploy gate with a fresh shipper stamp', () => {
+  withProject({ lastShipperApprovalAt: nowIso(), version: pluginVersion() }, (cwd) => {
+    const fp = computeProjectFingerprint(cwd);
+    const report: Report = {
+      generatedAt: nowIso(),
+      status: 'passed',
+      strict: true,
+      cwd,
+      fingerprint: fp,
+      tools: {},
+      externalReports: {},
+      issues: [],
+    };
+    assert.equal(stampState(cwd, report, '.traffic-one/reports/security.json'), true);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state.lastSecurityCheckStrict, true);
+    assert.equal(state.lastSecurityCheckStatus, 'passed');
+    assert.equal(state.lastSecurityCheckFingerprint, fp.fingerprint);
+    assert.equal(deployGate(ctxFor(cwd, 'vercel deploy')).kind, 'noop');
+  });
+});
+
+test('a clean non-strict stamp does not authorize deploy', () => {
+  withProject({ lastShipperApprovalAt: nowIso(), version: pluginVersion() }, (cwd) => {
+    const fp = computeProjectFingerprint(cwd);
+    const report: Report = {
+      generatedAt: nowIso(),
+      status: 'passed',
+      strict: false,
+      cwd,
+      fingerprint: fp,
+      tools: {},
+      externalReports: {},
+      issues: [],
+    };
+    assert.equal(stampState(cwd, report, '.traffic-one/reports/security.json'), true);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state.lastSecurityCheckStrict, false);
+    const r = deployGate(ctxFor(cwd, 'vercel deploy'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.equal(r.denyId, 'deploy-gate-security-check-stale');
+      assert.ok(r.reason.includes('--strict'));
+    }
   });
 });

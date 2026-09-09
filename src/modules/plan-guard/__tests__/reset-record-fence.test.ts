@@ -33,7 +33,7 @@
 // project-level record, not a stray run id'), so the two cannot silently swap
 // places again — one asserts the accident is gone, the other that the
 // replacement holds.
-import * as assert from 'assert';
+import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -581,6 +581,77 @@ test('reset record: the one legitimate writer is not fenced out by its own gate'
     );
     assert.equal(wrote, true, 'recordReset was refused — the fence has caught the product');
     assert.equal(readResetRecord(f.dir).count, before + 1);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('reset record: a hyphenated heredoc delimiter is still a span', () => {
+  const f = fixture({ runId: OBLIGED_RUN });
+  try {
+    const hyphen = bash(f.dir, `python3 <<'PY-1'\nimport os\nos.remove('${RESETS}')\nPY-1`);
+    assert.equal(hyphen.denyId, 'reset-record-owner-gate');
+    const quoted = bash(f.dir, "echo 'see <<EOF'");
+    assert.ok(!quoted.denied || quoted.denyId !== 'reset-record-owner-gate');
+    const comment = bash(f.dir, '# <<EOF\ntrue');
+    assert.ok(!comment.denied || comment.denyId !== 'reset-record-owner-gate');
+  } finally {
+    f.cleanup();
+  }
+  // No live sidecars: otherwise `python3 <<` is fail-closed by the sidecar
+  // writer first (same unverifiable operator, added before the record).
+  const bare = fixture({ runId: OBLIGED_RUN, runDir: false });
+  try {
+    const unspanned = bash(bare.dir, 'python3 <<');
+    assert.equal(unspanned.denyId, 'reset-record-owner-gate');
+  } finally {
+    bare.cleanup();
+  }
+  // Data `<<` must not swallow the next command as a heredoc body (fail-open).
+  // Same fixture as the directory-wipe row: no run pointer, no live sidecars,
+  // so the record fence is the one that answers.
+  const wipe = fixture({ runId: null, runDir: false });
+  try {
+    const quotedThenRm = bash(wipe.dir, "echo 'see <<EOF'\nrm -rf .traffic-one/runs");
+    assert.equal(quotedThenRm.denyId, 'reset-record-owner-gate');
+    const commentThenRm = bash(wipe.dir, '# <<EOF\nrm -rf .traffic-one/runs');
+    assert.equal(commentThenRm.denyId, 'reset-record-owner-gate');
+  } finally {
+    wipe.cleanup();
+  }
+});
+
+test('reset record: a heredoc body line equal to a real command does not drop the command', () => {
+  const f = fixture({ runId: OBLIGED_RUN });
+  try {
+    const line = `rm -f ${RESETS}`;
+    const collision = bash(f.dir, `${line}\ncat > notes.md <<'EOF'\n${line}\nEOF`);
+    assert.equal(collision.denyId, 'reset-record-owner-gate');
+    const quotedOnly = bash(f.dir, `cat > notes.md <<'EOF'\n${line}\nEOF`);
+    assert.ok(
+      !quotedOnly.denied || quotedOnly.denyId !== 'reset-record-owner-gate',
+      'a digest that only QUOTES the erasure must not hit the record fence',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('reset record: a case-folded .traffic-one segment is still the record', () => {
+  const f = fixture({ runId: null, runDir: false });
+  try {
+    const written = gate(f.dir, 'Write', 'file-edit', {
+      file_path: '.Traffic-One/runs/.resets.json',
+      content: '{}',
+    });
+    assert.equal(written.denyId, 'reset-record-owner-gate');
+    const wiped = bash(f.dir, 'rm -rf .TRAFFIC-ONE');
+    assert.equal(wiped.denyId, 'reset-record-owner-gate');
+    const backup = gate(f.dir, 'Write', 'file-edit', {
+      file_path: '.traffic-one-backup/runs/.resets.json',
+      content: '{}',
+    });
+    assert.equal(backup.denied, false);
   } finally {
     f.cleanup();
   }

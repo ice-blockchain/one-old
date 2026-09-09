@@ -454,9 +454,14 @@ test('an excusable reason forged onto a command that WAS declared is refused', a
     assert.equal(honest.check('stack-test').notApplicable, 'declared-not-runnable',
       'fixture guard: this row forges over a command the project DID declare');
     assert.equal(
-      readStackResolution(cwd, RUN_ID)?.resolved['stack-test'],
+      readStackResolution(cwd, RUN_ID)?.resolved['stack-test']?.declared,
       'declared',
       'fixture guard: the runtime must have recorded that it found a command',
+    );
+    assert.equal(
+      readStackResolution(cwd, RUN_ID)?.resolved['stack-test']?.executed,
+      'not-applicable',
+      'fixture guard: a declared-not-runnable command is executed not-applicable, not passed',
     );
 
     // The forgery, exactly as a tester with a Write tool would perform it: three

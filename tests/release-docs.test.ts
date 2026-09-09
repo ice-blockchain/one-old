@@ -370,42 +370,26 @@ test('the incomplete-installation claim tracks the refusal and the branch that r
   assert.ok(issue(11).includes('An incomplete plugin installation refuses every file change'));
 });
 
-test('the Rust-is-unexercised claim is measured, not remembered', () => {
+test('Rust is exercised by run-sim and is no longer a known-issue', () => {
   const casesDir = path.join(REPO_ROOT, 'src', 'test-environment', 'config', 'cases');
-  const offenders: string[] = [];
-  for (const name of fs.readdirSync(casesDir)) {
-    if (!name.endsWith('.ts')) continue;
-    // Leading \b only: it keeps `trust`/`untrusted`/`crust` out while still claiming
-    // `rustfmt`, `rustc` and `rust-lang`, which do mention Rust. A trailing \b would
-    // drop those three; no boundary at all fails a case for writing ordinary English.
-    if (/\brust|\bcargo/i.test(fs.readFileSync(path.join(casesDir, name), 'utf8'))) offenders.push(name);
-  }
-  assert.deepEqual(
-    offenders,
-    [],
-    'a harness case now mentions Rust — KNOWN-ISSUES.md item 5 claims none does, and must be rewritten or removed',
-  );
-  // The positive control, and it is not decoration: an emptied, moved or
-  // renamed cases directory satisfies the scan above with zero offenders and
-  // certifies nothing. The entry's contrast — Go and Python ARE driven — is
-  // what the same directory has to keep proving, and the entry now quotes the
-  // exact declarations rather than a line count taken on a day nobody recorded.
   const corpus = fs.readdirSync(casesDir)
     .filter((name) => name.endsWith('.ts'))
     .map((name) => fs.readFileSync(path.join(casesDir, name), 'utf8'))
     .join('\n');
-  const text = issue(5);
-  for (const backend of ['go', 'python']) {
-    const declaration = `backend: '${backend}'`;
-    assert.ok(
-      corpus.includes(declaration),
-      `no harness case declares ${declaration} any more — item 5's contrast between the driven backends and Rust is gone`,
-    );
-    assert.ok(
-      text.includes(`\`${declaration}\``),
-      `item 5 no longer quotes ${declaration} as a backend the harness does drive`,
-    );
+  for (const declaration of ["backend: 'go'", "backend: 'python'", "backend: 'rust'"]) {
+    assert.ok(corpus.includes(declaration), `no harness case declares ${declaration}`);
   }
+  const known = read('KNOWN-ISSUES.md');
+  assert.equal(
+    known.includes('\n## 5. '),
+    false,
+    'KNOWN-ISSUES.md item 5 must stay deleted — Rust is driven by sim-new-rust-api',
+  );
+  assert.equal(
+    /Rust projects are not exercised/i.test(known),
+    false,
+    'KNOWN-ISSUES.md still claims Rust is unexercised',
+  );
 });
 
 // Item 6 carries the two claim shapes this document decays through fastest: a
@@ -441,26 +425,34 @@ test('the Windows claims are the measurement, the CI matrix and the asset table'
   walk(path.join(REPO_ROOT, 'src'));
   const text = issue(6);
   assert.ok(branching.length > 0, 'nothing under src/ branches on win32 any more — item 6 describes code that is gone');
-  assert.ok(
-    text.includes(`${branching.length} non-test source files under \`src/\` branch on \`'win32'\``),
-    `item 6 states a stale file count: ${branching.length} non-test source files under src/ carry a 'win32' branch today`,
+  const stated = /(\d+) non-test source files under `src\/` branch on `'win32'`/.exec(text)?.[1];
+  assert.ok(stated, 'item 6 no longer states a win32 file count');
+  assert.equal(
+    Number(stated),
+    branching.length,
+    `KNOWN-ISSUES.md item 6 says ${stated} non-test source files branch on 'win32'; ${branching.length} do`,
   );
 
-  // "None of it runs in CI" — read off the matrix rather than remembered. A
-  // windows runner appearing is the good outcome, and it must take the entry
-  // with it rather than leaving a reader told their platform is unexercised.
+  // Item 6 stays the residual (Job Object / composition), not a claim that CI
+  // has no Windows runner. The matrix now includes windows-latest for
+  // typecheck + npm test; this pin must not demand KNOWN-ISSUES rewrite.
   const workflow = read(path.join('.github', 'workflows', 'generate-check.yml'));
   const matrix = /os:\s*\[([^\]]*)\]/.exec(workflow)?.[1];
   assert.ok(matrix, 'the generate-check OS matrix is gone or reshaped');
   const runners = matrix!.split(',').map((entry) => entry.trim()).filter(Boolean);
-  assert.equal(
-    runners.filter((runner) => /windows/i.test(runner)).length,
-    0,
-    'CI now runs a Windows runner — item 6 says none of the Windows code runs in CI and must be rewritten',
-  );
-  for (const runner of runners) {
+  assert.ok(runners.includes('windows-latest'), 'generate-check matrix dropped windows-latest');
+  for (const runner of runners.filter((name) => !/windows/i.test(name))) {
     assert.ok(text.includes(`\`${runner}\``), `item 6 does not name the CI runner \`${runner}\``);
   }
+  assert.ok(
+    workflow.includes('test:env -- --strict'),
+    'test:env --strict is gone from generate-check.yml — item 6\'s POSIX residual has no subject',
+  );
+  assert.doesNotMatch(
+    workflow.split('test-env-strict:')[1]?.split(/^  [A-Za-z0-9_-]+:/m)[0] ?? '',
+    /windows/i,
+    'test:env must stay off windows-latest',
+  );
 
   // The asset matrix, both directions. The comment at the top of
   // config/managed-runtimes.ts still says tranche 1 is darwin+linux and that
@@ -486,28 +478,25 @@ test('the Windows claims are the measurement, the CI matrix and the asset table'
   );
 });
 
-// Item 7's whole content is an ANCHORING accident, and the scaffold comment
-// beside the constant names the one-line change that fixes it. That makes the
-// entry unusually easy to leave standing after the fix lands, so the pin is
-// written to fail when the defect is REPAIRED as well as when it spreads.
-test('the polyglot-gitignore entry describes the template the scaffold still writes', () => {
+// Item 7 is the already-tracked residual after the recursive template shipped.
+// The pin fails if the template stops being `**/.traffic-one/${entry}` or if
+// the entry stops describing git's refusal to untrack what is already indexed.
+test('the nested gitignore residual is already-tracked, and the template is recursive', () => {
   const scaffold = read(path.join('src', 'shared', 'architecture-contract', 'scaffold-content.ts'));
   const listed = /TRAFFIC_ONE_RUN_STATE_ENTRIES[^=]*=\s*\[([^\]]*)\]/.exec(scaffold)?.[1];
   assert.ok(listed, 'TRAFFIC_ONE_RUN_STATE_ENTRIES is gone or reshaped');
   const entries = [...listed!.matchAll(/'([^']+)'/g)].map((match) => match[1] as string);
   const text = issue(7);
   assert.ok(entries.includes('runs/'), `the entry item 7 quotes is gone; the set is now ${entries.join(', ')}`);
-  assert.ok(text.includes('`.traffic-one/runs/`'), 'item 7 no longer quotes the line it says git anchors');
-  // Scoped to the `.map(…)` CALL SITES. The comment beside the constant quotes
-  // the recursive template as the fix it has not applied, so a looser pattern
-  // reads the proposal as if it had shipped.
+  assert.ok(text.includes('already tracked'), 'item 7 no longer describes the already-tracked residual');
+  assert.ok(text.includes('`**/.traffic-one/<entry>`') || text.includes('`**/.traffic-one/runs/`'),
+    'item 7 no longer quotes the recursive template that shipped');
   const templates = [...scaffold.matchAll(/\.map\(\(entry\) => `([^`]*)\$\{entry\}`\)/g)].map((match) => match[1] as string);
   assert.ok(templates.length > 0, 'the gitignore template that consumes the entries is gone or reshaped');
   assert.deepEqual(
     [...new Set(templates)],
-    ['.traffic-one/'],
-    'the run-state gitignore template changed. If it now starts `**/`, the polyglot case is FIXED and KNOWN-ISSUES.md '
-    + 'item 7 must be deleted rather than corrected — it would be telling readers to work around a bug that is gone.',
+    ['**/.traffic-one/'],
+    'the run-state gitignore template is no longer recursive — item 7\'s already-tracked residual assumes it is',
   );
 });
 
@@ -562,12 +551,18 @@ test('the Node-floor entry states the declared floor, in its heading', () => {
   const source = /export function nodeFloorGuardSource\(\): string \{[\s\S]*?\n\}/.exec(guard)?.[0];
   assert.ok(source, 'nodeFloorGuardSource is gone or reshaped');
   assert.ok(source!.includes('process.stderr.write'), 'the below-floor guard no longer writes the line item 9 promises');
-  for (const refusing of ['throw ', 'process.exit']) {
-    assert.ok(
-      !source!.includes(refusing),
-      `the below-floor guard now uses ${refusing.trim()} — item 9 tells the reader Traffic One warns and continues`,
-    );
-  }
+  assert.ok(
+    !source!.includes('throw '),
+    'the below-floor guard now throws — item 9 tells the reader Traffic One does not refuse',
+  );
+  assert.ok(
+    source!.includes('process.exit'),
+    'the below-floor guard must re-exec via process.exit when a managed Node is present',
+  );
+  assert.ok(
+    source!.includes('Continuing anyway'),
+    'the below-floor guard must still warn and continue when no managed Node is available',
+  );
 });
 
 // ── privacy ──────────────────────────────────────────────────────────────────

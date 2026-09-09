@@ -63,6 +63,7 @@ export const RUNNER_SHIMS: ReadonlyArray<{ shim: string; rel: string }> = [
   { shim: 'one-mcp-report.cjs', rel: 'scripts/one-mcp-report.cjs' },
   { shim: 'traffic-one-cleanup.cjs', rel: 'scripts/traffic-one-cleanup.cjs' },
   { shim: 'traffic-one-reset.cjs', rel: 'scripts/traffic-one-reset.cjs' },
+  { shim: 'traffic-one-workspace.cjs', rel: 'scripts/traffic-one-workspace.cjs' },
   { shim: 'doctor.cjs', rel: 'scripts/doctor.cjs' },
   { shim: 'run-status.cjs', rel: 'scripts/run-status.cjs' },
   { shim: 'qa-evidence-runner.cjs', rel: 'scripts/qa-evidence-runner.cjs' },

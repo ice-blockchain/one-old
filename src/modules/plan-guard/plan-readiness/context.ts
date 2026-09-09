@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { STATE_DIR_SEGMENT_SOURCE } from '../../../config/paths';
 import { readRegularFile } from '../../../shared/bounded-read';
 import { readJson, writeJson } from '../../../shared/fsjson';
 import { appendQualityFindings } from '../../../shared/state/quality-findings';
@@ -13,10 +14,10 @@ export type Rec = Record<string, unknown>;
 type Vars = Record<string, string | number | null | undefined>;
 export type Block = (name: string, fallback: string, vars?: Vars) => string;
 
-export const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
-export const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json$/;
-export const ARCHITECTURE_INPUT_RE = /(^|\/)\.traffic-one\/runs\/([^/]+)\/architecture-input-v1\.json$/;
-export const RUN_RUNTIME_SIDECAR_RE = /^\.traffic-one\/runs\/([^/]+)\/(.+)$/;
+export const PLAN_FILE_RE = new RegExp(`(^|/)${STATE_DIR_SEGMENT_SOURCE}/plan\\.md$`);
+export const ASSIGNMENTS_FILE_RE = new RegExp(`(^|/)${STATE_DIR_SEGMENT_SOURCE}/runs/[^/]+/assignments\\.json$`);
+export const ARCHITECTURE_INPUT_RE = new RegExp(`(^|/)${STATE_DIR_SEGMENT_SOURCE}/runs/([^/]+)/architecture-input-v1\\.json$`);
+export const RUN_RUNTIME_SIDECAR_RE = new RegExp(`^${STATE_DIR_SEGMENT_SOURCE}/runs/([^/]+)/(.+)$`);
 // The project-level reset record, which this regex CANNOT match and must not be
 // widened to: it sits one directory above any run id, deliberately, so that the
 // reset it records cannot walk away from it and a retention sweep (which
@@ -31,7 +32,7 @@ export const RUN_RUNTIME_SIDECAR_RE = /^\.traffic-one\/runs\/([^/]+)\/(.+)$/;
 // the refusal and collided with the sidecar scan's live-run narrowing, which
 // reads the record's own filename as a foreign run id and filters it back out.
 export const RESET_RECORD_REL = '.traffic-one/runs/.resets.json';
-export const RESET_RECORD_RE = /^\.traffic-one\/runs\/\.resets\.json$/;
+export const RESET_RECORD_RE = new RegExp(`^${STATE_DIR_SEGMENT_SOURCE}/runs/\\.resets\\.json$`);
 // NOTE: RUN_DIGEST_ARTIFACT_RE deliberately does NOT accept the `opencode-`
 // prefix: it feeds the run-artifact OWNERSHIP gate, and edits to a plan-unit
 // digest must stay writable by the parent. The COMPLETION regexes below DO

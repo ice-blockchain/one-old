@@ -30,6 +30,7 @@ import {
   recordStackResolution,
   type QaReportV2,
   type QaStackResolutionOutcome,
+  type QaStackResolvedCheckV1,
 } from '../../shared/qa-report-v2';
 
 import { MAX_TIMEOUT_MS } from './cli';
@@ -175,12 +176,26 @@ export function resolveStackCommand(
   }
 
   if (exists(cwd, 'Cargo.toml')) {
-    if (check === 'stack-build') return { command: 'cargo', args: ['build', '--locked'], cwd, source: 'Cargo.toml' };
-    if (check === 'stack-test') return { command: 'cargo', args: ['test', '--locked'], cwd, source: 'Cargo.toml' };
-    // clippy is a separate component and may not be installed; only claim it
-    // when the project pinned it.
-    if (check === 'stack-lint' && exists(cwd, 'clippy.toml')) {
-      return { command: 'cargo', args: ['clippy', '--locked'], cwd, source: 'clippy.toml' };
+    // Canonical cargo forms. `--locked` only when the project pinned a lockfile
+    // — a greenfield crate has none, and requiring one made every new Rust run
+    // fail stack-build before a test ever ran. A present Cargo.lock still
+    // pins the graph the way `cargo build --locked` does on an existing repo.
+    const locked = exists(cwd, 'Cargo.lock') ? ['--locked'] : [];
+    if (check === 'stack-build') {
+      return { command: 'cargo', args: ['build', ...locked], cwd, source: 'Cargo.toml' };
+    }
+    if (check === 'stack-test') {
+      return { command: 'cargo', args: ['test', ...locked], cwd, source: 'Cargo.toml' };
+    }
+    // Clippy is a rustup component, not a project file. Claiming it only when
+    // clippy.toml existed left every ordinary crate with no lint command, so
+    // api-only Rust could never satisfy stack-lint. A missing clippy binary
+    // is declared-not-runnable (INCONCLUSIVE), the same as a missing `go`/`pytest`.
+    if (check === 'stack-lint') {
+      return { command: 'cargo', args: ['clippy', ...locked], cwd, source: 'Cargo.toml' };
+    }
+    if (check === 'stack-format') {
+      return { command: 'cargo', args: ['fmt', '--check'], cwd, source: 'Cargo.toml' };
     }
   }
 
@@ -616,16 +631,22 @@ export async function runStackChecks(
   heartbeatMs?: number,
 ): Promise<QaReportV2['checks']> {
   const checks: QaReportV2['checks'] = [];
-  const resolved: Record<string, QaStackResolutionOutcome> = {};
+  const resolved: Record<string, QaStackResolvedCheckV1> = {};
   for (const id of required) {
     const outcome = await runStackCheck(args, id, heartbeatMs);
     checks.push(outcome.check);
-    resolved[id] = outcome.resolution;
+    resolved[id] = {
+      declared: outcome.resolution,
+      executed: outcome.check.status,
+    };
   }
   // The runtime's own record of what it found, in the run directory no agent may
-  // write. `validateQaReportV2` requires it to agree before it excuses a check,
-  // so a report claiming `no-command-declared` for a command this run actually
-  // resolved is refused however convincingly the report is written. A refused
+  // write. Each id carries both the declaration and the executed check status.
+  // `validateQaReportV2` requires `executed: passed` before it accepts a
+  // `passed` claim on a stack-only contract, and requires the declaration to
+  // agree before it excuses a check, so a report claiming either without a
+  // matching runtime record is refused however convincingly the report is
+  // written. A refused
   // write is announced rather than swallowed: the run still publishes, and the
   // validator then refuses every exemption for it, which is a diagnosable deny
   // rather than a silent loss of the binding.

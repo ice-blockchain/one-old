@@ -9,6 +9,8 @@ import {
   commandFromToolInput,
   isMutatingPreToolUse,
   isOnboardingBootstrapCommand,
+  isOnboardingMutatingShell,
+  isOnboardingReadOnlyShell,
   isOnboardingSetTechCommand,
   isOnboardingWaitCommand,
   isReadOnlyOrientationToolUse,
@@ -17,13 +19,26 @@ import {
   isStateFileOnlyWritePatch,
   isStateFilePath,
   isTrafficOneDoctorCommand,
+  isTrafficOneResetCommand,
+  isTrafficOneSecurityCheckCommand,
+  isTrafficOneWorkspaceCommand,
+  namesDoctorUnblock,
   isWriteLikeToolName,
   normalizedToolName,
   onboardingSetTechMemberSelector,
   parsedToolInput,
 } from '../tool-classify';
 import type { ToolInput } from '../../core/types';
-import { doctorScriptPath, doctorShimPath, gateExemptDoctorScriptPaths, selfRelativePluginRoot } from '../doctor-command';
+import { doctorCommand, doctorScriptPath, doctorShimPath, gateExemptDoctorScriptPaths, selfRelativePluginRoot } from '../doctor-command';
+import { resetCommand } from '../reset-command';
+import { convertToContainerCommand, convertToContainerYesCommand } from '../workspace-command';
+import {
+  gateExemptSecurityCheckScriptPaths,
+  securityCheckRunnerRel,
+  securityCheckScriptPath,
+  securityCheckShimPath,
+  securityCheckStampCommand,
+} from '../security-check-command';
 import { RUNNER_SHIMS, documentedBinDir, shimSource } from '../runner-shims';
 import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSetTechCommand, onboardingSetTechCommandTemplate, onboardingUseBootstrapCommand, onboardingUseCommand, onboardingWaitCommand } from '../onboarding-server/wait-command';
 
@@ -37,6 +52,10 @@ test('tool-name classification (host-prefixed names normalized)', () => {
   assert.equal(isShellToolName('Write'), false);
   assert.equal(isWriteLikeToolName('Edit'), true);
   assert.equal(isWriteLikeToolName('apply_patch'), true);
+  assert.equal(isWriteLikeToolName('NotebookEdit'), true);
+  assert.equal(isWriteLikeToolName('create'), true);
+  assert.equal(isWriteLikeToolName('str_replace_editor'), true);
+  assert.equal(isWriteLikeToolName('view'), false);
   assert.equal(commandFromToolInput({ command: 'ls' }), 'ls');
   assert.equal(commandFromToolInput({ cmd: 'ls' }), 'ls');
   // Windsurf/Devin pre_run_command payloads carry the command as `command_line`.
@@ -108,6 +127,9 @@ test('isStateFilePath matches the .one.json state files anywhere', () => {
   const legacyRootState = ['.traffic-one', 'json'].join('.');
   assert.equal(isStateFilePath('.traffic-one/.one.json'), true);
   assert.equal(isStateFilePath('a/b/.traffic-one/.one.json'), true);
+  assert.equal(isStateFilePath('.Traffic-One/.one.json'), true);
+  assert.equal(isStateFilePath('a/b/.TRAFFIC-ONE/.one.json'), true);
+  assert.equal(isStateFilePath('.traffic-one-backup/.one.json'), false);
   assert.equal(isStateFilePath(legacyRootState), false);
   assert.equal(isStateFilePath('src/x.ts'), false);
 });
@@ -115,6 +137,11 @@ test('isStateFilePath matches the .one.json state files anywhere', () => {
 test('isMutatingPreToolUse flags writes/edits/mutating shell, allows read-only', () => {
   assert.equal(isMutatingPreToolUse('Write', { file_path: 'x' }), true);
   assert.equal(isMutatingPreToolUse('Edit', { old_string: 'a', new_string: 'b' }), true);
+  // NotebookEdit / Copilot create+str_replace_editor are write-like by name,
+  // even when the payload uses notebook_path/new_source instead of content.
+  assert.equal(isMutatingPreToolUse('NotebookEdit', { notebook_path: 'n.ipynb' }), true);
+  assert.equal(isMutatingPreToolUse('create', { path: 'x.ts' }), true);
+  assert.equal(isMutatingPreToolUse('str_replace_editor', { path: 'x.ts' }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: 'rm -rf x' }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: 'echo hi > f' }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: 'ls -la' }), false);
@@ -162,6 +189,136 @@ test('isReadOnlyOrientationToolUse allows orientation, not mutation/spawns', () 
   assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'pwd' }), true);
   assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'rm x' }), false);
   assert.equal(isReadOnlyOrientationToolUse('Task', {}), false);
+});
+
+test('isOnboardingReadOnlyShell is an allowlist: unknown command-position verbs are mutating', () => {
+  const orientation = [
+    'pwd',
+    'ls',
+    'git status',
+    'ls -la /p 2>/dev/null',
+    'python analyze.py',
+    'ls -la /p 2>/dev/null; echo "---"; ls -la /p/.traffic-one 2>/dev/null | head -40',
+    // fd-to-fd `&` is a redirect, not a background separator.
+    'ls 2>&1',
+    // Double-quoted substitution is lifted; a read inner stays orientation.
+    'echo "$(git status)"',
+    // Single-quoted `$(…)` is data (the shell does not run it).
+    "echo '$(pwd)'",
+    // Process substitution with a read inner is still orientation.
+    'ls <(git status)',
+    // Single-quoted `<(…)` is data (the shell does not run it).
+    "echo '<(git add .)'",
+  ];
+  for (const command of orientation) {
+    assert.equal(isOnboardingReadOnlyShell(command), true, command);
+    assert.equal(isOnboardingMutatingShell(command), false, command);
+  }
+
+  const misses = [
+    '"rm" -rf src',
+    String.raw`\rm -rf src`,
+    '/bin/rm -rf src',
+    "bash -c 'ls'",
+    'eval ls',
+    'sh x.sh',
+    "python3 <<'PY'\nprint(1)\nPY",
+    'node -p 1',
+    'python3.12 -c "print(1)"',
+    "perl -pi -e 's/a/b/' f",
+    'sed -Ei s/a/b/ f',
+    'ls>out.txt',
+    'rsync a b',
+    'patch f < diff.patch',
+    'install -m 644 a b',
+    'curl -o dest https://example.com',
+    'git add .',
+    'git commit -m x',
+    'git checkout main',
+    'git push',
+    'python3 -c "print(1)"',
+    // Background `&` is a statement separator; the second verb is judged.
+    'ls & git add .',
+    'ls & python3 -c \'open("x","w")\'',
+    'ls & sh x.sh',
+    'ls & sed -Ei s/a/b/ f',
+    // Double-quoted substitution is live (unlike single-quoted data).
+    'echo "$(git add .)"',
+    'echo "$(python3.12 -c \'print(1)\')"',
+    'echo "`git add .`"',
+    // Process substitution is lifted like `$()` (unquoted and double-quoted).
+    'ls <(git add .)',
+    'ls <(python3 -c "open(\'x\',\'w\')")',
+    'echo "<(git add .)"',
+    // Unmatched `<(…)` fail-closes (null), not "verb is ls".
+    'ls <(git add .',
+    // `>(…)` stays a write redirect, not a lifted substitution.
+    'ls >(true)',
+    // Unknown command-position verbs fail closed.
+    'foobar',
+    'make',
+  ];
+  for (const command of misses) {
+    assert.equal(isOnboardingReadOnlyShell(command), false, command);
+    assert.equal(isOnboardingMutatingShell(command), true, command);
+  }
+});
+
+test('isReadOnlyOrientationToolUse uses the onboarding allowlist for the shell half', () => {
+  assert.equal(isReadOnlyOrientationToolUse('Read', { file_path: 'x' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Glob', {}), true);
+  assert.equal(isReadOnlyOrientationToolUse('Grep', {}), true);
+  assert.equal(isReadOnlyOrientationToolUse('LS', {}), true);
+  assert.equal(isReadOnlyOrientationToolUse('NotebookRead', {}), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'pwd' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'ls' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'git status' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'ls -la /p 2>/dev/null' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'python analyze.py' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'ls 2>&1' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'echo "$(git status)"' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: "echo '$(pwd)'" }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: 'ls <(git status)' }), true);
+  assert.equal(isReadOnlyOrientationToolUse('Bash', { command: "echo '<(git add .)'" }), true);
+
+  for (const command of [
+    '"rm" -rf src',
+    String.raw`\rm -rf src`,
+    '/bin/rm -rf src',
+    "bash -c 'ls'",
+    'eval ls',
+    'sh x.sh',
+    "python3 <<'PY'\nprint(1)\nPY",
+    'node -p 1',
+    'python3.12 -c "print(1)"',
+    "perl -pi -e 's/a/b/' f",
+    'sed -Ei s/a/b/ f',
+    'ls>out.txt',
+    'rsync a b',
+    'patch f < diff.patch',
+    'install -m 644 a b',
+    'curl -o dest https://example.com',
+    'git add .',
+    'ls & git add .',
+    'ls & python3 -c \'open("x","w")\'',
+    'ls & sh x.sh',
+    'ls & sed -Ei s/a/b/ f',
+    'echo "$(git add .)"',
+    'echo "$(python3.12 -c \'print(1)\')"',
+    'echo "`git add .`"',
+    'ls <(git add .)',
+    'ls <(python3 -c "open(\'x\',\'w\')")',
+    'echo "<(git add .)"',
+    'ls <(git add .',
+    'ls >(true)',
+    'foobar',
+    'make',
+  ]) {
+    assert.equal(isReadOnlyOrientationToolUse('Bash', { command }), false, command);
+  }
+
+  // Re-anchor pin: isMutatingPreToolUse stays a denylist and still admits this.
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'python analyze.py' }), false);
 });
 
 test('isStateFileOnlyPatch detects an apply_patch touching only the state file', () => {
@@ -590,4 +747,166 @@ test('the gate-exempt doctor paths never come from a *_PLUGIN_ROOT env var', () 
       else process.env[key] = value;
     }
   }
+});
+
+// ── isTrafficOneSecurityCheckCommand: identity + documented flags only ───────
+// Sibling of doctor/reset, not a widening of either. Exemption means "this is
+// not the state-file shell deny" — never a fail-closed recovery row.
+
+function withGeneratedSecurityCheckShim(run: (shim: string) => void): void {
+  const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-seccheck-shim-')));
+  const home = path.join(scratch, 'home');
+  const saved = [['HOME', process.env.HOME], ['USERPROFILE', process.env.USERPROFILE]] as const;
+  try {
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    const shim = securityCheckShimPath();
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, shimSource(securityCheckRunnerRel()), 'utf8');
+    run(shim);
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+test('isTrafficOneSecurityCheckCommand accepts the documented stamp forms', () => {
+  const script = securityCheckScriptPath();
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: securityCheckStampCommand() }), true, 'printed stamp');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${script} --strict --stamp` }), true, 'absolute + --strict --stamp');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${script} --stamp` }), true, '--stamp alone');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${script} --no-stamp` }), true, '--no-stamp');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${script} --help` }), true, '--help');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${script} -h` }), true, '-h');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${script} --report-dir /tmp/out` }), true, '--report-dir');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${script} --cwd /tmp/proj` }), true, '--cwd');
+  assert.equal(isTrafficOneSecurityCheckCommand('exec_command', { cmd: `node ${script} --strict --stamp` }), true, 'exec_command');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node '${script}' --strict --stamp` }), true, 'quoted path');
+  assert.equal(isTrafficOneSecurityCheckCommand('Write', { command: `node ${script} --strict --stamp` }), false, 'non-shell tool');
+  assert.equal(isTrafficOneSecurityCheckCommand('mcp.Bash', { command: `node ${script} --strict --stamp` }), false, 'qualified MCP name');
+});
+
+test('isTrafficOneSecurityCheckCommand rejects unknown flags, chaining, and forged shims', () => {
+  const script = securityCheckScriptPath();
+  const cases: Array<[string, string]> = [
+    ['unknown flag', `node ${script} --verbose`],
+    ['extra trailing argument', `node ${script} --strict --stamp extra`],
+    ['--report-dir with no value', `node ${script} --report-dir`],
+    ['--report-dir with a flag-shaped value', `node ${script} --report-dir --stamp`],
+    ['&& chaining', `node ${script} --strict --stamp && rm -rf /`],
+    ['; chaining', `node ${script} --strict --stamp; rm -rf /`],
+    ['output redirection', `node ${script} --strict --stamp > .traffic-one/.one.json`],
+    ['npx wrapper', `npx ${script} --strict --stamp`],
+    ['interpreter flag before the script', `node --experimental-vm-modules ${script} --strict --stamp`],
+    ['a different absolute path ending in the basename', 'node /tmp/evil/security-check-runner.cjs --strict --stamp'],
+    ['uppercase Node', `Node ${script} --strict --stamp`],
+    ['leading env assignment', `FOO=bar node ${script} --strict --stamp`],
+    ['~user tilde form', 'node ~root/.traffic-one/bin/security-check-runner.cjs --strict --stamp'],
+  ];
+  for (const [label, command] of cases) {
+    assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command }), false, `${label}: ${command}`);
+  }
+});
+
+test('the security-check grammar accepts the generated ~/.traffic-one/bin shim, including the ~ spelling', () => {
+  withGeneratedSecurityCheckShim((shim) => {
+    assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${shim} --strict --stamp` }), true, 'absolute shim');
+    assert.ok(RUNNER_SHIMS.some((entry) => entry.shim === 'security-check-runner.cjs'), 'shipped runner shim');
+    assert.equal(shim, path.join(documentedBinDir(), 'security-check-runner.cjs'));
+    const home = process.env.HOME || os.homedir();
+    assert.ok(shim.startsWith(`${home}/`), 'shim is under the pinned HOME');
+    const tilde = `~${shim.slice(home.length)}`;
+    assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${tilde} --strict --stamp` }), true, `~ spelling: ${tilde}`);
+    fs.writeFileSync(shim, 'STALE-NOT-GENERATED\n', 'utf8');
+    assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${shim} --strict --stamp` }), false, 'forged shim bytes');
+    fs.rmSync(shim);
+    assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: `node ${shim} --strict --stamp` }), true, 'absent documented shim stays admitted');
+  });
+});
+
+test('security-check does not widen doctor or reset, and they do not admit it', () => {
+  const stamp = securityCheckStampCommand();
+  const doctor = doctorCommand();
+  const reset = resetCommand('1785169657252');
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: doctor }), false);
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: reset }), false);
+  assert.equal(isTrafficOneDoctorCommand('Bash', { command: stamp }), false);
+  assert.equal(isTrafficOneResetCommand('Bash', { command: stamp }), false);
+  assert.equal(isTrafficOneDoctorCommand('Bash', { command: doctor }), true, 'doctor still admits itself');
+  assert.equal(isTrafficOneResetCommand('Bash', { command: reset }), true, 'reset still admits itself');
+  const convert = convertToContainerCommand();
+  assert.equal(isTrafficOneWorkspaceCommand('Bash', { command: convert }), true);
+  assert.equal(isTrafficOneWorkspaceCommand('Bash', { command: convertToContainerYesCommand() }), true);
+  assert.equal(isTrafficOneWorkspaceCommand('Bash', { command: stamp }), false);
+  assert.equal(isTrafficOneWorkspaceCommand('Bash', { command: doctor }), false);
+  assert.equal(isTrafficOneWorkspaceCommand('Bash', { command: reset }), false);
+  assert.equal(isTrafficOneResetCommand('Bash', { command: convert }), false);
+  assert.equal(isTrafficOneDoctorCommand('Bash', { command: convert }), false);
+  assert.equal(isTrafficOneSecurityCheckCommand('Bash', { command: convert }), false);
+});
+
+test('the gate-exempt security-check paths never come from a *_PLUGIN_ROOT env var', () => {
+  const saved = ENV_ROOT_KEYS.map((key) => [key, process.env[key]] as const);
+  try {
+    const baseline = gateExemptSecurityCheckScriptPaths();
+    for (const key of ENV_ROOT_KEYS) {
+      for (const [k] of saved) delete process.env[k];
+      process.env[key] = '/tmp/some/other/root';
+      assert.deepEqual(gateExemptSecurityCheckScriptPaths(), baseline, `${key} must not move the anchor`);
+    }
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+// ── namesDoctorUnblock: fail-closed mint deny, not an exemption widening ─────
+
+function doctorUnblockCommand(): string {
+  return `node ${doctorScriptPath()} --unblock plan-guard.write`;
+}
+
+test('namesDoctorUnblock is true for the mint and every TTY/wrapper spelling', () => {
+  const script = doctorScriptPath();
+  const mint = doctorUnblockCommand();
+  const cases: Array<[string, string]> = [
+    ['direct', mint],
+    ['expect', `expect -c "spawn node ${script} --unblock plan-guard.write"`],
+    ['script -q /dev/null', `script -q /dev/null node ${script} --unblock plan-guard.write`],
+    ['script generally', `script node ${script} --unblock plan-guard.write`],
+    ['python3 pty.spawn', `python3 -c "import pty; pty.spawn(['node', '${script}', '--unblock', 'plan-guard.write'])"`],
+    ['bash -c', `bash -c '${mint}'`],
+    ['sh -c', `sh -c '${mint}'`],
+    ['eval', `eval ${mint}`],
+    ['echo that names the runner', 'echo doctor --unblock'],
+    ['shim ~ spelling', 'node ~/.traffic-one/bin/doctor.cjs --unblock plan-guard.write'],
+    ['foreign doctor.cjs basename', 'node /tmp/evil/doctor.cjs --unblock plan-guard.write'],
+  ];
+  for (const [label, command] of cases) {
+    assert.equal(namesDoctorUnblock(command), true, `${label}: ${command}`);
+  }
+});
+
+test('namesDoctorUnblock is false for read-only doctor, echo --unblock, and reset', () => {
+  const script = doctorScriptPath();
+  const cases: Array<[string, string]> = [
+    ['read-only doctorCommand()', doctorCommand()],
+    ['doctor --bundle', `node ${script} --bundle`],
+    ['doctor --run --bundle', `node ${script} --run 1785169657252 --bundle`],
+    ['echo --unblock without the runner', 'echo --unblock'],
+    ['reset command', resetCommand('run-1')],
+    ['empty', ''],
+    ['--unblocked lookalike', `node ${script} --unblocked`],
+    ['documentation --unblock (not the runner token)', 'echo documentation --unblock'],
+  ];
+  for (const [label, command] of cases) {
+    assert.equal(namesDoctorUnblock(command), false, `${label}: ${command}`);
+  }
+  // The exemption grammar stays closed — this deny is a sibling, not a widening.
+  assert.equal(isTrafficOneDoctorCommand('Bash', { command: doctorUnblockCommand() }), false);
 });

@@ -14,6 +14,7 @@ export const SECURITY_STAMP_FIELDS = [
   'lastSecurityCheckStatus',
   'lastSecurityCheckFingerprint',
   'lastSecurityCheckReport',
+  'lastSecurityCheckStrict',
   'lastShipperApprovalAt',
 ];
 

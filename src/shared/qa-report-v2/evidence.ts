@@ -346,16 +346,27 @@ export function validateLighthouseEvidence(
   if (!absolute || !evidence) {
     return { evidence: null, error: 'Lighthouse evidence sidecar is missing, outside the run QA directory, or hash-invalid.' };
   }
-  if (!build
-    || evidence.runId !== report.runId
+  if (evidence.runId !== report.runId
     || evidence.verificationContractHash !== contract.contractHash
-    || evidence.sourceHash !== sourceHash
+    || evidence.sourceHash !== sourceHash) {
+    return { evidence, error: 'Lighthouse run/source/contract/build identity mismatch.' };
+  }
+  // Served-build coupling is a browser-listener fact. none/nonvisual still
+  // measure performance (this function still runs when `performance.required`)
+  // but the `stack` producer never starts a build-identity server, so comparing
+  // evidence to `report.build` would make the budget unsettleable.
+  if (contract.browserRequired && (
+    !build
     || evidence.buildHash !== build.buildHash
-    || evidence.buildFingerprint !== build.fingerprint) {
+    || evidence.buildFingerprint !== build.fingerprint
+  )) {
     return { evidence, error: 'Lighthouse run/source/contract/build identity mismatch.' };
   }
   const generatedAt = Date.parse(evidence.generatedAt);
-  if (generatedAt < Date.parse(build.startedAt)
+  const notBefore = contract.browserRequired && build
+    ? Date.parse(build.startedAt)
+    : Math.max(Date.parse(contract.baseline.capturedAt), Date.parse(contract.generatedAt));
+  if (generatedAt < notBefore
     || generatedAt > Date.now() + 1_000
     || generatedAt > Date.parse(report.generatedAt)
     || !artifactValid(
@@ -401,7 +412,7 @@ export function validateLighthouseEvidence(
   }
   try {
     const finalUrl = new URL(summary.finalUrl);
-    if (finalUrl.origin !== new URL(build.url).origin) {
+    if (contract.browserRequired && build && finalUrl.origin !== new URL(build.url).origin) {
       return { evidence, error: 'Lighthouse artifact belongs to a different served build origin or port.' };
     }
   } catch {

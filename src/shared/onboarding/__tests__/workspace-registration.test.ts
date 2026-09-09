@@ -366,6 +366,8 @@ test('a directory already onboarded as a project is refused as a workspace conta
   const written = writeWorkspaceMemberRegistry(ws.container, ['api']);
   assert.equal(written.outcome, 'rejected');
   assert.match(written.outcome === 'rejected' ? written.why : '', /already onboarded as a existing-codebase/);
+  assert.match(written.outcome === 'rejected' ? written.why : '', /--convert-to-container/,
+    'the refusal must name the convert command');
 
   const state = readEffectiveState(ws.container, ws.env) as Record<string, unknown>;
   assert.equal(state.mode, 'existing-codebase', 'the project kept its identity');

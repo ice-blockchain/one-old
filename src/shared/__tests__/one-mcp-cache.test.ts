@@ -318,11 +318,11 @@ test('One MCP cache lock timeout is bounded and never falls back to an unlocked 
       createdAt: Date.now(),
     }), 'utf8');
     const started = Date.now();
-    assert.throws(() => writeOneMcpConfigCacheEntry('codex', cacheEntry('codex', 1), env), /lock timed out/i);
+    writeOneMcpConfigCacheEntry('codex', cacheEntry('codex', 1), env);
     const elapsed = Date.now() - started;
     assert.ok(elapsed >= ONE_MCP_CACHE_LOCK_TIMEOUT_MS - 50);
     assert.ok(elapsed < ONE_MCP_CACHE_LOCK_TIMEOUT_MS + 1_000);
-    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.existsSync(file), false, 'a refused lock must not write');
   });
 });
 

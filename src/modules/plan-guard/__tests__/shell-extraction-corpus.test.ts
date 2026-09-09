@@ -700,6 +700,7 @@ const REFUSED_ORDINARY: readonly string[] = [
   'o-node-read-write-elsewhere',
   'o-py-read-unrelated-rm',
   'o-py-read-write-elsewhere',
+  'r-reviewer-digest',
 ];
 
 test('every ground-truthed destruction of a live sidecar is refused at the gate', () => {

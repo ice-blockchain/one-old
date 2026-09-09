@@ -30,6 +30,14 @@ State gate: root .traffic-one/.one.json is missing or incomplete. Write the Traf
 State mode gate: this project was onboarded as `new-project`; rewriting `.traffic-one/.one.json` to any other mode mid-run would disarm the architecture gates that mode selects. An UNRECOGNIZED `mode` counts — `workspace`, `brownfield`, anything the mode table does not name stands the same gates down as `existing-codebase` while the run's compiled architecture and verification contracts stay frozen against the old profile. An empty, absent or null `mode` is refused for a different reason: state normalization repairs it back to `new-project` on the next materialization pass, so the write does not survive as written and any gate reading the file before that pass reads a mode this project never declared. Mode changes go through onboarding, not a state-file edit. If the user explicitly wants this project treated as an existing codebase, re-run Traffic One onboarding.
 <!-- T1BLOCK:END state-mode-downgrade -->
 
+<!-- T1BLOCK:BEGIN state-writer-identity -->
+State writer-identity gate: `activeAgentRole` is a legacy fallback and is not agent-writable. Do not add or change it in `.traffic-one/.one.json`. Parallel workers bind through per-agent run claims (`.traffic-one/runs/<runId>/…`), not a shared field the parent can type. Leave the field absent for new runs; if a legacy value is already on disk, do not replace it.
+<!-- T1BLOCK:END state-writer-identity -->
+
+<!-- T1BLOCK:BEGIN state-file-shell-write -->
+State file shell gate: `.traffic-one/.one.json` is not writable through a shell redirect, `tee`, in-place editor, or interpreter eval (`python -c`, `node -e`, `cat >`). Those channels skip the state-file identity and mode checks that Write/Edit/apply_patch already run. Use the Write or Edit tool so those checks can see the proposed contents. The only sanctioned shell writer is `node ~/.traffic-one/bin/security-check-runner.cjs --strict --stamp`.
+<!-- T1BLOCK:END state-file-shell-write -->
+
 <!-- T1BLOCK:BEGIN materialization-gate -->
 Materialization gate: stack context for {{FINGERPRINT}} has not been materialized on disk yet. Run `node -e "const p=require('node:path'),e=process.env,r=p.resolve(e.TRAFFIC_ONE_PLUGIN_ROOT||e.CURSOR_PLUGIN_ROOT||e.CODEX_PLUGIN_ROOT||e.CLAUDE_PLUGIN_ROOT||process.cwd());process.argv.splice(1,0,'traffic-one-runtime');require(p.join(r,'scripts','hook-runtime.cjs'))" materialize-project` from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, `.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.
 <!-- T1BLOCK:END materialization-gate -->
@@ -105,6 +113,7 @@ Runtime contract gate: `.traffic-one/runs/<runId>/assignments.json` is generated
 Runtime sidecar gate: `{{TARGET}}` is published by the runtime. Do not create, edit, delete, or repair it.
 Read it if you need the contents. To change run state, change the semantic input or invoke the owning runtime transition.
 Write/Edit/apply_patch of this path are refused. Unrecognised shell that names this path is refused.
+A `cat > .traffic-one/digests/<runId>/reviewer.md <<'EOF'` heredoc is also refused here (the ordinary reviewer-digest write); use the Write tool for digest files.
 <!-- T1BLOCK:END runtime-sidecar-owner-gate -->
 
 <!-- T1BLOCK:BEGIN reset-record-owner-gate -->

@@ -1107,7 +1107,12 @@ test('the heal\'s partition is derived from the fixture\'s own listing, not from
       assert.ok(derived.includes(name), `FIXTURE the derivation must see \`${name}\``);
     }
 
-    const planted = [...new Set([...derived, ...MIXED_EXCLUSIONS, ...EXPRESSION_ASSEMBLED_RESIDUE, 'notes.md'])];
+    // `plan.md` is project evidence (retention.ts nestedRootHasProjectEvidence):
+    // planting it here would make this leftover a PROJECT and the heal would
+    // stand down. Covered by retention.test.ts; the partition is about residue
+    // inside a leak, not about the leak verdict.
+    const planted = [...new Set([...derived, ...MIXED_EXCLUSIONS, ...EXPRESSION_ASSEMBLED_RESIDUE, 'notes.md'])]
+      .filter((name) => name !== 'plan.md');
     for (const name of planted) {
       const target = path.join(nested, name);
       if (name === path.basename('.one.json')) continue; // written as a real record below
@@ -1534,6 +1539,7 @@ const ADMISSION_CENSUS: readonly string[] = [
   '.one.json :: PRIVACY.md',
   '.one.json :: src/gen/static/plugin-instructions.md',
   '.one.json :: src/modules/onboarding-gate/skill/SKILL.md',
+  '.one.json :: src/modules/plan-guard/skill/SKILL.md',
   '.one.json :: src/modules/rules/rules/common/onboarding.md',
   '.one.json :: src/modules/rules/rules/common/project-memory.md',
   '.one.json :: src/modules/rules/rules/common/senior-engineer-team.md',
@@ -1576,6 +1582,7 @@ const ADMISSION_CENSUS: readonly string[] = [
   'runs :: src/modules/skills/skills-catalog/senior-eng-orchestrator/SKILL.md',
   'runs :: src/modules/skills/skills-catalog/senior-eng-orchestrator/resources/prompt-templates.md',
   'runs :: src/modules/skills/skills-catalog/task-triage/SKILL.md',
+  'runs/.once :: KNOWN-ISSUES.md',
 ];
 
 test('the admission census is pinned file by file, so a new shipped instruction reds', () => {
@@ -1590,8 +1597,8 @@ test('the admission census is pinned file by file, so a new shipped instruction 
   // The empty half, asserted rather than left implied by absence.
   const covered = new Set(ADMISSION_CENSUS.map((row) => row.split(' :: ')[0]!));
   assert.deepEqual(RUNTIME_ENTRY_PATHS.map((rel) => rel.split(path.sep).join('/')).filter((rel) => !covered.has(rel)).sort(),
-    ['.codegraph-build-lock', '.once', '.opencode-heal-lock', 'backups', 'reports/lighthouse', 'runs/.once'],
-    'these six are recognised on the strength of nothing shipped mentioning them beside an authoring verb, and '
+    ['.codegraph-build-lock', '.once', '.opencode-heal-lock', 'backups', 'reports/lighthouse'],
+    'these five are recognised on the strength of nothing shipped mentioning them beside an authoring verb, and '
     + 'that is an assertion, not a gap in the table above');
 });
 

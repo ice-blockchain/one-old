@@ -88,12 +88,16 @@ places that are pinned to each other by tests: `package.json`
 `engines: { node: ">=22" }`, `NODE_FLOOR_MAJOR` in `src/shared/node-floor.ts`,
 and the README's prose.
 
-Below the floor, Traffic One **warns and continues** — it never refuses. Every
-generated launcher stamps a version guard that writes one line to stderr naming
-your Node, the floor, and the usual cause. Refusing would be worse than the
-problem: a hook handler that throws becomes a deny no operator override can
-lift, and a launcher that exits early produces no output at all, which hosts read
-as "this gate had nothing to say" — every gate silently off.
+Below the floor, Traffic One **re-execs under a managed Node** from
+`ensureManagedRuntime` when one is present (already cached, or fetched when
+downloads are allowed), and **warns and continues** only when none is available.
+It never refuses. Every generated launcher stamps a version guard that tries
+that handoff before any `require()` of the compiled tree; hook entries retry
+through `ensureManagedRuntime` after stdin is read. Refusing would be worse than
+the problem: a hook handler that throws becomes a deny no operator override can
+lift, and a launcher that exits early without handing off produces no output at
+all, which hosts read as "this gate had nothing to say" — every gate silently
+off.
 
 For completeness rather than as a promise: the newest unguarded language feature
 in the shipped runtime is global `fetch` (Node 18). The floor is deliberately
@@ -114,12 +118,12 @@ is `HOOK_RUNTIME_NODE_BELOW_FLOOR`.
 |---|---|---|
 | macOS | Exercised on every push | `macos-latest` in the `generate-check` CI matrix: typecheck, determinism gates, the full unit + golden suite, compiled-runtime smoke |
 | Linux | Exercised on every push, most thoroughly | `ubuntu-latest` in the same matrix, **plus** the three jobs that run nowhere else: the serial hook-timing/latency budget, `test:env --strict` (the only test of how the gates, the architecture compiler, the QA runner and settlement compose), and `fence-linux`, which runs the path-containment fences where the filesystem is CASE-SENSITIVE — the volume on which the escapes they refuse are reachable, and which no macOS runner provides |
-| Windows | **Code paths exist; no automated coverage** | 21 non-test source files under `src/` branch on `'win32'` (`.cmd` shim resolution, zip extraction, `Expand-Archive` fallback, Defender-lock-tolerant renames, flat npm-prefix layout, and the QA runner's teardown of bounded commands, of the dev server holding the port and of the Lighthouse CLI's Chrome — which has no process group to address there and ends the tree with `taskkill /PID <leader> /T /F` instead, from a leader that has to still be alive — see KNOWN-ISSUES.md §6). No CI job runs on Windows, so none of those branches is exercised the way Windows would run it, and there is no manual certification record either |
+| Windows | **typecheck + `npm test` on every push; composition and Job Object teardown untested** | `windows-latest` in the `generate-check` CI matrix runs typecheck and the unit + golden suite only. `gen`/`build`/`plugin:check`/compiled-runtime smoke and `test:env --strict` stay POSIX. 24 non-test source files under `src/` branch on `'win32'` (`.cmd` shim resolution, zip extraction, `Expand-Archive` fallback, Defender-lock-tolerant renames, flat npm-prefix layout, and the QA runner's teardown of bounded commands, of the dev server holding the port and of the Lighthouse CLI's Chrome — which has no process group to address there and ends the tree with `taskkill /PID <leader> /T /F` instead, from a leader that has to still be alive — see KNOWN-ISSUES.md §6). Job Object teardown is not claimed fixed. There is no manual certification record. |
 
-**Read the Windows row literally.** Traffic One is written to work on Windows and
-has been thought about carefully there — but nothing in this repository proves
-it does, so it is not a supported platform. If you run it on Windows you are the
-test.
+**Read the Windows row literally.** Traffic One now runs typecheck and the unit
+suite on a Windows runner; that is not the composition proof (`test:env`) and
+it is not Job Object teardown. If you run a full shipping workflow on Windows
+you are still the test of those residuals.
 
 The managed-runtime downloader has a matrix of its own, and the asset maps in
 `src/config/managed-runtimes.ts` are what decide it — read those rather than the
@@ -145,15 +149,16 @@ difference.
 Traffic One derives your project's surfaces (web-ui, native-ui, api, cli,
 worker, data) from evidence on disk rather than asking you to declare them.
 The release harness (`npm run test:env -- --strict`) drives complete runs for
-every project shape it models, and needs `go`, `pytest`, `ruff` and a Playwright
-Chromium to do it; a missing toolchain is reported as INCONCLUSIVE rather than
-passing.
+every project shape it models, and needs `go`, `pytest`, `ruff`, `cargo` (plus
+clippy and rustfmt) and a Playwright Chromium to do it; a missing toolchain is
+reported as INCONCLUSIVE rather than passing.
 
-One stack is worth naming because its absence is easy to miss: **Rust is not
-exercised by the release harness.** `rustfmt.toml` scaffolding and Rust-aware
-skip directories (`target/`, `Cargo.lock`) exist in the runtime, but no case in
-`src/test-environment/config/cases/**` drives a Rust project end to end. Treat
-Rust support as untested. See `KNOWN-ISSUES.md`.
+**Rust is exercised by the release harness:** `sim-new-rust-api` in
+`src/test-environment/config/cases/**` declares `backend: 'rust'` and runs
+`cargo build`, `cargo test`, `cargo clippy` and `cargo fmt --check`, and a
+missing `cargo`, `clippy` or `rustfmt` is reported as INCONCLUSIVE, never a
+pass — the same as a missing `go` or `pytest`. `rustfmt.toml` scaffolding and
+Rust-aware skip directories (`target/`, `Cargo.lock`) remain in the runtime.
 
 ---
 

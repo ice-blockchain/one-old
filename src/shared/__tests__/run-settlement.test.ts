@@ -14,8 +14,15 @@ import {
   overrideLedgerPath,
   overrideReconciliationDraft,
   recordOverrideReconciliation,
+  signVerifiedSettlement,
+  verifiedSettlementAuthentic,
 } from '../override';
-import { qaReportV2Path } from '../qa-report-v2';
+import {
+  RUN_SETTLEMENT_MIN_RUNTIME_VERSION,
+  RUN_SETTLEMENT_SCHEMA_VERSION,
+  settlementHash,
+} from '../run-settlement/types';
+import { qaReportV2Path, recordStackResolution } from '../qa-report-v2';
 import {
   SETTLEMENT_RECORD_ILLEGIBLE_CHECK,
   activateRunV2RollbackBarrier,
@@ -99,6 +106,11 @@ function writeStrictVerificationEvidence(cwd: string, runId = 'R'): Verification
   fs.mkdirSync(digests, { recursive: true });
   fs.writeFileSync(path.join(digests, 'reviewer.md'), '# Reviewer\nverdict: APPROVED\n');
   fs.writeFileSync(path.join(digests, 'tester.md'), '# Tester\nverdict: TESTS_GREEN\n');
+  const resolved: Record<string, { declared: 'declared'; executed: 'passed' }> = {};
+  for (const id of contract.requiredChecks) resolved[id] = { declared: 'declared', executed: 'passed' };
+  if (!recordStackResolution(cwd, runId, resolved)) {
+    throw new Error('fixture guard: runtime passed record must persist');
+  }
   return contract;
 }
 
@@ -335,6 +347,60 @@ test('a run somebody minted an operator override for can never settle verified o
       fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', 'S'), { recursive: true });
       writeStrictVerificationEvidence(cwd, 'S');
       assert.equal(writeRunSettlement(cwd, 'S', { status: 'verified' })?.status, 'verified');
+    });
+  } finally {
+    if (savedXdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = savedXdg;
+    fs.rmSync(machineBase, { recursive: true, force: true });
+  }
+});
+
+test('a verified settlement this install writes carries a settlementMac the hash ignores', () => {
+  const savedXdg = process.env.XDG_STATE_HOME;
+  const machineBase = fs.mkdtempSync(path.join(os.tmpdir(), 't1-settlement-mac-'));
+  process.env.XDG_STATE_HOME = machineBase;
+  try {
+    withProject((cwd) => {
+      // Planted rather than earned: this pin is the MAC, not the QA fixture.
+      // `writeRunSettlement(..., verified)` also consults QaReportV2, and a
+      // hand-authored report can fail that validator for reasons this test
+      // must not inherit.
+      const withoutHash = {
+        schemaVersion: RUN_SETTLEMENT_SCHEMA_VERSION,
+        runId: 'R',
+        runtimeVersion: RUN_SETTLEMENT_MIN_RUNTIME_VERSION,
+        minimumRuntimeVersion: RUN_SETTLEMENT_MIN_RUNTIME_VERSION,
+        status: 'verified' as const,
+        activeClaims: 0,
+        incompleteChecks: [] as string[],
+        revision: 1,
+        updatedAt: new Date().toISOString(),
+      };
+      const hashed = { ...withoutHash, settlementHash: settlementHash(withoutHash) };
+      const mac = signVerifiedSettlement(cwd, hashed);
+      assert.ok(mac, 'this install could sign');
+      fs.writeFileSync(
+        path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json'),
+        JSON.stringify({ ...hashed, settlementMac: mac }),
+      );
+      const settlement = readRunSettlement(cwd, 'R');
+      assert.equal(settlement?.status, 'verified');
+      assert.equal(settlement?.settlementMac, mac);
+      assert.equal(verifiedSettlementAuthentic(cwd, settlement!), true);
+
+      const raw = JSON.parse(fs.readFileSync(
+        path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json'),
+        'utf8',
+      )) as Record<string, unknown>;
+      const { settlementHash: observed, settlementMac, ...canonical } = raw;
+      assert.equal(settlementMac, mac);
+      assert.equal(settlementHash(canonical), observed, 'the MAC is outside the unkeyed digest');
+
+      delete raw.settlementMac;
+      fs.writeFileSync(path.join(cwd, '.traffic-one', 'runs', 'R', 'settlement-v2.json'), JSON.stringify(raw));
+      const unsigned = readRunSettlement(cwd, 'R');
+      assert.equal(unsigned?.status, 'verified');
+      assert.equal(verifiedSettlementAuthentic(cwd, unsigned!), false,
+        'the same bytes without a MAC are not a certificate this install signed');
     });
   } finally {
     if (savedXdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = savedXdg;

@@ -14,8 +14,11 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   // write (create / bulk)
   Write: 'file-write',
   MultiEdit: 'file-write',
+  NotebookEdit: 'file-write',
   apply_patch: 'file-write',
   write: 'file-write',
+  create: 'file-write',
+  str_replace_editor: 'file-write',
   // edit (modify existing)
   Edit: 'file-edit',
   edit: 'file-edit',
@@ -23,6 +26,7 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   // read
   Read: 'file-read',
   read: 'file-read',
+  view: 'file-read',
   // subagents
   Task: 'spawn-agent',
   Agent: 'spawn-agent',
@@ -52,6 +56,44 @@ export function stripToolNamespace(rawName: string): string {
 
 export function toolClassForRawName(rawName: string): ToolClass {
   return RAW_TOOL_CLASS[stripToolNamespace(rawName)] ?? 'other';
+}
+
+function asArgsRecord(args: unknown): Record<string, unknown> {
+  return args && typeof args === 'object' && !Array.isArray(args)
+    ? args as Record<string, unknown>
+    : {};
+}
+
+function nonEmptyString(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value : '';
+}
+
+function argsPath(args: Record<string, unknown>): string {
+  return nonEmptyString(args.path) || nonEmptyString(args.file_path) || nonEmptyString(args.filePath);
+}
+
+function argsHaveWritePayload(args: Record<string, unknown>): boolean {
+  return typeof args.content === 'string'
+    || typeof args.new_string === 'string'
+    || typeof args.newString === 'string'
+    || args.edits != null;
+}
+
+function argsShellCommand(args: Record<string, unknown>): string {
+  return nonEmptyString(args.command) || nonEmptyString(args.shell) || nonEmptyString(args.cmd);
+}
+
+// Name-first, then argument shape. Built-ins (Bash/Write/…) keep their
+// name-derived class so a Write that also carries `command` cannot become
+// shell. Unknown names — including `mcp__filesystem__write_file` — become
+// file-write or shell only when the args actually look like one.
+export function classifyTool(rawName: string, args?: unknown): ToolClass {
+  const named = toolClassForRawName(rawName);
+  if (named !== 'other') return named;
+  const rec = asArgsRecord(args);
+  if (argsPath(rec) && argsHaveWritePayload(rec)) return 'file-write';
+  if (argsShellCommand(rec)) return 'shell';
+  return 'other';
 }
 
 // Does a handler apply to this input? Same event, and (for tool-scoped handlers)

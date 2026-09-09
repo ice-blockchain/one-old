@@ -1,17 +1,33 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
+import * as path from 'path';
 import type { AddressInfo } from 'net';
 
 import { ONE_MCP_MAX_RESPONSE_BYTES } from '../../../config/one-mcp';
+import { readUnknownAuthGate401 } from '../../../shared/auth/auth-gate-drift';
 import {
   AUTH_GATE_401_CODES,
   authGateErrorCode,
   isAuthoritativeKeyRejection,
   probeAuthenticatedUpdates,
+  unrecognizedAuthGate401Code,
   validateApiKey,
   type AuthProbe,
 } from '../validate-key';
+
+const isolatedMachine = fs.mkdtempSync(path.join(os.tmpdir(), 't1-validate-key-'));
+const prevStatePath = process.env.TRAFFIC_ONE_STATE_PATH;
+before(() => {
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(isolatedMachine, 'one.json');
+});
+after(() => {
+  if (prevStatePath === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+  else process.env.TRAFFIC_ONE_STATE_PATH = prevStatePath;
+  fs.rmSync(isolatedMachine, { recursive: true, force: true });
+});
 
 // A loopback mock of the gated auth endpoint, mirroring the REAL server's
 // behavior. VERIFIED LIVE against production on 2026-08-08 (curl, four probes):
@@ -289,6 +305,25 @@ test('an unrecognised 401 — unknown code, foreign body, or no body — is an U
       `a 401 body this client cannot read is not the authority rejecting the key: ${body.slice(0, 40)}`,
     );
   }
+});
+
+test('an unknown 401 code still grants grace, and writes a doctor-visible sidecar', async () => {
+  const env = { ...process.env, TRAFFIC_ONE_STATE_PATH: path.join(isolatedMachine, 'drift-case.json') };
+  const body = JSON.stringify({ error: { code: 'some_future_code', message: 'x' } });
+  assert.equal(unrecognizedAuthGate401Code(body), 'some_future_code');
+  assert.equal(unrecognizedAuthGate401Code(JSON.stringify({ error: { code: 'invalid_token' } })), null);
+  assert.equal(unrecognizedAuthGate401Code(JSON.stringify({ error: { code: 'unkey_unavailable' } })), null);
+  const srv = await cannedServer(401, body);
+  try {
+    const r = await validateApiKey('sk-x', { endpoint: srv.url, timeoutMs: 2000, env });
+    assert.equal(r.ok, false);
+    assert.equal(r.ok === false && r.reason, 'auth-endpoint-unreachable');
+  } finally {
+    await srv.close();
+  }
+  const drift = readUnknownAuthGate401(env);
+  assert.equal(drift?.code, 'some_future_code');
+  assert.match(drift?.logLine ?? '', /granting offline grace/);
 });
 
 test('403 is not the auth gate — it emits no 403 — so it cannot clear a credential either', async () => {

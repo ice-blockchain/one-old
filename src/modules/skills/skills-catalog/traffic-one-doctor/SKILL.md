@@ -126,8 +126,8 @@ not been written yet.
 
 ## Codex hook-trust activation and remediation
 
-For Codex, a healthy installation currently has **16 trusted / 16 runnable**
-Traffic One hooks. Never hardcode 16: the expected count is a fixed constant
+For Codex, a healthy installation currently has **23 trusted / 23 runnable**
+Traffic One hooks. Never hardcode 23: the expected count is a fixed constant
 compiled into the runner, not derived from `hooks/hooks.json`, so it changes
 only when the plugin changes. Read the authoritative number for the installed
 build out of Doctor's own JSON at

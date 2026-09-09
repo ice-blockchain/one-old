@@ -5,8 +5,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { runClaudeHook } from '../claude-entry';
+import { guardedMain } from '../entry-guard';
+import { nestedPreToolDeny, wrapperPreToolDeny } from '../fail-closed';
 import { handlersForSubcommand } from '../../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../../core/registry';
+import { doctorScriptPath } from '../../shared/doctor-command';
 import { writeOneSection } from '../../shared/one-settings';
 
 const REAL_HANDLERS = collectHandlers(loadModules(defaultModulesDir()));
@@ -98,6 +101,37 @@ test('unknown subcommand → empty stdout, exit 0', async () => {
   assert.equal(r.exitCode, 0);
 });
 
+test('new-project MCP write shape is denied; shapeless MCP stays other and does not invent a deny', async () => {
+  await withEnv({ authed: true }, async (cwd) => {
+    const write = await runClaudeHook('check-onboarding-gate', JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      cwd,
+      tool_name: 'mcp__filesystem__write_file',
+      tool_input: { path: path.join(cwd, 'src', 'app.ts'), content: 'export const x = 1;' },
+    }));
+    assert.equal(write.exitCode, 0);
+    assert.ok(write.stdout.length > 0, 'write-shaped MCP must hit a write gate');
+    const denied = JSON.parse(write.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string };
+    };
+    assert.equal(denied.hookSpecificOutput?.permissionDecision, 'deny');
+
+    const other = await runClaudeHook('check-onboarding-gate', JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      cwd,
+      tool_name: 'mcp__search__query',
+      tool_input: { query: 'todos' },
+    }));
+    assert.equal(other.exitCode, 0);
+    if (other.stdout) {
+      const parsed = JSON.parse(other.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string };
+      };
+      assert.notEqual(parsed.hookSpecificOutput?.permissionDecision, 'deny');
+    }
+  });
+});
+
 test('check-plan-write UNAUTHED denies via the priority-0 auth gate', async () => {
   await withEnv({ authed: false }, async (cwd) => {
     const stdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(cwd, 'x.ts'), content: 'export const x = 1;' }, cwd });
@@ -131,6 +165,28 @@ test('session-start UNAUTHED points at the wizard (api-key page), no host prompt
   });
 });
 
+test('runClaudeHook still denies when hookFallbackStandsDown would throw', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-claude-stand-down-'));
+  try {
+    const stdin = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      cwd: dir,
+      tool_name: 'Write',
+      tool_input: { file_path: path.join(dir, 'x.ts'), content: 'x' },
+    });
+    const hostile = new Proxy({} as NodeJS.ProcessEnv, {
+      get() { throw new Error('hostile env'); },
+      set() { throw new Error('hostile env'); },
+    });
+    const result = await runClaudeHook('check-plan-write', stdin, hostile);
+    assert.equal(result.exitCode, 0);
+    const out = JSON.parse(result.stdout) as { hookSpecificOutput?: { permissionDecision?: string } };
+    assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('session-start AUTHED plumbs through to valid JSON, exit 0 (never throws to host)', async () => {
   // The entry routes session-start through the pipeline and always returns valid
   // output; canonical-auth gate behavior is covered by the session module tests.
@@ -141,4 +197,103 @@ test('session-start AUTHED plumbs through to valid JSON, exit 0 (never throws to
     assert.equal(r.exitCode, 0);
     if (r.stdout) assert.doesNotThrow(() => JSON.parse(r.stdout));
   });
+});
+
+// ── main() guard: anything that still escapes a runner becomes deny / noop ────
+const boom = async (): Promise<{ stdout: string; exitCode: number }> => {
+  throw new Error('unguarded runner rejection');
+};
+
+test('guardedMain emits the nested pre-tool deny when the runner rejects a gate subcommand', async () => {
+  const out = await guardedMain({
+    subcommand: 'check-plan-write',
+    stdin: '{}',
+    isPreTool: true,
+    surface: 'nested',
+    deny: { stdout: nestedPreToolDeny('Claude'), exitCode: 0 },
+    noop: { stdout: '', exitCode: 0 },
+    run: boom,
+  });
+  assert.equal(out.exitCode, 0);
+  const parsed = JSON.parse(out.stdout) as { hookSpecificOutput?: { permissionDecision?: string } };
+  assert.equal(parsed.hookSpecificOutput?.permissionDecision, 'deny');
+});
+
+test('guardedMain noops (exit 0) when the runner rejects a non-gate subcommand', async () => {
+  const out = await guardedMain({
+    subcommand: 'session-start',
+    stdin: '{}',
+    isPreTool: false,
+    surface: 'nested',
+    deny: { stdout: nestedPreToolDeny('Claude'), exitCode: 0 },
+    noop: { stdout: '', exitCode: 0 },
+    run: boom,
+  });
+  assert.equal(out.stdout, '');
+  assert.equal(out.exitCode, 0);
+});
+
+test('guardedMain honors a recognized recovery command instead of denying', async () => {
+  const script = doctorScriptPath();
+  const stdin = JSON.stringify({
+    cwd: '/tmp',
+    tool_name: 'Bash',
+    tool_input: { command: `node ${script} --bundle` },
+  });
+  const out = await guardedMain({
+    subcommand: 'check-plan-write',
+    stdin,
+    isPreTool: true,
+    surface: 'nested',
+    deny: { stdout: nestedPreToolDeny('Claude'), exitCode: 0 },
+    noop: { stdout: '', exitCode: 0 },
+    run: boom,
+  });
+  assert.equal(out.stdout, '');
+  assert.equal(out.exitCode, 0);
+});
+
+test('guardedMain uses Windsurf deny channel (stderr + exit 2) for a pre-tool escape', async () => {
+  const out = await guardedMain({
+    subcommand: 'pre_run_command',
+    stdin: '{}',
+    isPreTool: true,
+    surface: 'windsurf',
+    deny: { stdout: '', stderr: 'windsurf-deny', exitCode: 2 },
+    noop: { stdout: '', stderr: '', exitCode: 0 },
+    run: async () => {
+      throw new Error('windsurf runner rejection');
+    },
+  });
+  assert.equal(out.stdout, '');
+  assert.equal(out.stderr, 'windsurf-deny');
+  assert.equal(out.exitCode, 2);
+});
+
+test('guardedMain uses the wrapper deny shape for an OpenCode/Kilo pre-tool escape', async () => {
+  const out = await guardedMain({
+    subcommand: 'before-tool-use',
+    stdin: '{}',
+    isPreTool: true,
+    surface: 'wrapper',
+    deny: { stdout: wrapperPreToolDeny('OpenCode'), exitCode: 0 },
+    noop: { stdout: JSON.stringify({ kind: 'noop' }), exitCode: 0 },
+    run: boom,
+  });
+  assert.equal(out.exitCode, 0);
+  assert.equal(JSON.parse(out.stdout).kind, 'deny');
+});
+
+test('guardedMain returns the runner result unchanged on success', async () => {
+  const out = await guardedMain({
+    subcommand: 'check-plan-write',
+    stdin: '{}',
+    isPreTool: true,
+    surface: 'nested',
+    deny: { stdout: nestedPreToolDeny('Claude'), exitCode: 0 },
+    noop: { stdout: '', exitCode: 0 },
+    run: async () => ({ stdout: 'ok', exitCode: 0 }),
+  });
+  assert.equal(out.stdout, 'ok');
+  assert.equal(out.exitCode, 0);
 });

@@ -353,6 +353,24 @@ test('SessionStart says so when its state stamps could not be written, and still
   });
 });
 
+test('SessionStart surfaces a pending architecture-fold notice as non-denying context', () => {
+  withProject(existingState(), (cwd) => {
+    writeSimpleAuth('sk-fold-notice');
+    writeLocalPrefs();
+    const notice = 'Legacy `architecture.md` folded into `.traffic-one/plan.md` under the heading `### architecture.md` and removed.';
+    const marker = path.join(cwd, '.traffic-one', 'runs', '.once', 'architecture-fold-notice.json');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, `${JSON.stringify({ notice }, null, 2)}\n`, 'utf8');
+    const r = runSessionStart(ctx(cwd));
+    assert.equal(r.kind, 'context', 'the fold notice must never become a deny');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('### architecture.md'), 'the heading name reaches the agent');
+      assert.ok(r.context.includes(notice));
+    }
+    assert.equal(fs.existsSync(marker), false, 'the marker is consumed once');
+  });
+});
+
 test('Flow 1: an onboarded existing project with local prefs gets the packed rule bundle header', () => {
   withProject(existingState(), (cwd) => {
     writeLocalPrefs();

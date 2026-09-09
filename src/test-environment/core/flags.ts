@@ -7,6 +7,7 @@
 
 import type { Category, HostId, RootTestConfig, VerdictHost } from './types';
 import { ALL_CATEGORIES, ALL_HOSTS } from '../config/test-config';
+import { ALL_CASE_IDS } from '../config/cases';
 import { selectedManualCertificationHosts } from '../manual-host-certification';
 
 // Same name and same meaning as UsageError in src/build/sync-hosts.ts: the two
@@ -56,7 +57,6 @@ function requireKnown<T extends string>(flag: string, raw: string, allowed: read
 
 export function parseFlags(argv: string[]): Flags {
   const f: Flags = {};
-  const multi = (raw: string): string[] => raw.split(',').map((s) => s.trim()).filter(Boolean);
   for (const arg of argv) {
     const [key, rawValue] = arg.includes('=') ? arg.split(/=(.*)/s) : [arg, ''];
     const value = rawValue ?? '';
@@ -64,7 +64,7 @@ export function parseFlags(argv: string[]): Flags {
     switch (key) {
       case '--host': f.hosts = requireKnown('--host', value, ALL_HOSTS); break;
       case '--category': f.categories = requireKnown('--category', value, ALL_CATEGORIES); break;
-      case '--case': f.cases = multi(value); break;
+      case '--case': f.cases = requireKnown('--case', value, ALL_CASE_IDS); break;
       case '--verdict-host': f.verdictHost = (value as VerdictHost); break;
       case '--no-build': f.noBuild = true; break;
       case '--no-install': f.noInstall = true; break;

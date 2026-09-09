@@ -86,7 +86,7 @@ Host detection (`detectHost()`, `src/shared/host/index.ts`): explicit
 | Host | Attachment | Hook config | Entry shim (dist) | Host stamp |
 | --- | --- | --- | --- | --- |
 | **claude** | Native Claude Code plugin (`.claude-plugin/plugin.json`) | `settings.json` | `scripts/hook-runtime.cjs` → `claude-entry` | default detection |
-| **codex** | Codex plugin (`.codex-plugin/plugin.json`); hook commands trust-hashed (ABI v2 — byte changes invalidate every `trusted_hash`) | `hooks/hooks.json` | same `hook-runtime.cjs` → `claude-entry` (adapter id `codex`) | `CODEX_*` env |
+| **codex** | Codex plugin (`.codex-plugin/plugin.json`); hook commands trust-hashed (ABI v4 — byte changes invalidate every `trusted_hash`) | `hooks/hooks.json` | same `hook-runtime.cjs` → `claude-entry` (adapter id `codex`) | `CODEX_*` env |
 | **cursor** | Cursor plugin (`.cursor-plugin/plugin.json`) + generated `.cursor/rules/*.mdc` mirror | `hooks/hooks-cursor.json` | `scripts/cursor-hook-runtime.cjs` | `CURSOR_PLUGIN_ROOT` |
 | **copilot** | Copilot plugin (root `plugin.json`, CLI + VS Code) | `hooks/hooks-copilot.json` | `scripts/copilot-hook-runtime.cjs` | env `TRAFFIC_ONE_HOST=copilot` |
 | **opencode** | Consent-gated user-level wrapper installed by `scripts/opencode-host.cjs` → `~/.config/opencode/plugins/traffic-one.js` (registered in the opencode config `plugin` array) | wrapper registers `tool.execute.before/after`, `chat.message`, system transform, `event` bus | wrapper `spawnSync` → `scripts/opencode-hook-runtime.cjs` | `--host=opencode` |

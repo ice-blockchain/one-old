@@ -341,6 +341,7 @@ export function publishStackReport(
   loaded: LoadedStackRun,
   status: QaReportV2['status'],
   checks: QaReportV2['checks'],
+  lighthouse?: QaReportV2['lighthouse'],
 ): { report: QaReportV2; ok: boolean; advisories: string[]; code?: string; message?: string } {
   const settledWithoutTestEvidence = reportSettledWithoutTestEvidence(checks);
   const report: QaReportV2 = {
@@ -362,6 +363,7 @@ export function publishStackReport(
     // option the validator leaves open — it refuses a qualified run that reports
     // clean.
     ...(loaded.scanQualification ? { settledWithIncompleteScan: loaded.scanQualification } : {}),
+    ...(lighthouse ? { lighthouse } : {}),
   };
   if (!publishQaReportV2(args.projectRoot, args.runId, report)) {
     return { report, advisories: [], ...notPublished(args.projectRoot, args.runId) };

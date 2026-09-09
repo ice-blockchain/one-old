@@ -113,9 +113,13 @@ export function architectPhaseGate(g: GateContext): HookResult | null {
   if (level && teamModeForLevel(level) !== 'subagents') return null;
   // Small-work skip: a senior implementer that already carries (or already
   // published) an exact-file bounded-maintenance envelope does not need
-  // PLAN_READY. Invalid present scope is NOT a skip — do not publish, do
-  // not treat it as scoped.
-  if (role === 'senior-frontend' || role === 'senior-backend') {
+  // PLAN_READY. Maintenance only — a `[t1-bounded-scope]` marker on a
+  // greenfield/new-project spawn must not skip architect. Invalid present
+  // scope is NOT a skip — do not publish, do not treat it as scoped.
+  if (
+    isMaintenancePhase(state, state.mode)
+    && (role === 'senior-frontend' || role === 'senior-backend')
+  ) {
     const requested = quickFixScopeFromSpawn(toolInput, spawnPromptText);
     if (requested.present && requested.valid) return null;
     const published = readActiveRunBootstrap(cwd, spawnRunId, role);

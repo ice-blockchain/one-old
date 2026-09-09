@@ -19,7 +19,8 @@ import { writeSimpleAuth } from '../../../shared/auth';
 import { captureCursorModels } from '../../../shared/materialize/cursor-models';
 import { modelGateCommand } from '../../../shared/model-gate-command';
 import { runModelPolicyPath } from '../../../shared/run-model-policy';
-import { doctorCommand } from '../../../shared/doctor-command';
+import { NEVER_OVERRIDABLE_DENY_ID_SET } from '../../../config/deny-ids';
+import { doctorCommand, doctorScriptPath } from '../../../shared/doctor-command';
 import {  type LocalFallback } from '../../../shared/onboarding-server/wizard-links';
 import { noteBrowserArrival } from '../../../shared/onboarding-server/browser-arrival';
 import { claudeWaitBackgroundDeniedReason, claudeWaitLinkFirstReason, stopSetupLinkPostedReason, stopSetupLinksShownReason, stopSetupRequiredReason } from '../../../shared/onboarding-server/claude-setup';
@@ -1820,6 +1821,45 @@ test('Stop with the link already posted keeps the turn on the waiter WITHOUT rep
       assert.ok(!r.reason.includes(DASH_URL), 'no repost — the link is already in the conversation');
       assert.match(r.reason, /already posted in the conversation/);
       assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+    }
+  });
+});
+
+test('doctor --unblock is a never-overridable deny; read-only doctor still noops', () => {
+  assert.ok(NEVER_OVERRIDABLE_DENY_ID_SET.has('doctor-unblock-agent-mint'));
+  withProject(null, (cwd) => {
+    const script = doctorScriptPath();
+    const mint = `node ${script} --unblock plan-guard.write`;
+    const wrappers = [
+      mint,
+      `expect -c "spawn node ${script} --unblock plan-guard.write"`,
+      `script -q /dev/null node ${script} --unblock plan-guard.write`,
+      `python3 -c "import pty; pty.spawn(['node', '${script}', '--unblock', 'plan-guard.write'])"`,
+      `bash -c '${mint}'`,
+    ];
+    const hosts: Array<{ host: HostId; rawName: string }> = [
+      { host: 'claude', rawName: 'Bash' },
+      { host: 'codex', rawName: 'exec_command' },
+      { host: 'cursor', rawName: 'before-shell-execution' },
+    ];
+    for (const { host, rawName } of hosts) {
+      for (const command of wrappers) {
+        const result = onboardingGate(ctxHost(host, cwd, rawName, 'shell', { command }));
+        assert.equal(result.kind, 'deny', `${host} ${command}`);
+        if (result.kind === 'deny') {
+          assert.equal(result.denyId, 'doctor-unblock-agent-mint', `${host} ${command}`);
+        }
+      }
+      assert.equal(
+        onboardingGate(ctxHost(host, cwd, rawName, 'shell', { command: doctorCommand() })).kind,
+        'noop',
+        `${host}: read-only doctor stays exempt`,
+      );
+      assert.equal(
+        onboardingGate(ctxHost(host, cwd, rawName, 'shell', { command: `node ${script} --bundle` })).kind,
+        'noop',
+        `${host}: doctor --bundle stays exempt`,
+      );
     }
   });
 });

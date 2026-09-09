@@ -36,6 +36,12 @@ export interface RunSettlementV2 {
   revision: number;
   updatedAt: string;
   settlementHash: string;
+  /**
+   * HMAC over a flat (runId, status, settlementHash, projectKey, revision)
+   * record, keyed by the per-user override secret. Present only on `verified`
+   * settlements this install wrote. Excluded from `settlementHash`.
+   */
+  settlementMac?: string;
 }
 
 /**
@@ -63,8 +69,10 @@ export interface SettlementUpdate {
    * That is a rule the writers keep, not a property of the file, and the
    * distinction is load-bearing wherever the immutability is cited as the REASON
    * for a refusal — `settlementHash` is an UNKEYED digest, so a short script
-   * produces a settlement the parser accepts in any status it likes. See
-   * io.ts's terminal-write guard, which carries the full argument.
+   * produces a settlement the parser accepts in any status it likes. `--unblock`
+   * now requires `settlementMac` (override/settlement-mac.ts) before it treats
+   * `verified` as a certificate; unsigned `verified` is planted and the mint
+   * proceeds. See io.ts's terminal-write guard.
    *
    * A string-literal type rather than a boolean on purpose: no generic truthy
    * flag can widen the hatch, and grepping the constant enumerates every

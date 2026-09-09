@@ -1242,16 +1242,15 @@ test('a nested project whose `.one.json` was merged into conflict markers is nev
     const nested = path.join(dir, 'apps', 'web', memoryDir);
     fs.mkdirSync(path.join(nested, 'runs', '9001'), { recursive: true });
     fs.writeFileSync(path.join(nested, 'product.md'), '# the nested product brief', 'utf8');
-    fs.writeFileSync(path.join(nested, 'plan.md'), '# the nested plan', 'utf8');
     const state = path.join(nested, '.one.json');
 
     // BASELINE: while the state file parses, `apps/*` really does claim this
-    // member and the heal really does fire — so what changes below is legibility
-    // and nothing else.
+    // leftover (no plan / digests / consent / onboardingComplete) and the heal
+    // really does fire — so what changes below is legibility and nothing else.
     fs.writeFileSync(state, JSON.stringify({ mode: 'existing-codebase', currentRunId: '9001' }), 'utf8');
     assert.ok(
       sweepTrafficOneRetention(dir, { dryRun: true }).actions.some((action) => action.path.startsWith(nested)),
-      'baseline: a legible member state file makes this root a heal candidate',
+      'baseline: a legible leftover state file makes this root a heal candidate',
     );
 
     fs.writeFileSync(
@@ -1265,7 +1264,6 @@ test('a nested project whose `.one.json` was merged into conflict markers is nev
     const applied = sweepTrafficOneRetention(dir, { dryRun: false });
     assert.deepEqual(applied.actions, [], 'an illegible member state file plans ZERO deletions');
     assert.equal(fs.existsSync(path.join(nested, 'product.md')), true, 'product.md survives the merge');
-    assert.equal(fs.existsSync(path.join(nested, 'plan.md')), true, 'plan.md survives the merge');
     assert.equal(fs.existsSync(path.join(nested, 'runs', '9001')), true, 'and so does its run history');
   });
 });
@@ -1503,12 +1501,11 @@ test('the monorepo heal reclaims the leaked root but leaves durable project memo
     const memory = [
       '.agentignore', 'agent-log.md', 'api.md', 'architecture.md', 'coding.md', 'database.md',
       'deployment.md', 'deployments.jsonl', 'environment-setup.md', 'known-issues.md',
-      'plan.md', 'product.md', 'schema.sql', 'security.md', 'stack.md',
+      'notes.md', 'product.md', 'schema.sql', 'security.md', 'stack.md',
     ];
     const generated = ['.one.json', 'manifest.json'];
     fs.mkdirSync(path.join(nested, 'decisions'), { recursive: true });
     fs.mkdirSync(path.join(nested, 'runs', '9001'), { recursive: true });
-    fs.mkdirSync(path.join(nested, 'digests', '9001'), { recursive: true });
     fs.mkdirSync(path.join(nested, 'rules'), { recursive: true });
     fs.writeFileSync(path.join(nested, 'decisions', '0001-pick-vite.md'), '# ADR 1\nVite over CRA.', 'utf8');
     for (const name of memory) fs.writeFileSync(path.join(nested, name), `hand-written ${name}`, 'utf8');
@@ -1528,7 +1525,7 @@ test('the monorepo heal reclaims the leaked root but leaves durable project memo
       'the heal is still the only rule firing here',
     );
 
-    for (const gone of [...generated, 'runs', 'digests', 'rules']) {
+    for (const gone of [...generated, 'runs', 'rules']) {
       assert.equal(fs.existsSync(path.join(nested, gone)), false, `${gone} is still reclaimed`);
     }
     for (const kept of memory) {
@@ -4289,6 +4286,97 @@ test('the resolution catch in isLeakedNestedRoot answers KEEP, structurally', ()
   assert.equal(guard![1], 'false',
     'an indeterminate resolution must answer "not a leak" — `true` here deletes a project\'s whole state root '
     + 'on an exception, and no behavioural test in this repo can reach that branch to say so');
+});
+
+// A nested leftover that only has a mode object is debris. The same leftover
+// carrying a plan, run digests, a local consent record, or onboardingComplete
+// is a project — the sweep used to delete those because resolveProjectRoot
+// climbed to the enclosing workspace. Positive evidence is the keep.
+test('a nested leftover without project evidence is still a leak; evidence keeps it', () => {
+  const shapes: Array<{ label: string; seed: (nested: string) => void; keep: boolean }> = [
+    {
+      label: 'mode-only debris',
+      seed: (nested) => {
+        fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }));
+      },
+      keep: false,
+    },
+    {
+      label: 'plan.md',
+      seed: (nested) => {
+        fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }));
+        fs.writeFileSync(path.join(nested, 'plan.md'), '# plan\n');
+      },
+      keep: true,
+    },
+    {
+      label: 'runs/*/digests',
+      seed: (nested) => {
+        fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'new-project' }));
+        fs.mkdirSync(path.join(nested, 'runs', '9001', 'digests'), { recursive: true });
+        fs.writeFileSync(path.join(nested, 'runs', '9001', 'digests', 'backend.md'), 'BUILD_COMPLETE\n');
+      },
+      keep: true,
+    },
+    {
+      label: 'project-level digests',
+      seed: (nested) => {
+        fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'new-project' }));
+        fs.mkdirSync(path.join(nested, 'digests'), { recursive: true });
+        fs.writeFileSync(path.join(nested, 'digests', 'backend.md'), 'BUILD_COMPLETE\n');
+      },
+      keep: true,
+    },
+    {
+      label: 'local consent file',
+      seed: (nested) => {
+        fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }));
+        fs.writeFileSync(path.join(nested, '.onboarding-main-sessions.json'), JSON.stringify({
+          sessions: { 'sess-1': Date.now() },
+        }));
+      },
+      keep: true,
+    },
+    {
+      label: 'legacy preferences consent',
+      seed: (nested) => {
+        fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }));
+        fs.writeFileSync(path.join(nested, 'preferences.json'), JSON.stringify({ pluginUse: { enabled: true } }));
+      },
+      keep: true,
+    },
+    {
+      label: 'onboardingComplete',
+      seed: (nested) => {
+        fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({
+          mode: 'existing-codebase',
+          onboardingComplete: true,
+        }));
+      },
+      keep: true,
+    },
+  ];
+
+  for (const shape of shapes) {
+    withProject((dir) => {
+      const memoryDir = '.traffic' + '-one';
+      fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n", 'utf8');
+      const nested = path.join(dir, 'apps', 'web', memoryDir);
+      fs.mkdirSync(nested, { recursive: true });
+      shape.seed(nested);
+      const planned = sweepTrafficOneRetention(dir, { dryRun: true });
+      const hit = planned.actions.some((action) => action.path.startsWith(nested));
+      if (shape.keep) {
+        assert.equal(hit, false, `${shape.label} must not be scheduled`);
+        assert.ok(
+          planned.notices.some((notice) => notice.includes('KEPT') && notice.includes('project')),
+          `${shape.label} must name the keep`,
+        );
+      } else {
+        assert.equal(hit, true, `${shape.label} is leftover debris and stays a candidate`);
+      }
+    });
+  }
 });
 
 // `runAgeMs` requires exactly 13 digits, and that restriction is the guard: a

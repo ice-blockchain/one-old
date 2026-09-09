@@ -7,6 +7,7 @@ import * as path from 'path';
 import { materializeFromProjectMemoryWrite, materializeFromToolInputHints } from '../converge-from-write';
 import { GENERATED_MARKER } from '../../../shared/materialize/generated';
 import { writeMaterializedContent } from '../../../shared/materialize/__tests__/fixtures/materialized-content';
+import { materializedFileHashes } from '../../../shared/materialize/has-assets';
 import { stackFingerprint, stateVersion } from '../../../shared/state';
 
 function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
@@ -241,7 +242,11 @@ test('materializeFromProjectMemoryWrite: the short circuit holds for the same pl
     fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), '# claude', 'utf8');
     const manifestPath = path.join(cwd, '.traffic-one', 'manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    fs.writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, pluginContentHash: stampedHash }, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(manifestPath, `${JSON.stringify({
+      ...manifest,
+      pluginContentHash: stampedHash,
+      fileHashes: materializedFileHashes(cwd, manifest.rules, manifest.skills),
+    }, null, 2)}\n`, 'utf8');
     return path.join(cwd, '.traffic-one', 'product.md');
   };
 

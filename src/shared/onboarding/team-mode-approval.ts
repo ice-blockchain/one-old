@@ -94,8 +94,8 @@ export function hasFreshTeamModeChangeApproval(state: unknown, nowMs = Date.now(
  * `.one.json` — the SessionStart scrub routed a hand-typed marker into this
  * store, `hasFreshTeamModeChangeApproval(readEffectiveState(cwd))` answered
  * true, and teamModeDowngradeViolation then ALLOWED the downgrade it exists to
- * deny. extractProjectPrefs now drops `modeChangeApproval` out of any rescued
- * host bucket (state/__tests__/state-file-authorization-forgery.test.ts).
+ * deny. extractProjectPrefs now drops the entire nested `team` / `performance`
+ * out of any rescued host bucket (state/__tests__/state-file-authorization-forgery.test.ts).
  */
 function persistTeamModeApproval(cwd: string, team: Rec, approval: Rec | null): boolean {
   const nextTeam: Rec = { ...team };
@@ -217,8 +217,16 @@ function proposedStateFromStateWrite(cwd: string, toolName: unknown, toolInput: 
 function proposedTeamModeFromStateWrite(cwd: string, toolName: unknown, toolInput: unknown): string | null {
   const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
   if (proposed) {
-    const team = obj(proposed.team);
-    return team && typeof team.mode === 'string' ? team.mode : null;
+    // Top-level `team.mode` stays first in proposedTeamObjects; nested
+    // `hosts.*.team.mode` is the downgrade-guard spelling an agent-authored
+    // `.one.json` can carry. Prefer `main-agent` if ANY of those objects
+    // propose it — otherwise a clean top-level `subagents` beside a nested
+    // downgrade would hide the write the guard exists to see.
+    const modes = proposedTeamObjects(proposed)
+      .map((team) => (typeof team.mode === 'string' ? team.mode : null))
+      .filter((mode): mode is string => Boolean(mode));
+    if (modes.includes('main-agent')) return 'main-agent';
+    return modes[0] ?? null;
   }
   if (/^apply_patch$/i.test(normalizedToolName(toolName))) {
     const patchText = patchTextFromToolInput(toolInput);
@@ -229,11 +237,13 @@ function proposedTeamModeFromStateWrite(cwd: string, toolName: unknown, toolInpu
 
 // Every `team` object a state file can carry that some reader will look at —
 // which is the whole vocabulary of spellings the marker HAS. Top-level `team` is
-// what the legacy generic scrub used to route; `hosts.<host>.team` is the bucket
-// extractProjectPrefs rescues wholesale, and the one an agent-authored
-// `.one.json` used to smuggle a marker through (prefs-split.ts's
-// hostsWithoutForgedApprovals). A `modeChangeApproval` key anywhere ELSE in the
-// state file is not this predicate's business: no reader resolves it.
+// what the legacy generic scrub used to route; `hosts.<host>.team` is the
+// nested bucket an agent-authored `.one.json` used to smuggle a marker
+// (and a `team.mode` downgrade) through. hostsWithoutForgedApprovals now
+// drops the entire nested `team`/`performance` on rescue; these predicates
+// still walk both spellings so a hand-typed write is TOLD, not silently
+// ignored. A `modeChangeApproval` key anywhere ELSE in the state file is
+// not this predicate's business: no reader resolves it.
 function proposedTeamObjects(proposed: Rec): Rec[] {
   const teams: Rec[] = [];
   const top = obj(proposed.team);
@@ -280,9 +290,10 @@ function proposedStateWritesModeChangeApproval(cwd: string, toolName: unknown, t
 // cosmetic disagreement trades a false positive nobody has hit for a hole.
 //
 // This predicate is a SECOND LINE and must not be read as the fence around the
-// marker. The first line is the prefs split: extractProjectPrefs drops
-// modeChangeApproval out of any rescued host bucket, so the nested write already
-// reaches nothing (see persistTeamModeApproval's header for the measurement).
+// marker. The first line is the prefs split: extractProjectPrefs drops the
+// entire nested `team` / `performance` out of any rescued host bucket, so the
+// nested write already reaches nothing (see persistTeamModeApproval's header
+// for the measurement).
 // The nested arm is here for the same reason the top-level arm is — that one is
 // also redundant with a prefs-layer refusal, and it is kept because an agent
 // hand-writing the marker should be TOLD, not silently ignored. The cost was

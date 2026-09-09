@@ -1,0 +1,9 @@
+{
+  "agent_action_name": "pre_run_command",
+  "trajectory_id": "cascade-trajectory-recorded",
+  "timestamp": "2026-07-12T09:00:00Z",
+  "cwd": "/workspace/app",
+  "tool_info": {
+    "command_line": "npm test"
+  }
+}

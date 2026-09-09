@@ -1,7 +1,8 @@
 // src/shared/auth/machine-sidecar.ts
 // Small versioned JSON files that live BESIDE one.json and belong to the
-// machine, not to any project. Two of them exist: the revalidation cadence
-// record (./revalidation-state.ts) and the update feed (./updates-store.ts).
+// machine, not to any project. Three of them exist: the revalidation cadence
+// record (./revalidation-state.ts), the update feed (./updates-store.ts), and
+// the last unknown auth-gate 401 code (./auth-gate-drift.ts).
 //
 // ── why beside one.json and not inside it ───────────────────────────────────
 // The canonical envelope's `auth` section is validated by an EXACT key set —

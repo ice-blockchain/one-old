@@ -141,6 +141,49 @@ test('teamModeMarkerWriteViolation flags a hand-written modeChangeApproval marke
   });
 });
 
+test('teamModeDowngradeViolation reads nested hosts.*.team.mode, not only top-level team.mode', () => {
+  withProject((cwd) => {
+    const current: Record<string, unknown> = { onboardingComplete: true, team: { mode: 'subagents', source: 'prompted' } };
+    const nested = writeStateTool({
+      mode: 'new-project',
+      hosts: { claude: { team: { mode: 'main-agent', source: 'prompted' } } },
+    });
+    assert.equal(
+      teamModeDowngradeViolation(cwd, 'Write', nested, current),
+      true,
+      'hosts.<host>.team.mode=main-agent is the downgrade the guard exists to see',
+    );
+    const stillSubagents = writeStateTool({
+      mode: 'new-project',
+      hosts: { claude: { team: { mode: 'subagents', source: 'prompted' } } },
+    });
+    assert.equal(
+      teamModeDowngradeViolation(cwd, 'Write', stillSubagents, current),
+      false,
+      'a nested team.mode that stays subagents is not a downgrade',
+    );
+  });
+});
+
+test('teamModeDowngradeViolation sees a case-folded state file path and ignores .traffic-one-backup', () => {
+  withProject((cwd) => {
+    const current: Record<string, unknown> = { onboardingComplete: true, team: { mode: 'subagents', source: 'prompted' } };
+    const content = JSON.stringify({ mode: 'new-project', team: { mode: 'main-agent', source: 'prompted' } });
+    assert.equal(
+      teamModeDowngradeViolation(cwd, 'Write', { file_path: '.Traffic-One/.one.json', content }, current),
+      true,
+    );
+    assert.equal(
+      teamModeDowngradeViolation(cwd, 'Write', { file_path: '.TRAFFIC-ONE/.one.json', content }, current),
+      true,
+    );
+    assert.equal(
+      teamModeDowngradeViolation(cwd, 'Write', { file_path: '.traffic-one-backup/.one.json', content }, current),
+      false,
+    );
+  });
+});
+
 test('teamModeDowngradeViolation blocks subagents→main-agent without a fresh approval, consumes a fresh one', () => {
   withProject((cwd) => {
     const tool = writeStateTool({ mode: 'new-project', team: { mode: 'main-agent', source: 'prompted' } });

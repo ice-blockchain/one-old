@@ -12,7 +12,7 @@ import { asRecord, asString, firstString } from './coerce';
 import type { HostAdapter, RawInvocation } from './types';
 import { activeWorkspaceRoot, workspaceScopedCwd } from './workspace-root';
 
-type CopilotWireSurface = 'cli' | 'vscode';
+export type CopilotWireSurface = 'cli' | 'vscode';
 
 /** PreToolUse userReason split: keep evidence and append the agent recipe. */
 function joinContextAndReason(context: string | undefined, reason: string): string {
@@ -56,6 +56,30 @@ function normalizeEvent(value: unknown): CanonicalEvent {
   }
 }
 
+function subcommandForEvent(event: CanonicalEvent): string {
+  for (const [sub, mapping] of Object.entries(SUB_TO_EVENT)) {
+    if (mapping.event === event) return sub;
+  }
+  return 'before-tool-use';
+}
+
+/**
+ * Known `SUB_TO_EVENT` argv key wins (do not override CLI). Otherwise map
+ * `hook_event_name` / `hookEventName` through `normalizeEvent` so an argv-less
+ * VS Code payload still dispatches. Unknown events share normalizeEvent's
+ * default (PreToolUse → `before-tool-use`). Missing event + no argv → undefined.
+ */
+export function resolveCopilotSubcommand(
+  argv: readonly string[] = [],
+  raw: unknown = {},
+): string | undefined {
+  const known = subcommandOf(argv);
+  if (known) return known;
+  const data = asRecord(raw);
+  if (data.hook_event_name == null && data.hookEventName == null) return undefined;
+  return subcommandForEvent(normalizeEvent(data.hook_event_name ?? data.hookEventName));
+}
+
 function parseToolArgs(raw: unknown): Record<string, unknown> {
   if (typeof raw === 'string' && raw.trim()) {
     try {
@@ -94,6 +118,50 @@ function selectToolCall(calls: readonly CopilotToolCall[], admitted: ReadonlySet
   return calls.find((call) => admitted.has(toolClassForRawName(call.name))) || calls[0] || null;
 }
 
+function admitSetFor(sub: string, event: CanonicalEvent): ReadonlySet<ToolClass> {
+  return (sub === 'after-tool-use' || event === 'PostToolUse') ? GENERIC_POST_ADMIT : GENERIC_PRE_ADMIT;
+}
+
+function eventFromRaw(sub: string, data: Record<string, unknown>): CanonicalEvent {
+  return sub
+    ? (SUB_TO_EVENT[sub]?.event ?? 'PreToolUse')
+    : normalizeEvent(data.hook_event_name ?? data.hookEventName ?? data.event);
+}
+
+function isPreOrPost(sub: string, event: CanonicalEvent): boolean {
+  return sub === 'before-tool-use' || sub === 'after-tool-use' || event === 'PreToolUse' || event === 'PostToolUse';
+}
+
+function stdinPresentingSingleCall(data: Record<string, unknown>, call: CopilotToolCall): string {
+  return JSON.stringify({
+    ...data,
+    tool_calls: [{ id: call.id, name: call.name, args: call.args }],
+    toolCalls: [{ id: call.id, name: call.name, args: call.args }],
+    tool_name: call.name,
+    toolName: call.name,
+    tool_args: call.args,
+    toolArgs: call.args,
+    tool_input: call.args,
+    toolInput: call.args,
+  });
+}
+
+/**
+ * Split a Copilot multi-call payload into one invocation per admitted tool.
+ * Returns null when the payload is not a pre/post batch (0–1 admitted calls),
+ * so the existing single-call parse path stays byte-identical.
+ */
+export function splitCopilotAdmittedInvocations(raw: RawInvocation): RawInvocation[] | null {
+  const data = asRecord(parseJson<Record<string, unknown>>(raw.stdin, {}));
+  const sub = subcommandOf(raw.argv);
+  const event = eventFromRaw(sub, data);
+  if (!isPreOrPost(sub, event)) return null;
+  const admit = admitSetFor(sub, event);
+  const admitted = copilotToolCalls(data).filter((call) => admit.has(toolClassForRawName(call.name)));
+  if (admitted.length <= 1) return null;
+  return admitted.map((call) => ({ argv: raw.argv, stdin: stdinPresentingSingleCall(data, call) }));
+}
+
 function hasKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).length > 0;
 }
@@ -109,17 +177,37 @@ function rawForPipeline(data: Record<string, unknown>, toolName: string, toolArg
   };
 }
 
-/** Detect CLI flat vs VS Code nested output from env + inbound payload. */
+/**
+ * CLI flat vs VS Code nested output.
+ *
+ * Fixture evidence (`fixtures/copilot/`, SPIKE.md, `src/gen` hooks-copilot.json):
+ * - Input is shared: CLI fixture `pre-tool-use-input.json` carries `hook_event_name`
+ *   AND is invoked as `copilot-hook-runtime.cjs <subcommand>` (`SUB_TO_EVENT` keys).
+ * - Gen emits the same argv subcommand for both surfaces (`copilotCommand`).
+ * - VS Code output fixtures wrap `hookSpecificOutput`; CLI fixtures are flat.
+ *
+ * So `hook_event_name` alone cannot mean VS Code (CLI payloads have it), and
+ * `TERM_PROGRAM=vscode` / `VSCODE_PID` cannot mean VS Code (CLI inherits both
+ * inside a VS Code terminal). Those env signals are ignored.
+ *
+ * Order after the documented `TRAFFIC_ONE_COPILOT_WIRE=cli|vscode` override:
+ *  1. inbound `hookSpecificOutput` → vscode
+ *  2. argv known CLI subcommand → cli (CLI in a VS Code terminal)
+ *  3. `hook_event_name` / `hookEventName` without a known argv subcommand → vscode
+ *  4. default → cli (CLI ignores nested JSON; VS Code still has the env override)
+ */
 export function detectCopilotWireSurface(
   env: NodeJS.ProcessEnv = process.env,
   raw: unknown = {},
+  argv: readonly string[] = [],
 ): CopilotWireSurface {
   if (env.TRAFFIC_ONE_COPILOT_WIRE === 'cli' || env.TRAFFIC_ONE_COPILOT_WIRE === 'vscode') {
     return env.TRAFFIC_ONE_COPILOT_WIRE;
   }
   const data = asRecord(raw);
   if (data.hookSpecificOutput != null) return 'vscode';
-  if (env.VSCODE_PID || env.TERM_PROGRAM === 'vscode') return 'vscode';
+  if (subcommandOf(argv)) return 'cli';
+  if (data.hook_event_name != null || data.hookEventName != null) return 'vscode';
   return 'cli';
 }
 
@@ -151,15 +239,13 @@ export function makeCopilotAdapter(surface?: CopilotWireSurface): HostAdapter {
       const sub = subcommandOf(raw.argv);
       const mapping = SUB_TO_EVENT[sub] ?? { event: 'PreToolUse' as CanonicalEvent };
       const data = asRecord(parseJson<Record<string, unknown>>(raw.stdin, {}));
-      if (!wireSurface) wireSurface = detectCopilotWireSurface(process.env, data);
+      if (!wireSurface) wireSurface = detectCopilotWireSurface(process.env, data, raw.argv);
 
-      const event = sub
-        ? mapping.event
-        : normalizeEvent(data.hook_event_name ?? data.hookEventName ?? data.event);
+      const event = eventFromRaw(sub, data);
 
       const calls = copilotToolCalls(data);
-      const preOrPost = sub === 'before-tool-use' || sub === 'after-tool-use' || event === 'PreToolUse' || event === 'PostToolUse';
-      const admit = (sub === 'after-tool-use' || event === 'PostToolUse') ? GENERIC_POST_ADMIT : GENERIC_PRE_ADMIT;
+      const preOrPost = isPreOrPost(sub, event);
+      const admit = admitSetFor(sub, event);
       const selectedCall = preOrPost ? selectToolCall(calls, admit) : null;
       const rawName = firstString(data.tool_name, data.toolName, data.tool, data.name, selectedCall?.name);
       const toolArgs = parseToolArgs(data.tool_args ?? data.toolArgs ?? data.tool_input ?? data.toolInput);

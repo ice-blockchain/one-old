@@ -1005,6 +1005,63 @@ export const RUN_SIM_CASES: Case[] = [
     notes: 'Shape 7: Go API only. Requires `go` on PATH; the qa-evidence assertion reports INCONCLUSIVE rather than passing if the toolchain is missing.',
   },
   {
+    id: 'sim-new-rust-api',
+    category: 'run-sim',
+    layer: 'run-sim',
+    fixture: 'empty-git',
+    preSeed: {
+      mode: 'new-project',
+      stack: 'custom-backend',
+      frontend: 'none',
+      backend: 'rust',
+      mobile: { enabled: false, framework: 'none' },
+      performance: 'balanced',
+      team: { mode: 'subagents', approved: true },
+      openCode: false,
+      codeGraphProvider: 'gitnexus',
+      projectContext: { originalPrompt: BRIEF_API },
+    },
+    runSim: {
+      brief: BRIEF_API,
+      architecture: API_ARCHITECTURE,
+      qa: {
+        mode: 'stack',
+        // All four run for real: cargo build / test / clippy / fmt --check.
+        // A missing cargo, clippy or rustfmt component is declared-not-runnable
+        // and the qa-evidence assertion reports INCONCLUSIVE, the same as a
+        // missing `go` or `pytest`.
+        expectChecks: {
+          'stack-build': 'passed',
+          'stack-test': 'passed',
+          'stack-lint': 'passed',
+          'stack-format': 'passed',
+        },
+      },
+      phase2: {
+        brief: BRIEF_API_MAINTENANCE,
+        architecture: API_MAINTENANCE_ARCHITECTURE,
+        qa: {
+          mode: 'stack',
+          expectChecks: {
+            'stack-build': 'passed',
+            'stack-test': 'passed',
+            'stack-lint': 'passed',
+            'stack-format': 'passed',
+          },
+        },
+      },
+    },
+    assertions: [
+      { id: 'state-matches-selection' },
+      { id: 'onboarding-complete' },
+      { id: 'run-sim-clean' },
+      { id: 'run-sim-plan-ready-artifacts' },
+      { id: 'run-sim-qa-evidence' },
+      { id: 'run-sim-settlement' },
+    ],
+    notes: 'Shape 10: Rust API only. Requires `cargo` (plus clippy and rustfmt) on PATH; the qa-evidence assertion reports INCONCLUSIVE rather than passing if the toolchain is missing.',
+  },
+  {
     id: 'sim-nonvisual-existing-web',
     category: 'run-sim',
     layer: 'run-sim',

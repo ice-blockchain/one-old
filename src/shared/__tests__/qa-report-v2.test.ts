@@ -9,14 +9,21 @@ import {
   type ArchitectureInputV1,
 } from '../architecture-contract';
 import {
+  createQaLighthouseEvidence,
   createQaNativeEvidence,
+  readLighthouseArtifact,
 } from '../qa-evidence-runtime';
 import {
   qaAcceptanceAttestationPath,
   qaReportV2Path,
+  qaStackResolutionPath,
   readQaReportV2,
+  readStackResolution,
+  recordStackResolution,
+  stackCheckRuntimePassed,
   validateQaReportV2,
   type QaReportV2,
+  type QaStackResolvedCheckV1,
 } from '../qa-report-v2';
 import {
   compileVerificationContract,
@@ -39,18 +46,136 @@ import {
   withProject,
 } from './qa-v2-fixture';
 
-test('none/nonvisual verification passes without a browser or screenshots', async () => {
+function mapperContract(cwd: string, extras: { explicitLighthouse?: { performanceMin: number } } = {}) {
+  return setup(cwd, {
+    schemaVersion: 1,
+    routes: [],
+    modules: [{ id: 'mapper', name: 'Mapper', kind: 'service' }],
+  }, {
+    changedPaths: ['apps/web/src/lib/Mapper.ts'],
+    ...extras,
+  }, {
+    'apps/web/src/lib/Mapper.ts': 'export const map = (x:string) => x;\n',
+  });
+}
+
+function recordRuntimePassed(cwd: string, checkIds: readonly string[]): void {
+  const resolved: Record<string, QaStackResolvedCheckV1> = {};
+  for (const id of checkIds) resolved[id] = { declared: 'declared', executed: 'passed' };
+  assert.equal(recordStackResolution(cwd, 'R', resolved), true, 'fixture guard: runtime passed record must persist');
+}
+
+function lighthouseForStack(cwd: string, contract: ReturnType<typeof mapperContract>): NonNullable<QaReportV2['lighthouse']> {
+  const qa = path.join(cwd, '.traffic-one', 'reports', 'qa', 'R');
+  fs.mkdirSync(qa, { recursive: true });
+  const generatedAt = new Date(Date.now() + 60).toISOString();
+  const rawPath = path.join(qa, 'lighthouse.raw.json');
+  fs.writeFileSync(rawPath, JSON.stringify({
+    lighthouseVersion: '13.2.0',
+    fetchTime: generatedAt,
+    finalDisplayedUrl: 'http://127.0.0.1:4173/',
+    categories: {
+      performance: { score: 0.96 },
+      accessibility: { score: 0.97 },
+      'best-practices': { score: 0.98 },
+      seo: { score: 0.99 },
+    },
+    audits: {
+      'largest-contentful-paint': { numericValue: 1_200 },
+      'cumulative-layout-shift': { numericValue: 0.02 },
+    },
+  }));
+  const summary = readLighthouseArtifact(rawPath);
+  assert.ok(summary);
+  const evidence = createQaLighthouseEvidence({
+    runId: 'R',
+    verificationContractHash: contract.contractHash,
+    sourceHash: currentVerificationSourceHash(cwd, contract).hash,
+    buildHash: 'a'.repeat(64),
+    buildFingerprint: 'b'.repeat(64),
+    generatedAt: summary.generatedAt,
+    artifactPath: 'lighthouse.raw.json',
+    artifactHash: summary.artifactHash,
+    finalUrl: summary.finalUrl,
+    performance: summary.performance,
+    accessibility: summary.accessibility,
+    bestPractices: summary.bestPractices,
+    seo: summary.seo,
+    lcpMs: summary.lcpMs,
+    cls: summary.cls,
+  });
+  fs.writeFileSync(path.join(qa, 'lighthouse-evidence-v1.json'), JSON.stringify(evidence));
+  return { evidencePath: 'lighthouse-evidence-v1.json' };
+}
+
+// Plan Phase 4: a hand-authored reportFor() with every check `passed` and no
+// runtime sidecar used to validate. The per-check loop short-circuited on
+// `status === 'passed'`. Flip: without a matching executed-passed record it
+// must fail. Honest none/nonvisual still settles in the sibling below.
+test('a hand-authored passed stack report without a matching runtime executed-passed record is refused', async () => {
   await withProject((cwd) => {
-    const contract = setup(cwd, {
-      schemaVersion: 1,
-      routes: [],
-      modules: [{ id: 'mapper', name: 'Mapper', kind: 'service' }],
-    }, { changedPaths: ['apps/web/src/lib/Mapper.ts'] }, {
-      'apps/web/src/lib/Mapper.ts': 'export const map = (x:string) => x;\n',
-    });
+    const contract = mapperContract(cwd);
     assert.equal(contract.uiImpact, 'nonvisual');
+    assert.equal(contract.browserRequired, false);
+    const result = validateQaReportV2(reportFor(cwd, contract, []), cwd, 'R', contract);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, 'required-check-failed');
+      assert.match(result.message, /runtime record/);
+      assert.match(result.message, /executed it as passed/);
+    }
+  });
+});
+
+test('none/nonvisual verification passes without a browser when the runtime recorded executed passed', async () => {
+  await withProject((cwd) => {
+    const contract = mapperContract(cwd);
+    assert.equal(contract.uiImpact, 'nonvisual');
+    recordRuntimePassed(cwd, contract.requiredChecks);
     const result = validateQaReportV2(reportFor(cwd, contract, []), cwd, 'R', contract);
     assert.equal(result.ok, true);
+  });
+});
+
+test('a legacy declared-only stack-resolution record parses and fails closed for a passed claim', async () => {
+  await withProject((cwd) => {
+    const contract = mapperContract(cwd);
+    const legacy: Record<string, 'declared'> = {};
+    for (const id of contract.requiredChecks) legacy[id] = 'declared';
+    fs.mkdirSync(path.dirname(qaStackResolutionPath(cwd, 'R')), { recursive: true });
+    fs.writeFileSync(qaStackResolutionPath(cwd, 'R'), JSON.stringify({
+      schemaVersion: 1,
+      runId: 'R',
+      resolved: legacy,
+    }));
+    const parsed = readStackResolution(cwd, 'R');
+    assert.ok(parsed, 'a pre-executed record must parse, not throw');
+    assert.deepEqual(parsed.resolved['stack-build'], { declared: 'declared' });
+    assert.equal(stackCheckRuntimePassed(cwd, 'R', 'stack-build'), false);
+    const result = validateQaReportV2(reportFor(cwd, contract, []), cwd, 'R', contract);
+    assert.equal(result.ok, false, 'no executed-passed is not a matching runtime passed');
+    if (!result.ok) assert.equal(result.code, 'required-check-failed');
+  });
+});
+
+test('web none/nonvisual + performance.required settles with Lighthouse and no served build identity', async () => {
+  await withProject((cwd) => {
+    const contract = mapperContract(cwd, { explicitLighthouse: { performanceMin: 90 } });
+    assert.equal(contract.uiImpact, 'nonvisual');
+    assert.equal(contract.browserRequired, false);
+    assert.equal(contract.buildIdentityRequired, false);
+    assert.equal(contract.performance.required, true);
+    recordRuntimePassed(cwd, contract.requiredChecks);
+    const missing = validateQaReportV2(reportFor(cwd, contract, []), cwd, 'R', contract);
+    assert.equal(missing.ok, false, 'performance measurement itself is not dropped');
+    if (!missing.ok) assert.equal(missing.code, 'lighthouse-threshold-failed');
+    const settled = validateQaReportV2(
+      reportFor(cwd, contract, [], { lighthouse: lighthouseForStack(cwd, contract) }),
+      cwd,
+      'R',
+      contract,
+    );
+    assert.equal(settled.ok, true);
   });
 });
 
@@ -64,15 +189,10 @@ test('none/nonvisual verification passes without a browser or screenshots', asyn
 // (see requiredChecks), and the dimension says so instead of reporting `passed`.
 test('a nonvisual contract requires no accessibility check while nothing can produce one', async () => {
   await withProject((cwd) => {
-    const contract = setup(cwd, {
-      schemaVersion: 1,
-      routes: [],
-      modules: [{ id: 'mapper', name: 'Mapper', kind: 'service' }],
-    }, { changedPaths: ['apps/web/src/lib/Mapper.ts'] }, {
-      'apps/web/src/lib/Mapper.ts': 'export const map = (x:string) => x;\n',
-    });
+    const contract = mapperContract(cwd);
     assert.equal(contract.uiImpact, 'nonvisual');
     assert.equal(contract.requiredChecks.includes('axe-when-dom'), false);
+    recordRuntimePassed(cwd, contract.requiredChecks);
 
     const result = validateQaReportV2(reportFor(cwd, contract, []), cwd, 'R', contract);
     assert.equal(result.ok, true);

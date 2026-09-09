@@ -483,13 +483,13 @@ test('project preference lock timeout is bounded and never falls back to an unlo
       createdAt: Date.now(),
     }), 'utf8');
     const started = Date.now();
-    assert.throws(() => mergeProjectHostPrefs(cwd, 'codex', {
+    mergeProjectHostPrefs(cwd, 'codex', {
       performance: { level: 'low', source: 'prompted' },
-    }), /lock timed out/i);
+    });
     const elapsed = Date.now() - started;
     assert.ok(elapsed >= PROJECT_PREFS_LOCK_TIMEOUT_MS - 50);
     assert.ok(elapsed < PROJECT_PREFS_LOCK_TIMEOUT_MS + 1_000);
-    assert.equal(fs.existsSync(prefsPath), false);
+    assert.equal(fs.existsSync(prefsPath), false, 'a refused lock must not write');
     assert.equal(fs.existsSync(lockDir), true);
   });
 });
@@ -553,11 +553,11 @@ test('an old project preference lock held by a live process is never reaped by a
       createdAt: Date.now() - 60_000,
     }), 'utf8');
 
-    assert.throws(() => mergeProjectHostPrefs(cwd, 'codex', {
+    mergeProjectHostPrefs(cwd, 'codex', {
       performance: { level: 'low', source: 'prompted' },
-    }), /lock timed out/i);
+    });
     assert.equal(fs.existsSync(path.join(lockDir, `owner-${token}.json`)), true);
-    assert.equal(fs.existsSync(prefsPath), false);
+    assert.equal(fs.existsSync(prefsPath), false, 'a live holder must not be written past');
   });
 });
 

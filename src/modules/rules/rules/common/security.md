@@ -87,6 +87,8 @@ crypto, missing security logging, and Ionic/Capacitor/Expo bundled secrets or
 non-PKCE mobile auth.
 
 Passing `--stamp` writes `lastSecurityCheckAt`, `lastSecurityCheckStatus`,
-`lastSecurityCheckFingerprint`, and `lastSecurityCheckReport` to
-`.traffic-one/.one.json`. The deploy hook denies production commands if the stamp is
-missing, stale, failed, or its fingerprint no longer matches the worktree.
+`lastSecurityCheckFingerprint`, `lastSecurityCheckReport`, and
+`lastSecurityCheckStrict` to
+`.traffic-one/.one.json`. High findings never stamp, even without `--strict`.
+The deploy hook denies production commands if the stamp is
+missing, stale, failed, not from a `--strict` run, or its fingerprint no longer matches the worktree.

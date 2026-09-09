@@ -41,6 +41,7 @@ import {
   type CursorEdgesProbe,
 } from '../probes';
 import {
+  CODEX_HOOK_EXPECTED_COUNT,
   CODEX_TRAFFIC_ONE_HOOK_KEYS,
   type CodexHookTrustProbe,
 } from '../codex-hook-trust';
@@ -311,7 +312,10 @@ test('probeCanonicalAuth reports path, validity, and update time without exposin
   const file = path.join(root, 'one.json');
   const env = { TRAFFIC_ONE_STATE_PATH: file } as NodeJS.ProcessEnv;
   try {
-    assert.deepEqual(probeCanonicalAuth(env), { filePath: file, present: false, valid: false, updatedAt: null });
+    assert.deepEqual(probeCanonicalAuth(env), {
+      filePath: file, present: false, valid: false, updatedAt: null,
+      unknown401Code: null, unknown401At: null,
+    });
     fs.writeFileSync(file, JSON.stringify({
       schemaVersion: 3,
       auth: {
@@ -328,6 +332,8 @@ test('probeCanonicalAuth reports path, validity, and update time without exposin
       present: true,
       valid: true,
       updatedAt: '2026-07-15T00:00:00Z',
+      unknown401Code: null,
+      unknown401At: null,
     });
     assert.equal(JSON.stringify(probe).includes('sk-must-never-appear-in-probe'), false);
   } finally {
@@ -615,8 +621,16 @@ type VerifiedHookTrust = Extract<CodexHookTrustProbe, { evaluation: 'verified' }
 const healthyHookTrust = (over: Partial<VerifiedHookTrust> = {}): VerifiedHookTrust => ({
   evaluation: 'verified',
   source: 'codex-hooks-list',
-  expectedCount: 16,
-  counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 16 },
+  expectedCount: CODEX_HOOK_EXPECTED_COUNT,
+  counts: {
+    discovered: CODEX_HOOK_EXPECTED_COUNT,
+    trusted: CODEX_HOOK_EXPECTED_COUNT,
+    managed: 0,
+    modified: 0,
+    untrusted: 0,
+    disabled: 0,
+    runnable: CODEX_HOOK_EXPECTED_COUNT,
+  },
   missingKeys: [],
   unexpectedKeys: [],
   hooks: CODEX_TRAFFIC_ONE_HOOK_KEYS.map((key) => ({
@@ -853,8 +867,16 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 15, trusted: 15, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
-        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[15] as string],
+        counts: {
+          discovered: CODEX_HOOK_EXPECTED_COUNT - 1,
+          trusted: CODEX_HOOK_EXPECTED_COUNT - 1,
+          managed: 0,
+          modified: 0,
+          untrusted: 0,
+          disabled: 0,
+          runnable: CODEX_HOOK_EXPECTED_COUNT - 1,
+        },
+        missingKeys: [CODEX_TRAFFIC_ONE_HOOK_KEYS[CODEX_TRAFFIC_ONE_HOOK_KEYS.length - 1] as string],
       }),
     }),
   });
@@ -864,7 +886,15 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 1, runnable: 15 },
+        counts: {
+          discovered: CODEX_HOOK_EXPECTED_COUNT,
+          trusted: CODEX_HOOK_EXPECTED_COUNT,
+          managed: 0,
+          modified: 0,
+          untrusted: 0,
+          disabled: 1,
+          runnable: CODEX_HOOK_EXPECTED_COUNT - 1,
+        },
       }),
     }),
   });
@@ -874,7 +904,15 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 16, trusted: 0, managed: 0, modified: 14, untrusted: 2, disabled: 0, runnable: 0 },
+        counts: {
+          discovered: CODEX_HOOK_EXPECTED_COUNT,
+          trusted: 0,
+          managed: 0,
+          modified: CODEX_HOOK_EXPECTED_COUNT - 2,
+          untrusted: 2,
+          disabled: 0,
+          runnable: 0,
+        },
       }),
     }),
   });
@@ -884,7 +922,15 @@ test('buildFindings: official Codex hook findings distinguish ABI, disabled, tru
     ...base,
     codexHooks: codexProbe({
       hookTrust: healthyHookTrust({
-        counts: { discovered: 16, trusted: 16, managed: 0, modified: 0, untrusted: 0, disabled: 0, runnable: 15 },
+        counts: {
+          discovered: CODEX_HOOK_EXPECTED_COUNT,
+          trusted: CODEX_HOOK_EXPECTED_COUNT,
+          managed: 0,
+          modified: 0,
+          untrusted: 0,
+          disabled: 0,
+          runnable: CODEX_HOOK_EXPECTED_COUNT - 1,
+        },
       }),
     }),
   });
@@ -1071,4 +1117,42 @@ test('buildFindings: nested roots are reported non-destructively', () => {
     project: baseProject({ nestedTrafficOneRoots: ['/repo/apps/web'] }),
   });
   assert.equal(f.find((x) => x.code === 'NESTED_TRAFFIC_ONE_ROOTS')?.severity, 'fix-needed');
+});
+
+test('buildFindings: hybrid UI names the two architectureTarget answers and the split-layout offer', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      hybridUiTarget: {
+        webFramework: 'nextjs',
+        nativeFramework: 'react-native-expo',
+        split: { webRoot: 'apps/web', nativeRoot: 'apps/mobile' },
+      },
+    }),
+  });
+  const hit = f.find((x) => x.code === 'HYBRID_UI_TARGET_REQUIRED');
+  assert.equal(hit?.severity, 'fix-needed');
+  assert.match(hit?.message ?? '', /web-ui/);
+  assert.match(hit?.message ?? '', /native-ui/);
+  assert.match(hit?.message ?? '', /apps\/web/);
+  assert.match(hit?.message ?? '', /workspace members/);
+});
+
+test('buildFindings: an unknown auth-gate 401 code is an info finding, not a lockout', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject(),
+    auth: {
+      filePath: '/tmp/one.json',
+      present: true,
+      valid: true,
+      updatedAt: '2026-09-01T00:00:00Z',
+      unknown401Code: 'some_future_code',
+      unknown401At: '2026-09-08T12:00:00Z',
+    },
+  });
+  const hit = f.find((x) => x.code === 'AUTH_GATE_401_CODE_UNKNOWN');
+  assert.equal(hit?.severity, 'info');
+  assert.match(hit?.message ?? '', /some_future_code/);
+  assert.match(hit?.message ?? '', /grace window/);
 });

@@ -96,6 +96,14 @@ test('compareSemver orders semvers and rejects non-semver', () => {
   assert.equal(compareSemver('1.2', '1.2.0'), null); // not 3-part
   assert.equal(compareSemver('abc', '1.0.0'), null);
   assert.equal(compareSemver(null, '1.0.0'), null);
+  assert.equal(compareSemver('1.2.3-beta', '1.2.3'), -1);
+  assert.equal(compareSemver('1.2.3', '1.2.3-beta'), 1);
+  assert.equal(compareSemver('1.2.3-beta', '1.2.3-beta'), 0);
+  assert.equal(compareSemver('1.2.3-beta', '1.0.0'), 1);
+});
+
+test('toolStatus treats a prerelease below recommended as outdated, not current', () => {
+  assert.equal(toolStatus('gitnexus', '1.2.3-beta').status, 'outdated');
 });
 
 test('toolStatus classifies installed vs spec', () => {

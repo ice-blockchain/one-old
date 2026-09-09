@@ -2,7 +2,7 @@
 // The classification primitive, and the DIRECTION TABLE that justifies it being
 // a classifier rather than a predicate.
 
-import * as assert from 'assert';
+import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { STATE_TIMESTAMP_FUTURE_SKEW_MS } from '../../config/state';

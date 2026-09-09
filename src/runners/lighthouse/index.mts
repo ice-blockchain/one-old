@@ -15,6 +15,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { openRegularFd } from './bounded-read.js';
+import { killProcessTree, spawnGroupOptions } from './process-group.js';
 import {
   DEFAULTS,
   applyContractThresholds,
@@ -46,12 +47,12 @@ type PreviewHandle = ChildProcess | Server;
 
 function runCommand(command: string, args: string[], options: RunOptions = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, {
+    const child = spawn(command, args, spawnGroupOptions({
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
       shell: false,
       stdio: options.stdio || ['ignore', 'pipe', 'pipe'],
-    });
+    }));
     let stdout = '';
     let stderr = '';
     // A hung child (headless Chrome that never exits) would otherwise leave
@@ -60,7 +61,7 @@ function runCommand(command: string, args: string[], options: RunOptions = {}): 
     const timer = options.timeoutMs && options.timeoutMs > 0
       ? setTimeout(() => {
         timedOut = true;
-        child.kill('SIGKILL');
+        killProcessTree(child, 'SIGKILL');
       }, options.timeoutMs)
       : null;
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -219,12 +220,12 @@ async function startPreview(packageManager: PackageManager, appDir: string, port
       String(port),
       '--strictPort',
     ]);
-  const child = spawn(packageManager, args, {
+  const child = spawn(packageManager, args, spawnGroupOptions({
     cwd: appDir,
     env: { ...process.env },
     shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }));
   // The package manager is named BARE — `pnpm`, `npm`, `yarn`, `bun` — so a host
   // that has not installed the one this project declares refuses this spawn, and
   // node delivers that refusal as an `'error'` EVENT rather than throwing it. With
@@ -335,7 +336,7 @@ function closePreview(preview: PreviewHandle | null): void {
   }
   try {
     if ('kill' in preview) {
-      if (!preview.killed) preview.kill('SIGTERM');
+      if (!preview.killed) killProcessTree(preview, 'SIGTERM');
     } else {
       preview.close();
     }

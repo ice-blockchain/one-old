@@ -18,6 +18,7 @@ import {
 } from '../../shared/onboarding-server/tech-classify-setup';
 import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
+import { consumeArchitectureFoldNotice } from '../../shared/materialize/plan-migration';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingSetTechCommandTemplate, onboardingSyncSessionId, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
@@ -107,6 +108,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // the bundle is gone nothing of ours executes again. The directive only ARMS the
   // cleanup; the agent takes one explicit confirmation before running it.
   if (isUninstallTrafficOneIntent(ctx.input.prompt || promptTextFromSubmit(ctx.input.raw))) {
+    if (isSubagentThread(ctx.input.raw)) return noop();
     return context(uninstallDirective(ctx.host), { systemMessage: 'traffic-one [uninstall requested]' });
   }
 
@@ -372,18 +374,22 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
 
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });
+  const foldNotice = consumeArchitectureFoldNotice(cwd);
+  const withFold = (text: string): string => (
+    foldNotice && !text.includes(foldNotice) ? `${foldNotice}\n${text}` : text
+  );
   if (materialized) {
     const readiness = prefixOpenCode ? `${prefixOpenCode}\n` : '';
     const body = triage ? `${readiness}${materialized.context}\n\n${triage}` : `${readiness}${materialized.context}`;
-    return context(body, { systemMessage: materialized.systemMessage });
+    return context(withFold(body), { systemMessage: materialized.systemMessage });
   }
 
   if (triage) {
-    return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]\n\n${triage}`, {
+    return context(withFold(`${prefixOpenCode}[ACTIVE STACK: ${stack}]\n\n${triage}`), {
       systemMessage: unresolved
         ? `traffic-one [${stack}] unresolved run`
         : `traffic-one [${stack}] maintenance`,
     });
   }
-  return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
+  return context(withFold(`${prefixOpenCode}[ACTIVE STACK: ${stack}]`), { systemMessage: `traffic-one [${stack}]` });
 }

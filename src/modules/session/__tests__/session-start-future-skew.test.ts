@@ -3,7 +3,7 @@
 // process wrote, and both are spelled `now - lock < COOLDOWN`, so a lock stamped
 // ahead of now made the cooldown permanent — and the heal it gates unreachable.
 
-import * as assert from 'assert';
+import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

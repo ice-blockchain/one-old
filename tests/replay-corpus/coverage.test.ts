@@ -270,6 +270,10 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   // Same retirement as claude-wait-link-first — Cursor wait is allowed + injected.
   'cursor-wait-link-first',
   'deploy-gate-fingerprint-error',
+  // New: PreToolUse shell that names `doctor --unblock` / the override mint.
+  // No corpus case wraps that operator command. Driven through
+  // onboarding-gate.test.ts and plan-write.test.ts.
+  'doctor-unblock-agent-mint',
   'finding-allowlist-gap',
   'frontend-collapse-gate',
   'frontend-emit-config-gate',
@@ -365,7 +369,12 @@ const UNREACHED_DENY_IDS: readonly string[] = [
   'spawn-model-policy-unavailable',
   'spawn-role-no-compiled-assignment',
   'spawn-run-id-unparseable',
+  // New: shell redirect/tee/`python -c` onto `.traffic-one/.one.json`.
+  // Corpus Write/Edit cases on that path keep the static state-file denies.
+  // Driven through plan-write.test.ts.
+  'state-file-shell-write',
   'state-gate',
+  'state-writer-identity',
   'subagent-bind-cursor-policy-missing',
   'subagent-bind-cursor-role-missing',
   'subagent-bind-model-choice-pending',
@@ -428,7 +437,7 @@ function groupOf(denyId: string): string {
   if (/^(spawn-|cursor-models-capture|absolute-traffic-one-path|subagent-bind|agent-reuse|verifier-independence|opencode-plan-batch|verify-batch|opencode-role-delegate|agent-materialization|performance-|team-confirmation|architect-phase|cursor-exact-model|model-unavailable-choice|model-rotation|cursor-api-limit|model-choice-enable|cursor-failure|cursor-agent-type|opencode-named-agent|kilo-general-agent)/.test(denyId)) return 'agent-model / spawn + model';
   if (/^model-choice-stop/.test(denyId)) return 'model-choice-gate';
   if (/^(deploy-gate|supabase-local|scaffold-|library-allowlist)/.test(denyId)) return 'plan-guard / stack gates';
-  if (/^(plan-write|run-id-mismatch|registry-probe|state-mode-downgrade|opencode-external-temp|opencode-reserved|run-team)/.test(denyId)) return 'plan-guard / write dispatcher';
+  if (/^(plan-write|run-id-mismatch|registry-probe|state-mode-downgrade|state-writer-identity|opencode-external-temp|opencode-reserved|run-team)/.test(denyId)) return 'plan-guard / write dispatcher';
   if (/^(onboarding|browser-open|tech-classify|claude-wait|cursor-wait|codex-wait|windsurf-server|team-mode|repaired-materialization|materialization-not-converged)/.test(denyId)) return 'onboarding-gate';
   if (/^(pipeline-handler-crashed|user-approval-request)/.test(denyId)) return 'core';
   // Everything else is a plan-write violation name (plan-static, plan-readiness,

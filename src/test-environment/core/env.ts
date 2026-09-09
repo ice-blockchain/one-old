@@ -4,6 +4,8 @@
 // env to process.env around in-process state ops and restore afterwards. With
 // the default concurrency of 1 this is safe; raising concurrency requires care.
 
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { defaultProjectPrefsPath } from '../../shared/state/local-prefs/prefs-store';
@@ -81,6 +83,42 @@ export function buildCaseEnv(
     // auth paths because these XDG variables do not redirect them on macOS.
     env.XDG_CONFIG_HOME = path.join(caseFolder, 'xdg-config');
     env.XDG_DATA_HOME = path.join(caseFolder, 'xdg-data');
+    // documentedBinDir() is `$HOME/.traffic-one/bin` (HOME || os.homedir()).
+    // Without this, isolateStateHome still let ensureRunnerShims write the
+    // developer's real bin directory.
+    env.HOME = path.join(caseFolder, 'home');
+    env.USERPROFILE = path.join(caseFolder, 'home');
+    // Playwright resolves browsers under $HOME/Library/Caches/ms-playwright
+    // (macOS) when PLAYWRIGHT_BROWSERS_PATH is unset. Pinning HOME without
+    // forwarding a real cache makes every visual case `blocked-environment`
+    // with a boxed error that then fails schema (control characters).
+    const existingBrowsers = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    const realHome = process.env.TRAFFIC_ONE_TEST_UNPINNED_HOME || os.homedir();
+    const defaultCache = process.platform === 'win32'
+      ? path.join(realHome, 'AppData', 'Local', 'ms-playwright')
+      : process.platform === 'darwin'
+        ? path.join(realHome, 'Library', 'Caches', 'ms-playwright')
+        : path.join(realHome, '.cache', 'ms-playwright');
+    const browsers = (existingBrowsers && fs.existsSync(existingBrowsers))
+      ? existingBrowsers
+      : (fs.existsSync(defaultCache) ? defaultCache : '');
+    if (browsers) env.PLAYWRIGHT_BROWSERS_PATH = browsers;
+    // rustup proxies (`cargo`, `rustc`, `clippy`, `rustfmt`) resolve the
+    // toolchain from `$HOME/.rustup`. Pinning HOME without forwarding those
+    // directories makes every rustc invocation fail before a crate is compiled
+    // — measured as all four `sim-new-rust-api` stack checks red.
+    const existingCargo = process.env.CARGO_HOME;
+    const existingRustup = process.env.RUSTUP_HOME;
+    const defaultCargo = path.join(realHome, '.cargo');
+    const defaultRustup = path.join(realHome, '.rustup');
+    const cargoHome = (existingCargo && fs.existsSync(existingCargo))
+      ? existingCargo
+      : (fs.existsSync(defaultCargo) ? defaultCargo : '');
+    const rustupHome = (existingRustup && fs.existsSync(existingRustup))
+      ? existingRustup
+      : (fs.existsSync(defaultRustup) ? defaultRustup : '');
+    if (cargoHome) env.CARGO_HOME = cargoHome;
+    if (rustupHome) env.RUSTUP_HOME = rustupHome;
   }
 
   if (host !== 'pure-node') {

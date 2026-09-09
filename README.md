@@ -301,7 +301,7 @@ Traffic One work:
 
 1. In Codex Desktop, open **Plugins → Traffic One → Hooks → Review**.
 2. Inspect every displayed command. The installed plugin must show exactly the
-   16 Traffic One hook keys and commands shipped in its `hooks/hooks.json`
+   23 Traffic One hook keys and commands shipped in its `hooks/hooks.json`
    fixture. Only when both the count and the keys/commands match, choose
    **Trust all**.
 3. If Desktop offers **Reload**, use it; otherwise fully restart Desktop. Open a
@@ -309,7 +309,7 @@ Traffic One work:
 4. Run `node /absolute/path/to/traffic-one/dist/scripts/doctor.cjs` from that
    project (the `~/.traffic-one/bin/` shims do not exist until an authenticated
    session has run). Do not proceed until Doctor reports `HEALTHY` with
-   **16 trusted / 16 runnable** Traffic One hooks and confirms that the
+   **23 trusted / 23 runnable** Traffic One hooks and confirms that the
    workspace is covered by a trusted project root.
 
 If the review shows any other count, hook key, or command, do **not** choose
@@ -322,10 +322,10 @@ If Desktop cannot complete the review, use the CLI fallback without running
 Desktop and the CLI concurrently:
 
 1. Fully quit Codex Desktop.
-2. From a trusted project, start `codex`, run `/hooks`, inspect the 16 fixture
+2. From a trusted project, start `codex`, run `/hooks`, inspect the 23 fixture
    entries, and approve only Traffic One. Do not approve unrelated plugin hooks.
 3. Exit the CLI, restart Desktop, open a new task in that trusted project, and
-   rerun Doctor until it reports **16 trusted / 16 runnable**.
+   rerun Doctor until it reports **23 trusted / 23 runnable**.
 
 Run `node /absolute/path/to/traffic-one/dist/scripts/doctor.cjs` — or
 `node ~/.traffic-one/bin/doctor.cjs` once an authenticated session has written
@@ -768,7 +768,7 @@ node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs disable --cwd 
 To remove the wrapper:
 
 ```
-node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs uninstall
+node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs uninstall --yes
 ```
 
 Uninstall removes the Traffic One wrapper and its OpenCode `plugin` array entry.
@@ -817,7 +817,7 @@ node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs disable --cwd /abs
 To remove the wrapper:
 
 ```
-node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs uninstall
+node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs uninstall --yes
 ```
 
 Kilo uninstall removes only the owned wrapper. The disabled MCP entry and deny
@@ -897,8 +897,9 @@ node /absolute/path/to/traffic-one/dist/scripts/traffic-one-uninstall.cjs --yes
 It removes, in this order:
 
 1. the user-level host integrations — the Kilo and OpenCode wrappers, the
-   Windsurf/Cascade hooks and global rule (all three channels), and the Codex
-   machine-global MCP block;
+   Windsurf/Cascade hooks and global rule (all three channels), and both Codex
+   machine-global MCP blocks (the disabled public traffic-one-mcp entry and
+   the marked opencode-worker entry);
 2. the plugin bundle, via `claude plugin uninstall` / `codex plugin remove`, for
    every marketplace that has it;
 3. generated host Task/subagent files, using the project-root sidecars under

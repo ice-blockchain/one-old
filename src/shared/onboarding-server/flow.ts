@@ -36,6 +36,7 @@ import {
   writeState,
 } from '../state';
 
+import { hybridUiTargetAsk } from '../capabilities/hybrid-target';
 import { WORKSPACE_PROJECT_MODE } from '../hook/workspace-members';
 
 import {
@@ -213,7 +214,19 @@ function computeOnboardingAt(
     done = false;
     step = stepWhenDurablePrefsMissing(cwd, state, mode, host, localPreferenceTarget);
   }
-  const meta = enrichStepMeta(metaForStep(step, originalPrompt), step, state, env, localPreferenceTarget);
+  // Hybrid web+native: ask here (and in doctor) rather than failing only at
+  // architecture compilation mid-run. Do not preempt api-key, tech-detect, or
+  // unfinished new-project questions — those still have to land first.
+  if (
+    hybridUiTargetAsk(cwd, state)
+    && step !== 'api-key'
+    && step !== 'tech-detect'
+    && !(mode === 'new-project' && step !== null && step !== 'finalize')
+  ) {
+    step = 'architecture-target';
+    done = false;
+  }
+  const meta = enrichStepMeta(metaForStep(step, originalPrompt), step, state, env, localPreferenceTarget, cwd);
 
   return {
     mode,
@@ -292,7 +305,7 @@ function workspaceContainerOnboarding(
       ...base,
       step: sharedStep as WizardStep,
       done: false,
-      meta: enrichStepMeta(metaForStep(sharedStep as WizardStep, originalPrompt), sharedStep as WizardStep, state, env, localPreferenceTarget),
+      meta: enrichStepMeta(metaForStep(sharedStep as WizardStep, originalPrompt), sharedStep as WizardStep, state, env, localPreferenceTarget, cwd),
     };
   }
 
@@ -689,6 +702,16 @@ function applyAnswerStep(
       if (!mobile) return { ok: false, error: 'invalid mobile choice' };
       if (!patchSharedState(cwd, { mode: 'new-project', mobile: { ...mobile, source: 'prompted' } })) {
         return stateWriteRefused('your mobile choice', cwd, env);
+      }
+      return { ok: true };
+    }
+    case 'architecture-target': {
+      const target = String(value);
+      if (target !== 'web-ui' && target !== 'native-ui') {
+        return { ok: false, error: 'invalid architecture target' };
+      }
+      if (!patchSharedState(cwd, { architectureTarget: target })) {
+        return stateWriteRefused('your architecture target', cwd, env);
       }
       return { ok: true };
     }

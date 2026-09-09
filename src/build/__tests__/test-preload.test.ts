@@ -255,6 +255,40 @@ test('the state root pin survives the plugin-root pin opt-out', () => {
     // posture as the ask-first and managed-runtime guards above.
     const env = preloadEnv({ TMPDIR: tmp, TRAFFIC_ONE_TEST_PLUGIN_ROOT_PIN: 'off' });
     assert.ok(env.XDG_STATE_HOME?.startsWith(scratchParent + path.sep), env.XDG_STATE_HOME);
+    assert.ok(env.HOME?.startsWith(scratchParent + path.sep), env.HOME);
+  });
+});
+
+test('an ambient HOME is OVERRIDDEN, so the real ~/.traffic-one/bin is unreachable from the suite', () => {
+  withPrivateTmp((tmp, scratchParent) => {
+    const ambientHome = path.join(tmp, 'developer-home');
+    const env = preloadEnv({ TMPDIR: tmp, HOME: ambientHome, USERPROFILE: ambientHome });
+
+    assert.notEqual(env.HOME, ambientHome, 'the ambient HOME must not survive');
+    assert.ok(
+      env.HOME?.startsWith(scratchParent + path.sep),
+      `expected a scratch HOME under ${scratchParent}, got ${env.HOME}`,
+    );
+    assert.equal(env.HOME, path.join(env.XDG_STATE_HOME as string, 'home'));
+    assert.equal(env.USERPROFILE, env.HOME);
+    assert.equal(env.TRAFFIC_ONE_TEST_UNPINNED_HOME, ambientHome);
+  });
+});
+
+test('a descendant keeps the scratch HOME its parent chose', () => {
+  withPrivateTmp((tmp, scratchParent) => {
+    const own = path.join(scratchParent, '4242');
+    const chosenHome = path.join(own, 'home');
+    const env = preloadEnv({
+      TMPDIR: tmp,
+      XDG_STATE_HOME: own,
+      HOME: chosenHome,
+      USERPROFILE: chosenHome,
+      TRAFFIC_ONE_TEST_UNPINNED_HOME: '/real/unpinned/home',
+    });
+    assert.equal(env.HOME, chosenHome);
+    assert.equal(env.USERPROFILE, chosenHome);
+    assert.equal(env.TRAFFIC_ONE_TEST_UNPINNED_HOME, '/real/unpinned/home');
   });
 });
 
@@ -348,6 +382,8 @@ test('nothing in the plugin or host namespaces survives except what the preload 
     // Stamped by the wipe itself, so a child this process spawns inherits the
     // environment it was handed instead of being re-isolated — see below.
     'TRAFFIC_ONE_TEST_ENV_ISOLATED',
+    // Captured before the HOME pin; owned so the wipe cannot delete it.
+    'TRAFFIC_ONE_TEST_UNPINNED_HOME',
   ]);
 });
 

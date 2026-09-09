@@ -55,10 +55,11 @@ compile and test the plugin. **No part of them reaches an installed bundle.**
 `@types/node` is type declarations only and emits no runtime code at all.
 
 Traffic One's own continuous integration additionally installs `go`, `python`,
-`pytest`, `ruff`, `@playwright/test` and a Playwright Chromium on the CI runner
-so the full-composition test can run. These are **CI prerequisites for
-maintainers**. They are not installed on a Traffic One user's machine by
-anything in the product, and they are not part of any release artifact.
+`pytest`, `ruff`, `rustc`, `cargo` (clippy, rustfmt), `@playwright/test` and a
+Playwright Chromium on the CI runner so the full-composition test can run.
+These are **CI prerequisites for maintainers**. They are not installed on a
+Traffic One user's machine by anything in the product, and they are not part of
+any release artifact.
 
 ## 3. What Traffic One installs on your machine
 

@@ -298,7 +298,7 @@ export function helpText(): string {
     '',
     'Runs the Traffic One pre-deployment security scanner.',
     '--strict     Fail on high-confidence security issues and missing required scanners.',
-    '--stamp      On a passing run, write lastSecurityCheck* fields to .traffic-one/.one.json.',
+    '--stamp      On a passing run with no high findings, write lastSecurityCheck* fields (including lastSecurityCheckStrict) to .traffic-one/.one.json.',
     '--no-stamp   Do not write .traffic-one/.one.json. This is the CI default.',
   ].join('\n');
 }

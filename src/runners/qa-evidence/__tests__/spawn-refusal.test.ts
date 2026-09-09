@@ -29,7 +29,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { compileArchitecture } from '../../../shared/architecture-contract';
-import { CHECK_INCONCLUSIVE_PREFIX, qaReportV2Path } from '../../../shared/qa-report-v2';
+import { CHECK_INCONCLUSIVE_PREFIX, qaReportV2Path, recordStackResolution } from '../../../shared/qa-report-v2';
 import { type QaReportV2 } from '../../../shared/qa-report-v2/schema';
 import { compileVerificationContract } from '../../../shared/verification-contract';
 import {
@@ -266,6 +266,13 @@ test('a required check whose spawn the runner refused cannot settle the run gree
       changedPaths: ['apps/web/src/lib/Mapper.ts'],
     });
     assert.ok(contract.requiredChecks.includes('stack-test'), 'fixture guard: the contract must require the check under test');
+    // The two checks that really ran must carry a runner record. Without it the
+    // validator rejects `stack-build` as an unbacked `passed` claim and never
+    // reaches the spawn-refusal arm this test is measuring.
+    assert.equal(recordStackResolution(cwd, 'R', {
+      'stack-build': { declared: 'declared', executed: 'passed' },
+      'stack-format': { declared: 'declared', executed: 'passed' },
+    }), true, 'fixture guard: runtime passed record must persist');
 
     const checks: QaReportV2['checks'] = [
       { id: 'stack-build', status: 'passed', summary: '`npm run build` exited 0 (package.json scripts.build)' },

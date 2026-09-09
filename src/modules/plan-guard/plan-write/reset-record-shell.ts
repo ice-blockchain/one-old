@@ -158,6 +158,7 @@ import {
   gitWorktreeRewritePathspecs,
   globPatternIsUnreadable,
   globSegmentMatches,
+  heredocOperatorUnspanned,
   NAMED_OUTPUT_TOOLS,
   namedOutputDestinations,
   pathLiteralHasGlob,
@@ -171,7 +172,9 @@ import {
   trafficOnePathTail,
   VERB_ANCHOR,
 } from '../../../shared/shell-vocabulary';
+import { stripHeredocBodies } from '../../../shared/feature-source';
 
+import { canonicalizeStateDirSegments, STATE_DIR, STATE_DIR_MENTION_RE } from '../../../config/paths';
 import { RESET_RECORD_REL } from '../plan-readiness/context';
 
 const REPLACING_COMPRESSOR_RE = new RegExp(`^(?:${REPLACING_COMPRESSORS})$`);
@@ -194,7 +197,7 @@ const RUNS_DIR = '.traffic-one/runs';
 // alias, naming no path at all — left this module at this line while destroying
 // the record (ground-truthed, 1 file to 0). `MENTIONS_RE` cannot save that one:
 // the command spells nothing.
-const MENTIONS_RE = /\.resets\.json|\.traffic-one/;
+const MENTIONS_RE = new RegExp(`\\.resets\\.json|${STATE_DIR_MENTION_RE.source}`);
 const DESTRUCTIVE_VERB_RE = new RegExp(
   `${VERB_ANCHOR}${COMMAND_WORD_PREFIX}`
   + `(?:rm|rmdir|unlink|trash|mv|find|git|dd|install|rsync|tar|${REPLACING_COMPRESSORS}|${NAMED_OUTPUT_TOOLS})\\b`,
@@ -273,15 +276,11 @@ const FIND_DELETE_RE =
 /** A heredoc whose reader is an interpreter or a shell: the body is code, not
  *  data. Same distinction sidecar-shell draws, and for the same reason — a
  *  reviewer digest written with `cat > … <<'EOF'` may QUOTE a command that
- *  erases the record without being that command. */
-const HEREDOC_INTERPRETER_RE =
-  /(?:^|[\s;&|(])(?:[^\s;&|]*\/)?(?:sh|bash|zsh|dash|ksh|fish|node|deno|bun|python3?|perl|ruby|php)\b[^\n]*?<<-?\s*['"]?[A-Za-z_]/;
-
-function withoutHeredocData(command: string, heredocBody: string): string {
-  if (!heredocBody) return command;
-  if (HEREDOC_INTERPRETER_RE.test(command)) return command;
-  const bodyLines = new Set(heredocBody.split('\n'));
-  return command.split('\n').filter((line) => !bodyLines.has(line)).join('\n');
+ *  erases the record without being that command. Strip by SPAN so a body line
+ *  that equals a real command line cannot drop the command. `heredocBody` is
+ *  accepted because callers still pass it; the span walk does not need it. */
+function withoutHeredocData(command: string, _heredocBody: string): string {
+  return stripHeredocBodies(command);
 }
 
 /**
@@ -363,7 +362,8 @@ function relativeTarget(operand: string, workdir: string, projectRoot: string): 
  * deeper is inside a run and cannot reach a file that sits above every run id.
  */
 function coversRecord(rel: string): boolean {
-  return rel === '' || rel === '.traffic-one' || rel === RUNS_DIR;
+  const folded = canonicalizeStateDirSegments(rel);
+  return folded === '' || folded === STATE_DIR || folded === RUNS_DIR;
 }
 
 /**
@@ -381,7 +381,7 @@ function coversRecord(rel: string): boolean {
  * `.traffic-one` and `rm -rf .traffic-one/*` still does reach `runs`.
  */
 function globCoversRecord(rel: string): boolean {
-  const pattern = rel.split('/').filter((segment) => segment !== '' && segment !== '.');
+  const pattern = canonicalizeStateDirSegments(rel).split('/').filter((segment) => segment !== '' && segment !== '.');
   const parts = RESET_RECORD_REL.split('/');
   if (pattern.length === 0) return true;
   if (pattern.length > parts.length) return false;
@@ -538,12 +538,14 @@ export function shellResetRecordDestruction(
   if (typeof command !== 'string' || !command.trim()) return [];
   if (typeof workdir !== 'string' || !path.isAbsolute(workdir)) return [];
   if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) return [];
-  if (!MENTIONS_RE.test(command) && !DESTRUCTIVE_VERB_RE.test(command)) return [];
+  if (!MENTIONS_RE.test(command) && !DESTRUCTIVE_VERB_RE.test(command)
+    && !heredocOperatorUnspanned(command)) return [];
   try {
     if (!fs.existsSync(path.join(projectRoot, RESET_RECORD_REL))) return [];
   } catch {
     return [];
   }
+  if (heredocOperatorUnspanned(command)) return [RESET_RECORD_REL];
   const scanned = withoutHeredocData(command, heredocBody);
   const findDeletes = FIND_DELETE_RE.test(scanned);
   for (const piece of commandPieces(scanned)) {

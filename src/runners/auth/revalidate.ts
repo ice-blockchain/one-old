@@ -58,6 +58,7 @@ import {
 import { revalidationAction } from '../../shared/auth/revalidation';
 import { safeUpdatesPage } from '../../shared/auth/updates-feed';
 import { clearUpdatesStore, readUpdatesStore, recordUpdatesPage } from '../../shared/auth/updates-store';
+import { clearUnknownAuthGate401 } from '../../shared/auth/auth-gate-drift';
 import { probeAuthenticatedUpdates } from './validate-key';
 
 export type RevalidationRun =
@@ -101,7 +102,7 @@ export async function runAuthRevalidation(
   if (!record) return { ran: false, reason: 'not-authenticated' };
 
   const probe = deps.probe ?? probeAuthenticatedUpdates;
-  const options: { endpoint?: string; timeoutMs?: number; cursor?: string } = {};
+  const options: { endpoint?: string; timeoutMs?: number; cursor?: string; env?: NodeJS.ProcessEnv } = { env };
   if (deps.endpoint !== undefined) options.endpoint = deps.endpoint;
   if (deps.timeoutMs !== undefined) options.timeoutMs = deps.timeoutMs;
   // Resume where the last page stopped. Verbatim, unread: the cursor is
@@ -124,6 +125,7 @@ export async function runAuthRevalidation(
       // this key" instead of "seven days since the user typed it in". It does
       // NOT reopen the hazard offline-grace.ts guards against: that one is
       // about re-stamping on a GRACE ACCEPT, where nothing was confirmed.
+      clearUnknownAuthGate401(env);
       outcome = restamp(record.apiKey, env) ? 'confirmed' : 'confirmed-stamp-refused';
       // The feed rides on the SAME response, and only this arm has one. It is
       // folded in after the credential work so a failure to persist prose can
@@ -131,6 +133,7 @@ export async function runAuthRevalidation(
       ({ fetched, written: feedWritten } = persistFeed(payload, now(), env));
       break;
     case 'revoke':
+      clearUnknownAuthGate401(env);
       outcome = clearAuthentication(env) ? 'revoked' : 'revoke-refused';
       // The feed belongs to the identity behind the key that was just rejected.
       // Leaving it on disk would hand one user's announcements to whoever signs

@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { planReadinessViolations, architectPhaseIncompleteReasons, isArchitectPhaseComplete } from '../plan-readiness';
+import { claimThreadRole } from '../../../shared/state/run-agent';
 import { refreshVerificationAfterImplementation, runFullStructureScan } from '../plan-readiness/contracts';
 import { writeArchitectPhaseComplete } from './architect-phase-fixtures';
 import {
@@ -273,13 +274,39 @@ test('plan-gate: new project, no plan.md, writing feature source', () => {
   });
 });
 
-test('plan-gate: bounded-maintenance envelope exempts the exact allowlisted file on a new project without plan.md', () => {
+test('plan-gate: new-project without maintenance cannot mint a senior bounded-maintenance envelope', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
       onboardingComplete: false,
       currentRunId: 'R',
       activeAgentRole: 'senior-frontend',
+    };
+    writeStateFile(dir, state);
+    assert.equal(ensureRunBootstrap(dir, 'R', 'senior-frontend', state, {
+      host: 'codex',
+      hostAgentType: null,
+      evidenceSource: 'parent-maintenance-preflight',
+      modelPolicyId: 'policy-bounded-plan-gate',
+      boundedOutputs: ['src/News.tsx'],
+      boundedAllowlist: ['src/News.tsx'],
+    }), null, 'greenfield must not publish senior-frontend:bounded-maintenance');
+    const covered = planReadinessViolations({
+      filePath: 'src/News.tsx', content: '', projectRoot: dir,
+      state, writingFeatureSource: true, block: names,
+    });
+    assert.ok(covered.includes('plan-gate'), `greenfield write must still hit plan-gate, got: ${covered.join(', ')}`);
+  });
+});
+
+test('plan-gate: bounded-maintenance envelope exempts the exact allowlisted file in maintenance without plan.md', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: false,
+      currentRunId: 'R',
+      activeAgentRole: 'senior-frontend',
+      lifecycle: { phase: 'maintenance', source: 'test' },
     };
     writeStateFile(dir, state);
     assert.ok(ensureRunBootstrap(dir, 'R', 'senior-frontend', state, {
@@ -1585,6 +1612,12 @@ test('frontend completion gate: IMPLEMENTED is denied while product source is co
     };
     assert.ok(collapsedLine.length > 500, 'fixture line is a genuine collapse');
     assert.ok(planReadinessViolations(gateArgs).includes('frontend-collapse-gate'));
+    assert.ok(planReadinessViolations({
+      ...gateArgs,
+      content: '',
+      shellBody: 'verdict: IMPLEMENTED\nTouched: apps/web/src/App.tsx\n',
+    }).includes('frontend-collapse-gate'),
+    'heredoc/shellBody-only frontend IMPLEMENTED must fire the same collapse gate');
 
     // Split into multi-line, formatted source — the gate clears.
     fs.writeFileSync(path.join(dir, 'apps/web/src/App.tsx'), [
@@ -1673,6 +1706,12 @@ test('tester completion gate: TESTS_GREEN is denied while a tester-owned planned
     };
     assert.ok(planReadinessViolations(gateArgs).includes('tester-planned-module-gate'),
       'a missing tester-owned module must be caught at the tester verdict, not at APPROVED');
+    assert.ok(planReadinessViolations({
+      ...gateArgs,
+      content: '',
+      shellBody: 'verdict: TESTS_GREEN\n',
+    }).includes('tester-planned-module-gate'),
+    'heredoc/shellBody-only TESTS_GREEN must fire the same evidence gate');
 
     // Writing the module clears the gate — the tester can self-serve the fix.
     fs.mkdirSync(path.join(dir, path.dirname(testerOutput)), { recursive: true });
@@ -2476,9 +2515,11 @@ test('digests and QA reports require the exact active child WorkUnitContract', (
     const state = {
       ...DEFAULT_STATE,
       currentRunId: 'R',
+      materializedStack: 'default|react-vite|supabase|none',
       team: { mode: 'subagents' },
       activeAgentRole: 'senior-frontend',
     };
+    writeStateFile(dir, state);
     writeArchitectureInputAndAssignments(dir, 'R', state);
     const options = {
       host: 'codex' as const,
@@ -2486,11 +2527,15 @@ test('digests and QA reports require the exact active child WorkUnitContract', (
       modelPolicyId: 'policy-artifacts',
     };
     assert.ok(ensureRunBootstrap(dir, 'R', 'senior-frontend', state, options));
+    assert.ok(claimThreadRole(dir, state, 'frontend-child', 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+    }));
     const frontend = planReadinessViolations({
       filePath: '.traffic-one/digests/R/frontend.md',
       content: 'IMPLEMENTED',
       projectRoot: dir,
       state,
+      rawData: { session_id: 'frontend-child' },
       writingFeatureSource: false,
       block: names,
     });
@@ -2501,6 +2546,7 @@ test('digests and QA reports require the exact active child WorkUnitContract', (
       content: 'TESTS_GREEN',
       projectRoot: dir,
       state,
+      rawData: { session_id: 'frontend-child' },
       writingFeatureSource: false,
       block: names,
     });
@@ -2508,11 +2554,15 @@ test('digests and QA reports require the exact active child WorkUnitContract', (
 
     const testerState = { ...state, activeAgentRole: 'senior-tester' };
     assert.ok(ensureRunBootstrap(dir, 'R', 'senior-tester', testerState, options));
+    assert.ok(claimThreadRole(dir, testerState, 'tester-child', 'senior-tester', {
+      parentSessionId: 'orchestrator',
+    }));
     const report = planReadinessViolations({
       filePath: '.traffic-one/reports/qa/R/report-v2.json',
       content: '{}',
       projectRoot: dir,
       state: testerState,
+      rawData: { session_id: 'tester-child' },
       writingFeatureSource: false,
       block: names,
     });
@@ -4112,6 +4162,31 @@ test('finding-allowlist-gap: the reviewer writes by heredoc, so the gate reads t
   });
 });
 
+test('reviewer APPROVED via heredoc runs the same structure scan as Write content', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true };
+    writeStateFile(dir, { ...state, currentRunId: 'R' });
+    writeMaterialized(dir);
+    writePlan(dir);
+    writeRequiredMemory(dir, state);
+    writeArchitectureInputAndAssignments(dir, 'R', state);
+    fs.rmSync(path.join(dir, '.traffic-one', 'runs', 'R', 'assignments.json'));
+    const args = {
+      filePath: '.traffic-one/digests/R/reviewer.md',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+    const viaWrite = planReadinessViolations({ ...args, content: 'verdict: APPROVED\n' });
+    const viaHeredoc = planReadinessViolations({ ...args, content: '', shellBody: 'verdict: APPROVED\n' });
+    assert.ok(viaWrite.includes('reviewer-structure-gate'),
+      `Write APPROVED must run the structure scan, got: ${viaWrite.join(', ')}`);
+    assert.deepEqual(viaHeredoc, viaWrite,
+      'heredoc/shellBody-only APPROVED must fire the same structure scan');
+  });
+});
+
 test('implementer contract-delivery gate: a role that wrote none of its compiled modules cannot report IMPLEMENTED', () => {
   withProject((dir) => {
     // Observed 10co-e2e: verification-v2.json asserted 15 changed files because
@@ -4304,6 +4379,16 @@ test('page-speed claim gate: a digest may not quote a Lighthouse score the runne
     writeEvidence(74);
     assert.ok(digest('- Lighthouse performance 98 on the production preview.')
       .includes('lighthouse-claim-reconciliation-gate'));
+    assert.ok(planReadinessViolations({
+      filePath: '.traffic-one/digests/R/frontend.md',
+      content: '',
+      shellBody: 'verdict: IMPLEMENTED\n- Lighthouse performance 98 on the production preview.\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    }).includes('lighthouse-claim-reconciliation-gate'),
+    'heredoc/shellBody-only claimedLighthouse must fire the same reconciliation gate');
     // The tester's TESTS_GREEN is reconciled against the same evidence.
     assert.ok(digest('- Lighthouse: performance 98, accessibility 100.', 'tester', 'TESTS_GREEN')
       .includes('lighthouse-claim-reconciliation-gate'));

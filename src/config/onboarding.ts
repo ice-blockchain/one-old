@@ -84,7 +84,8 @@ export type WizardStepId =
   | 'team-confirmation'
   | 'code-graph'
   | 'mobile'
-  | 'project-context';
+  | 'project-context'
+  | 'architecture-target';
 
 export interface StepCopy {
   kind: StepKind;
@@ -194,6 +195,15 @@ export const STEP_COPY: Record<WizardStepId, StepCopy> = {
     title: 'About the project',
     question: 'Tell me a bit about what you are building. Everything here is optional — fill what is relevant and I will infer the rest from your request.',
     fields: PROJECT_CONTEXT_FIELDS,
+  },
+  'architecture-target': {
+    kind: 'single_select',
+    title: 'Which UI should this run drive?',
+    question: 'This repository has both a web UI and a mobile UI. Traffic One drives one surface per run. Choose the target for this project.',
+    options: [
+      { id: 'web-ui', label: 'Web UI', hint: 'Drive the web surface in this project' },
+      { id: 'native-ui', label: 'Native / mobile UI', hint: 'Drive the mobile surface in this project' },
+    ],
   },
 };
 

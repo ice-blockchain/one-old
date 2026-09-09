@@ -137,8 +137,11 @@ export function removeStrayProjectArtifactsFromGlobalDir(env: NodeJS.ProcessEnv 
     // prefs-store resolves the machine dir through THIS module, so a static
     // import would close a cycle.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { projectRootHash } = require('./local-prefs/prefs-store') as typeof import('./local-prefs/prefs-store');
-    fs.rmSync(path.join(dir, 'projects', projectRootHash(home)), { recursive: true, force: true });
+    const { migrateMiscasedPrefsBucket, projectRootHashAliases } = require('./local-prefs/prefs-store') as typeof import('./local-prefs/prefs-store');
+    migrateMiscasedPrefsBucket(home, env);
+    for (const hash of projectRootHashAliases(home)) {
+      fs.rmSync(path.join(dir, 'projects', hash), { recursive: true, force: true });
+    }
   } catch {
     // best-effort
   }

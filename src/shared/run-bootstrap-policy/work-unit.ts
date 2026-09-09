@@ -2,6 +2,7 @@
 // Per-role WorkUnit composition: architect planning scope, run artifacts,
 // and the bounded scope lists baked into each child bootstrap.
 
+import { LIFECYCLE_PHASE_IDS } from '../../config/state';
 import {
   createWorkUnitContract,
   readCompiledArchitecture,
@@ -9,6 +10,7 @@ import {
   type ArchitectureRunSnapshotV1,
   type WorkUnitContractV1,
 } from '../architecture-contract';
+import { obj } from '../obj';
 import {
   readVerificationContract,
   type VerificationContractV2,
@@ -25,6 +27,17 @@ import {
 import {
   stringList,
 } from './materials';
+
+// Twin of `isMaintenancePhase` in state/lifecycle.ts. Kept local: importing
+// lifecycle here cycles through run-agent → run-model-policy → this package.
+export function maintenancePhaseFromState(state: unknown): boolean {
+  const lifecycle = obj(obj(state)?.lifecycle);
+  const phaseRaw = typeof lifecycle?.phase === 'string' ? lifecycle.phase.trim().toLowerCase() : '';
+  if (LIFECYCLE_PHASE_IDS.has(phaseRaw)) return phaseRaw === 'maintenance';
+  const mode = obj(state)?.mode;
+  const normalized = typeof mode === 'string' ? mode.trim().toLowerCase() : '';
+  return normalized.startsWith('existing');
+}
 
 function boundedScopeList(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length === 0) return null;
@@ -124,12 +137,17 @@ export function workUnitForRole(
   snapshot: ArchitectureRunSnapshotV1,
   options: Pick<
     EnsureRunBootstrapOptions,
-    'boundedOutputs' | 'boundedAllowlist' | 'boundedAllowlistExclude'
+    'boundedOutputs' | 'boundedAllowlist' | 'boundedAllowlistExclude' | 'maintenancePhase'
   >,
   runtimeContracts?: BootstrapRuntimeContractsV1,
 ): WorkUnitContractV1 | null {
+  // `quick-fix` is always a maintenance worker. Senior implementers may only
+  // receive a `:bounded-maintenance` unit in maintenance — a `[t1-bounded-scope]`
+  // marker on greenfield must not mint that envelope or skip architect.
+  const seniorBounded = (role === 'senior-frontend' || role === 'senior-backend')
+    && options.maintenancePhase === true;
   const boundedMaintenance = options.boundedOutputs !== undefined
-    && ['quick-fix', 'senior-frontend', 'senior-backend'].includes(role);
+    && (role === 'quick-fix' || seniorBounded);
   if (boundedMaintenance) {
     const sourceOutputs = boundedScopeList(options.boundedOutputs);
     const sourceAllowlist = boundedScopeList(options.boundedAllowlist || options.boundedOutputs);

@@ -30,7 +30,8 @@ import { isFailClosedRecoveryExemption } from '../../../hooks/fail-closed';
 import { appendDecision } from '../../../shared/state/decision-log';
 import { doctorScriptPath } from '../../../shared/doctor-command';
 import { isTrafficOneDoctorCommand } from '../../../shared/tool-classify';
-import { overrideLedgerPath, runUsedOperatorOverride } from '../../../shared/override';
+import { overrideLedgerPath, runUsedOperatorOverride, signVerifiedSettlement } from '../../../shared/override';
+import { overrideProjectDir } from '../../../shared/override/paths';
 import { recordPluginUseChoice, resetPluginUseCache } from '../../../shared/state/plugin-use';
 import {
   RUN_SETTLEMENT_MIN_RUNTIME_VERSION,
@@ -302,10 +303,9 @@ function plantSettlement(projectRoot: string, runId: string, status: CanonicalRu
  *
  * Narrow matters more than usual here because the record is FORGEABLE. The
  * fixture below plants a settlement with a recomputed hash and this reader
- * accepts it, which is the whole point: `settlementHash` is unkeyed, so every
- * `refused` row in this map is a state an attacker can put a run into. One
- * status is the price of closing the laundering shape; a second would be a
- * second free lockout.
+ * accepts it, which is the whole point: `settlementHash` is unkeyed. An
+ * unsigned `verified` therefore mints (planted). Only a MAC this install
+ * signed refuses — that case is not plantable from the project tree alone.
  */
 const MINT_ON_SETTLEMENT: Record<CanonicalRunStatus, 'mints' | 'refused'> = {
   planned: 'mints',
@@ -316,7 +316,10 @@ const MINT_ON_SETTLEMENT: Record<CanonicalRunStatus, 'mints' | 'refused'> = {
   validating: 'mints',
   failed: 'mints',
   blocked: 'mints',
-  verified: 'refused',
+  // Unsigned `verified` is planted: the mint proceeds. A MAC this install
+  // signed is the only status that still refuses — see the signed-certificate
+  // test below.
+  verified: 'mints',
 };
 
 test('the mint decision is enumerated over every canonical settlement status', async () => {
@@ -328,6 +331,10 @@ test('the mint decision is enumerated over every canonical settlement status', a
       if (expected === 'mints') {
         assert.equal(outcome.ok, true, `${status}: ${outcome.message}`);
         assert.equal(runUsedOperatorOverride(projectRoot, 'run-1'), true, status);
+        if (status === 'verified') {
+          assert.equal(outcome.plantedVerified, true, 'unsigned verified is named as planted');
+          assert.match(outcome.message, /PLANTED VERIFIED SETTLEMENT/);
+        }
         return;
       }
       assert.equal(outcome.ok, false, status);
@@ -344,10 +351,41 @@ test('the mint decision is enumerated over every canonical settlement status', a
   });
 });
 
-test('the certified-run refusal is named, is reached before the prompt, and says what to do instead', async () => {
+function plantSignedVerified(projectRoot: string, runId: string): void {
+  plantSettlement(projectRoot, runId, 'verified');
+  const current = readRunSettlement(projectRoot, runId);
+  assert.ok(current, 'fixture guard: planted verified parses');
+  const mac = signVerifiedSettlement(projectRoot, current);
+  assert.ok(mac, 'fixture guard: this install could sign');
+  const file = runSettlementPath(projectRoot, runId);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+  raw.settlementMac = mac;
+  fs.writeFileSync(file, JSON.stringify(raw), 'utf8');
+  assert.equal(readRunSettlement(projectRoot, runId)?.settlementMac, mac);
+}
+
+test('an unsigned verified settlement is treated as planted and the mint proceeds', async () => {
   await withProject(async ({ projectRoot }) => {
     recordDeny(projectRoot, 'run-1', 'plan-guard', 'scaffold-plan-gate');
     plantSettlement(projectRoot, 'run-1', 'verified');
+    const outcome = await runUnblock(request(projectRoot), accept);
+    assert.equal(outcome.ok, true, outcome.message);
+    assert.equal(outcome.plantedVerified, true);
+    assert.match(outcome.message, /PLANTED VERIFIED SETTLEMENT/);
+    assert.match(outcome.message, /settlementMac/);
+    assert.match(outcome.message, /planted-verified\.jsonl/);
+    assert.equal(runUsedOperatorOverride(projectRoot, 'run-1'), true);
+    const log = path.join(overrideProjectDir(projectRoot), 'planted-verified.jsonl');
+    assert.equal(fs.existsSync(log), true);
+    assert.match(fs.readFileSync(log, 'utf8'), /planted-verified-settlement/);
+    assert.match(fs.readFileSync(log, 'utf8'), /run-1/);
+  });
+});
+
+test('a signed verified settlement refuses the mint before the prompt', async () => {
+  await withProject(async ({ projectRoot }) => {
+    recordDeny(projectRoot, 'run-1', 'plan-guard', 'scaffold-plan-gate');
+    plantSignedVerified(projectRoot, 'run-1');
     let asked = false;
     const outcome = await runUnblock(request(projectRoot), async (): Promise<OverrideConfirmation> => {
       asked = true;
@@ -355,17 +393,10 @@ test('the certified-run refusal is named, is reached before the prompt, and says
     });
     assert.equal(outcome.refusal, 'run-already-verified');
     assert.equal(asked, false, 'an operator is not asked to confirm something that will be refused anyway');
-    // The prose has to carry three halves, and the middle one is the correction
-    // of a claim that was false: WHY (nothing replaces a certificate), that the
-    // certificate itself is UNSIGNED and may have been planted — with how to
-    // check — and WHAT INSTEAD (a run that has not certified). The refusal is
-    // reachable by anyone who can write the project tree, so a message that
-    // dead-ends at "do the work elsewhere" hides a lockout behind an
-    // immutability the product does not have.
     assert.match(outcome.message, /already settled `verified`/);
+    assert.match(outcome.message, /settlementMac/);
     assert.doesNotMatch(outcome.message, /immutable/,
       'the settlement hash is an unkeyed digest; claiming immutability here was measured false');
-    assert.match(outcome.message, /may have been PLANTED/);
     assert.match(outcome.message, /settlement-v2\.json/, 'and it names the file to look at');
     assert.match(outcome.message, /revision/, 'with something checkable in it');
     assert.match(outcome.message, /What to do instead/);
@@ -373,7 +404,6 @@ test('the certified-run refusal is named, is reached before the prompt, and says
     assert.match(outcome.message, /`failed` or `blocked`/, 'and it says which states DO still mint');
     assert.equal(fs.existsSync(overrideLedgerPath(projectRoot)), false, 'nothing was written');
     assert.equal(runUsedOperatorOverride(projectRoot, 'run-1'), false);
-    // The verdict it refused to relax is untouched.
     assert.equal(readRunSettlement(projectRoot, 'run-1')?.status, 'verified');
   });
 });

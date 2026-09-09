@@ -57,10 +57,18 @@ if (process.env.TRAFFIC_ONE_ASK_USE_PLUGIN === undefined) {
 // both legs. Every test that writes a bucket was silently coupled to every later
 // test — and to every later RUN — through the maintainer's home directory.
 //
+// HOME was the remaining hole. documentedBinDir() (shared/runner-shims.ts) is
+// `path.join(process.env.HOME || os.homedir(), '.traffic-one', 'bin')`, and
+// ensureRunnerShims() / agentModelGate write that path. Pinning only
+// XDG_STATE_HOME left HOME as the developer's real home, so the suite wrote
+// `~/.traffic-one/bin` on every file that called ensureRunnerShims — including
+// reset-command.test.ts, which then passed its shim-admission row only because
+// some other file had already planted the real bytes there.
+//
 // Deliberately NOT inside the TRAFFIC_ONE_TEST_PLUGIN_ROOT_PIN opt-out below.
 // That switch means "I am steering this run's plugin root and host environment
 // from outside"; it is not a licence to write to the real machine dir, and the
-// two guards above are already asserted to survive it.
+// two guards above are already asserted to survive it. HOME is the same class.
 const STATE_SCRATCH_PARENT = path.join(os.tmpdir(), 'traffic-one-test-state');
 
 // A STRICT subdirectory of the temp dir, never the temp dir itself, and this is
@@ -142,6 +150,17 @@ function sweepAbandonedStateScratch(now) {
   }
 }
 
+// Capture the unpinned real home FIRST, before either pin moves HOME.
+// Descendants inherit TRAFFIC_ONE_TEST_UNPINNED_HOME (it is in PRELOAD_OWNED_ENV
+// so the wipe cannot delete it). Do not invent a path: if HOME is already ours
+// and this var was never set, leave it unset.
+if (!process.env.TRAFFIC_ONE_TEST_UNPINNED_HOME) {
+  const candidate = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  if (typeof candidate === 'string' && candidate !== '' && !stateScratchIsOurs(candidate)) {
+    process.env.TRAFFIC_ONE_TEST_UNPINNED_HOME = candidate;
+  }
+}
+
 if (!stateScratchIsOurs(process.env.XDG_STATE_HOME)) {
   const own = path.join(STATE_SCRATCH_PARENT, String(process.pid));
   sweepAbandonedStateScratch(Date.now());
@@ -161,6 +180,23 @@ if (!stateScratchIsOurs(process.env.XDG_STATE_HOME)) {
       fs.rmSync(own, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
     } catch { /* best-effort */ }
   });
+}
+
+// Same "ours" / descendant rules as XDG: a value inside the scratch parent can
+// only have been set by a preload-isolated process, so a child keeps it. An
+// ambient HOME — the developer's real home — is NOT ours and is overridden.
+// HOME lives under the existing per-pid `own` (XDG_STATE_HOME after the pin
+// above), a sibling of fixture mkdtemp dirs, never os.tmpdir() itself.
+if (!stateScratchIsOurs(process.env.HOME)) {
+  const own = stateScratchIsOurs(process.env.XDG_STATE_HOME)
+    ? process.env.XDG_STATE_HOME
+    : path.join(STATE_SCRATCH_PARENT, String(process.pid));
+  const home = path.join(own, 'home');
+  fs.mkdirSync(home, { recursive: true });
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+} else if (process.env.USERPROFILE !== process.env.HOME) {
+  process.env.USERPROFILE = process.env.HOME;
 }
 
 // ── the host + plugin env surface ──────────────────────────────────────────
@@ -183,6 +219,10 @@ const PRELOAD_OWNED_ENV = new Set([
   'TRAFFIC_ONE_MANAGED_RUNTIME_OFF',
   // The documented opt-out itself, read below.
   'TRAFFIC_ONE_TEST_PLUGIN_ROOT_PIN',
+  // Real-home snapshot captured before the HOME pin. The wipe would otherwise
+  // delete it (TRAFFIC_ONE_ prefix) and the sentinel could not name the
+  // developer's ~/.traffic-one it is asserting was left alone.
+  'TRAFFIC_ONE_TEST_UNPINNED_HOME',
 ]);
 
 // The plugin's own namespace, every supported host's, and the two code-graph

@@ -141,6 +141,20 @@ test('currentRunId is normalized to the digit string gates expect', () => {
   });
 });
 
+test('normalizeState sanitizes a path-unsafe currentRunId without rejecting legacy shapes', () => {
+  const unsafe: Record<string, unknown> = { mode: 'new-project', currentRunId: 'foo/../bar' };
+  assert.equal(normalizeState(unsafe), true);
+  assert.equal(unsafe.currentRunId, 'foo_.._bar');
+
+  const legacy: Record<string, unknown> = { mode: 'new-project', currentRunId: 'legacy-current' };
+  assert.equal(normalizeState(legacy), false);
+  assert.equal(legacy.currentRunId, 'legacy-current');
+
+  const iso: Record<string, unknown> = { mode: 'new-project', currentRunId: '2026-06-17T12-09-40Z' };
+  assert.equal(normalizeState(iso), false);
+  assert.equal(iso.currentRunId, '2026-06-17T12-09-40Z');
+});
+
 test('writeState never blanks a live currentRunId (F1 lost-update); a new id still rotates', () => {
   withPrefs((dir) => {
     const A = '1715091785000';
@@ -168,6 +182,10 @@ test('preserveCurrentRunId: fills only when replacement lacks an id; keeps a new
   assert.equal(preserveCurrentRunId({ currentRunId: 'A' }, { currentRunId: 12 }).currentRunId, 12);
   // blank replacement id + no disk id → never invents a real id
   assert.equal(String(preserveCurrentRunId({}, { currentRunId: '  ' }).currentRunId ?? '').trim(), '');
+  // rescue coerces a planted traversal; a replacement that CARRIES an id is left
+  // alone (writeState already canonicalize's that arm)
+  assert.equal(preserveCurrentRunId({ currentRunId: 'foo/../bar' }, { stack: 'x' }).currentRunId, 'foo_.._bar');
+  assert.equal(preserveCurrentRunId({ currentRunId: 'A' }, { currentRunId: 'foo/../bar' }).currentRunId, 'foo/../bar');
 });
 
 test('writeState keeps local prefs out of .one.json; readEffectiveState merges them back', () => {

@@ -166,13 +166,21 @@ export function digestCompletionGates(ctx: {
   block: Block;
 }): void {
   const { projectRoot, state, filePath, content, currentRunId, host, violations, block } = ctx;
+  // The digest BEING WRITTEN, whichever channel carries it. A shell-derived
+  // write leaves `content` empty, and heredocs targeting `.traffic-one/digests/`
+  // are explicitly exempt from the shell-write deny as run-state bookkeeping —
+  // so a reviewer/tester/implementer publishing `cat > … <<'EOF'` skipped every
+  // gate that read `content` only, while the identical digest through `Write`
+  // was judged. The gates below judge the digest's CLAIM; how the bytes arrived
+  // is not part of it.
+  const digestBody = content || ctx.shellBody || '';
   // Frontend completion gate: an `IMPLEMENTED` digest must not ship collapsed
   // product source. build/typecheck/lint all pass on a one-line-per-function
   // App.tsx, so nothing else stops it before the tester's format:check — and a
   // run interrupted before Phase 3 delivers a monolithic collapsed app with
   // empty scaffolded module dirs (observed 16c).
   const frontendDigest = FRONTEND_DIGEST_RE.exec(filePath);
-  if (frontendDigest && digestClaimsVerdict(content, 'IMPLEMENTED')) {
+  if (frontendDigest && digestClaimsVerdict(digestBody, 'IMPLEMENTED')) {
     // Scoped to the files this role owns. The scan runs in BOTH modes — the
     // strict/raw split that keeps it safe on an existing codebase lives in the
     // detector (see `collapsedProductSourceFile`), not here, so a genuinely
@@ -282,16 +290,9 @@ export function digestCompletionGates(ctx: {
   // come from the real immutable-baseline diff. Candidate assignments and every
   // bootstrap are preflighted against the new hash before publication.
   const implementedDigest = IMPLEMENTER_DIGEST_RE.exec(filePath);
-  // The digest BEING WRITTEN, whichever channel carries it. A shell-derived
-  // write leaves `content` empty, and heredocs targeting `.traffic-one/digests/`
-  // are explicitly exempt from the shell-write deny as run-state bookkeeping —
-  // so an implementer publishing `cat > …/backend.md <<'EOF'` skipped this whole
-  // battery, while the identical digest through `Write` was judged. The gates
-  // below judge the digest's CLAIM; how the bytes arrived is not part of it.
-  const implementerBody = content || ctx.shellBody || '';
   if (
     implementedDigest
-    && digestClaimsVerdict(implementerBody, 'IMPLEMENTED')
+    && digestClaimsVerdict(digestBody, 'IMPLEMENTED')
     && isNewProjectMode(state)
   ) {
     const runId = implementedDigest[2] || '';
@@ -487,7 +488,7 @@ export function digestCompletionGates(ctx: {
           PLANNED: delivery.planned,
         }));
     }
-    const implementerLighthouseClaim = claimedLighthousePerformance(content);
+    const implementerLighthouseClaim = claimedLighthousePerformance(digestBody);
     const implementerMeasured = implementerLighthouseClaim
       ? canonicalLighthousePerformance(projectRoot, runId)
       : null;
@@ -509,7 +510,7 @@ export function digestCompletionGates(ctx: {
     // skipped this gate entirely while the identical digest through `Write` was
     // denied. The reviewer satisfiability gate below already reads `shellBody`
     // for the same reason; this is the same channel, not a new one.
-    const skipped = skippedVerificationLine(implementerBody);
+    const skipped = skippedVerificationLine(digestBody);
     if (skipped) {
       violations.push(block('implementer-verification-skipped-gate',
         `Implementer verification gate: this digest reports a required command as skipped or unavailable — "${skipped}" — directly alongside \`IMPLEMENTED\`. A verdict is a claim that the owned scope was verified, so an unrun build/typecheck/lint makes it unverifiable and the errors surface later in a sibling role's build. Install the toolchain at its owning manifest, run the command to completion, record the real outcome, then re-emit \`IMPLEMENTED\`. If the command genuinely does not apply, say why without claiming it was skipped.`,
@@ -524,7 +525,7 @@ export function digestCompletionGates(ctx: {
   // header) hands to the implementer as a single "apply ALL findings in this
   // one turn" list. Delivery only: the completion structure scan above still
   // denies while blocking findings remain on disk.
-  if (implementedDigest && digestClaimsVerdict(content, 'IMPLEMENTED')) {
+  if (implementedDigest && digestClaimsVerdict(digestBody, 'IMPLEMENTED')) {
     consolidateQualityFindings(
       projectRoot,
       implementedDigest[2] || '',
@@ -533,7 +534,7 @@ export function digestCompletionGates(ctx: {
   }
   if (implementedDigest
     && implementedDigest[2] === currentRunId
-    && digestClaimsVerdict(content, 'IMPLEMENTED')
+    && digestClaimsVerdict(digestBody, 'IMPLEMENTED')
     && violations.length === 0) {
     const runId = implementedDigest[2] || '';
     if (allImplementationRolesDelivered(projectRoot, runId, filePath)) {
@@ -556,16 +557,14 @@ export function digestCompletionGates(ctx: {
   // `APPROVED` and the run deadlocks (observed 12co on `apps/web/public/llms.txt`).
   //
   // The reviewer is read-only by contract and publishes its digest as a
-  // `cat > … <<'EOF'` heredoc, so this is the one gate that must read the
-  // shell payload: with `content` alone it would be permanently blind on the
-  // exact write it exists to judge.
+  // `cat > … <<'EOF'` heredoc. `digestBody` already unions Write `content`
+  // with that shell payload.
   const fixCycleContext = FIX_CYCLE_CONTEXT_RE.exec(filePath);
-  const findingText = content || ctx.shellBody || '';
   const findingRunId = fixCycleContext
     ? (fixCycleContext[2] || '')
-    : (reviewerDigest && digestClaimsVerdict(findingText, 'CHANGES_REQUESTED') ? (reviewerDigest[2] || '') : '');
+    : (reviewerDigest && digestClaimsVerdict(digestBody, 'CHANGES_REQUESTED') ? (reviewerDigest[2] || '') : '');
   if (findingRunId) {
-    const unowned = unsatisfiableFindingPaths(projectRoot, findingRunId, findingText);
+    const unowned = unsatisfiableFindingPaths(projectRoot, findingRunId, digestBody);
     if (unowned.length > 0) {
       const paths = unowned.map((target) => `\`${target}\``).join(', ');
       violations.push(block('finding-allowlist-gap',
@@ -573,7 +572,7 @@ export function digestCompletionGates(ctx: {
         { PATHS: paths, RUN_ID: findingRunId }));
     }
   }
-  if (reviewerDigest && digestClaimsVerdict(content, 'APPROVED') && !digestClaimsVerdict(content, 'CHANGES_REQUESTED')) {
+  if (reviewerDigest && digestClaimsVerdict(digestBody, 'APPROVED') && !digestClaimsVerdict(digestBody, 'CHANGES_REQUESTED')) {
     const runId = reviewerDigest[2] || '';
     const architecture = runId ? readCompiledArchitecture(projectRoot, runId) : null;
     if (architecture) {
@@ -628,7 +627,7 @@ export function digestCompletionGates(ctx: {
   // matching once blocked honest failure reports, "gates were selecting for
   // phrasing, not truth". A tester writing `verdict: TESTS_FAILING` and then
   // EXPLAINING why it cannot claim TESTS_GREEN was tripping this whole battery.
-  if (testerDigest && digestClaimsVerdict(content, 'TESTS_GREEN')) {
+  if (testerDigest && digestClaimsVerdict(digestBody, 'TESTS_GREEN')) {
     const runId = testerDigest[2] || '';
     if (runId === currentRunId && violations.length === 0) {
       const refresh = refreshVerificationAfterImplementation(projectRoot, runId, state);
@@ -655,7 +654,7 @@ export function digestCompletionGates(ctx: {
     }
     // Same reconciliation as the implementer branch: a page-speed number in a
     // TESTS_GREEN digest must be the runner's, not a self-run audit's.
-    const testerLighthouseClaim = claimedLighthousePerformance(content);
+    const testerLighthouseClaim = claimedLighthousePerformance(digestBody);
     const testerMeasured = testerLighthouseClaim
       ? canonicalLighthousePerformance(projectRoot, runId)
       : null;
@@ -721,7 +720,10 @@ export function digestCompletionGates(ctx: {
             && check.notApplicable === 'no-command-declared')
           .map((check) => check.id)
           .join(', ');
-        if (!/NO_TEST_EVIDENCE/.test(content)) {
+        // Same body the outer TESTS_GREEN predicate already judged: Write
+        // `content` or the heredoc `shellBody`. Reading `content` alone
+        // false-denies a disclosed `cat > … <<'EOF'` digest.
+        if (!/NO_TEST_EVIDENCE/.test(digestBody)) {
           violations.push(block('tester-no-test-evidence-disclosure',
             `Tester completion gate: this run settled with NO TEST EVIDENCE and the digest does not say so. The QA runner excused ${excused} because this project declares no such command — no manifest script and no pinned language default — so nothing was measured for it and nothing here says the code is covered. That is allowed to settle, and it is not allowed to settle quietly: a reader of this digest must not have to open \`report-v2.json\` to discover that the test dimension was skipped rather than passed. Add a line to this digest containing the token \`NO_TEST_EVIDENCE\` and naming what was not measured (for example: "NO_TEST_EVIDENCE — ${excused} was excused: this project declares no test command, so no tests ran"), then re-emit \`TESTS_GREEN\`. Do not add a placeholder test script to silence this; a script that runs nothing is worse than the honest absence.`,
             { EXCUSED: excused }));

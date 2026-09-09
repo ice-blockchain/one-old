@@ -73,6 +73,15 @@ export function abortIfUseNotRecorded(cwd: string, argv: readonly string[]): boo
   return (argv.includes('--use') || argv.includes('--reconsider')) && usePluginQuestionPending(cwd);
 }
 
+// True when the use-plugin question is still open and this invocation is not
+// the answer. main must print the question and exit 2 rather than spawn the
+// wizard, print the link, or write host settings. `--bootstrap-only` is not an
+// answer.
+export function abortIfConsentPending(cwd: string, argv: readonly string[]): boolean {
+  if (argv.includes('--use') || argv.includes('--decline') || argv.includes('--reconsider')) return false;
+  return usePluginQuestionPending(cwd);
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   const host = detectHost(process.env, argv);
@@ -83,6 +92,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   if (argv.includes('--decline')) {
     process.stdout.write(declineOutput(cwd, host));
     process.exit(0);
+  }
+  // Unanswered ask-first, and this argv is not the answer: do not spawn the
+  // wizard, print the link, or write `.claude/settings.local.json`.
+  // `--bootstrap-only` must not act pre-consent.
+  if (abortIfConsentPending(cwd, argv)) {
+    const seedArg = argv.find((a) => a.startsWith('--seed-prompt='));
+    process.stdout.write(`${usePluginQuestion(cwd, host, seedArg?.slice('--seed-prompt='.length), syncSessionFromArgv(argv))}\n`);
+    process.exit(2);
   }
   const reconsider = argv.includes('--reconsider');
   let alreadyDone = false;

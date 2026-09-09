@@ -120,21 +120,13 @@
 //      override taints the RUN and not the tree is this feature's deliberate
 //      boundary; the quarantine cannot be narrower than it.
 //
-//   7. THE ESCAPE HATCH ITSELF, denied per run. `doctor --unblock` refuses a run
-//      whose canonical settlement reads `verified`, and `settlementHash` is an
-//      unkeyed digest over a file inside the project tree — so anything that can
-//      write that tree can WRITE a `verified` settlement (twenty lines,
-//      MEASURED) and lock the operator out of minting an override for that run,
-//      repeatedly, for each new run. Not a way to reach a green verdict, and not
-//      new: it is the same evidence-forgery floor as row 6, reached from the
-//      other side. What IS new is the consequence — this feature widened that
-//      floor from "forge a verdict" to "forge a verdict and disable recovery" —
-//      so it is carried here rather than left implied. The remedy is a fresh
-//      run, which costs a session restart and can be denied again; the refusal
-//      therefore names the suspicion and how to check the record
-//      (runners/doctor/unblock.ts). Raising it needs a signature over the
-//      settlement, which is a change to the settlement format, not to this
-//      feature.
+//   7. THE ESCAPE HATCH ITSELF, narrowed. `doctor --unblock` still refuses a
+//      run whose canonical settlement reads `verified` AND carries a
+//      `settlementMac` this install signed (override/settlement-mac.ts). An
+//      unsigned `verified` is treated as planted: the mint proceeds, and the
+//      refusal text plus `planted-verified.jsonl` name it. Same-uid remains the
+//      trust boundary — whoever can read the override key can forge a MAC.
+//      `settlementHash` is still an unkeyed digest; authenticity is the MAC.
 //
 //   …and, underneath all seven, `rm -rf ~/.traffic-one` — key included. That one
 //   really is unclosable at this layer: afterwards there is no evidence and no

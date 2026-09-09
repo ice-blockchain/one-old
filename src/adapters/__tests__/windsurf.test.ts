@@ -16,12 +16,31 @@ function inv(action: string, toolInfo: object = {}, extra: object = {}) {
 }
 
 test('windsurf: pre_run_command maps to PreToolUse/shell', () => {
-  const parsed = windsurf.parse(inv('pre_run_command', { command_line: 'npm test', cwd: '/repo' }));
+  const parsed = windsurf.parse(inv('pre_run_command', { command_line: 'npm test', cwd: '/tmp/agent' }, { cwd: '/repo' }));
   assert.equal(parsed.host, 'windsurf');
   assert.equal(parsed.event, 'PreToolUse');
   assert.equal(parsed.cwd, '/repo');
+  assert.equal(parsed.tool?.workdir, '/tmp/agent');
   assert.equal(parsed.tool?.class, 'shell');
   assert.equal(parsed.tool?.command, 'npm test');
+});
+
+test('windsurf: tool_info.cwd is workdir only; session cwd comes from payload fields', () => {
+  const fromCwd = windsurf.parse(inv('pre_run_command', { command_line: 'ls', cwd: '/tmp' }, { cwd: '/workspace' }));
+  assert.equal(fromCwd.cwd, '/workspace');
+  assert.equal(fromCwd.tool?.workdir, '/tmp');
+
+  const fromWorkspace = windsurf.parse(inv('pre_run_command', { command_line: 'ls', cwd: '/tmp' }, { workspace_root: '/opened' }));
+  assert.equal(fromWorkspace.cwd, '/opened');
+  assert.equal(fromWorkspace.tool?.workdir, '/tmp');
+
+  const fromRootPath = windsurf.parse(inv('pre_run_command', { command_line: 'ls', working_directory: '/tmp' }, { root_workspace_path: '/root-ws' }));
+  assert.equal(fromRootPath.cwd, '/root-ws');
+  assert.equal(fromRootPath.tool?.workdir, '/tmp');
+
+  const agentOnly = windsurf.parse(inv('pre_run_command', { command_line: 'ls', cwd: '/tmp' }));
+  assert.notEqual(agentOnly.cwd, '/tmp');
+  assert.equal(agentOnly.tool?.workdir, '/tmp');
 });
 
 test('windsurf: pre_write_code maps edits and content', () => {
@@ -59,14 +78,53 @@ test('windsurf: run_subagent MCP calls map to spawn-agent with normalized raw to
     mcp_tool_name: 'run_subagent',
     profile: 'senior-frontend',
     prompt: '[t1-role: senior-frontend]\nbuild the UI',
-    cwd: '/repo',
-  }));
+    cwd: '/tmp/agent',
+  }, { cwd: '/repo' }));
   assert.equal(parsed.event, 'PreToolUse');
+  assert.equal(parsed.cwd, '/repo');
   assert.equal(parsed.tool?.class, 'spawn-agent');
   assert.equal(parsed.tool?.rawName, 'devin.run_subagent');
+  assert.equal(parsed.tool?.workdir, '/tmp/agent');
   const raw = parsed.raw as { tool_name?: string; tool_input?: Record<string, unknown> };
   assert.equal(raw.tool_name, 'devin.run_subagent');
   assert.equal(raw.tool_input?.profile, 'senior-frontend');
+});
+
+test('windsurf: pre_mcp_tool_use classifies write/shell MCP by tool_info args', () => {
+  const write = windsurf.parse(inv('pre_mcp_tool_use', {
+    mcp_server_name: 'filesystem',
+    mcp_tool_name: 'write_file',
+    path: '/repo/src/a.ts',
+    content: 'export const x = 1;',
+  }, { cwd: '/repo' }));
+  assert.equal(write.event, 'PreToolUse');
+  assert.equal(write.tool?.class, 'file-write');
+  assert.equal(write.tool?.rawName, 'filesystem.write_file');
+  assert.equal(write.tool?.filePath, '/repo/src/a.ts');
+
+  const post = windsurf.parse(inv('post_mcp_tool_use', {
+    mcp_server_name: 'filesystem',
+    mcp_tool_name: 'write_file',
+    file_path: '/repo/src/a.ts',
+    new_string: 'z',
+  }, { cwd: '/repo' }));
+  assert.equal(post.event, 'PostToolUse');
+  assert.equal(post.tool?.class, 'file-write');
+
+  const shell = windsurf.parse(inv('pre_mcp_tool_use', {
+    mcp_server_name: 'shell',
+    mcp_tool_name: 'run',
+    command: 'npm test',
+  }, { cwd: '/repo' }));
+  assert.equal(shell.tool?.class, 'shell');
+  assert.equal(shell.tool?.command, 'npm test');
+
+  const other = windsurf.parse(inv('pre_mcp_tool_use', {
+    mcp_server_name: 'search',
+    mcp_tool_name: 'query',
+    query: 'todos',
+  }, { cwd: '/repo' }));
+  assert.equal(other.tool?.class, 'other');
 });
 
 test('windsurf: deny serializes as runtime envelope', async () => {

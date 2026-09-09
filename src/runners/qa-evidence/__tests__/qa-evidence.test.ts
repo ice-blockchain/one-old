@@ -466,6 +466,226 @@ test('browser CLI owns the listener, runs Playwright and Lighthouse, then verifi
   });
 });
 
+function writeRawLighthouse(
+  file: string,
+  opts: { finalUrl: string; fetchTime: string; performance?: number },
+): void {
+  fs.writeFileSync(file, JSON.stringify({
+    lighthouseVersion: '13.2.0-test',
+    fetchTime: opts.fetchTime,
+    finalDisplayedUrl: opts.finalUrl,
+    categories: {
+      performance: { score: opts.performance ?? 0.96 },
+      accessibility: { score: 0.97 },
+      'best-practices': { score: 0.98 },
+      seo: { score: 0.99 },
+    },
+    audits: {
+      'largest-contentful-paint': { numericValue: 1200 },
+      'cumulative-layout-shift': { numericValue: 0.02 },
+      'interaction-to-next-paint': { numericValue: 100 },
+    },
+  }));
+}
+
+async function convertLighthouseArtifact(
+  cwd: string,
+): Promise<{ code: number; err: string }> {
+  let err = '';
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    err += String(chunk);
+    return (write as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  try {
+    const code = await main([
+      'lighthouse',
+      '--run-id', 'R',
+      '--build-dir', 'apps/web/dist',
+      '--artifact', '.traffic-one/reports/qa/R/lighthouse.raw.json',
+    ], cwd);
+    return { code, err };
+  } finally {
+    process.stderr.write = write;
+  }
+}
+
+test('lighthouse --artifact conversion applies the live owned-listener checks', async () => {
+  await withProject(async (cwd) => {
+    setupProject(cwd, { performanceMin: 90 });
+    installFakePlaywright(cwd);
+    installFakeLighthouse(cwd);
+    assert.equal(await main([
+      'browser',
+      '--run-id', 'R',
+      '--build-dir', 'apps/web/dist',
+      '--scenario-json', scenario(),
+    ], cwd), 0);
+
+    const rawPath = path.join(cwd, '.traffic-one/reports/qa/R/lighthouse.raw.json');
+    const reportPath = qaReportV2Path(cwd, 'R');
+    const honest = fs.readFileSync(rawPath, 'utf8');
+    const honestReport = fs.readFileSync(reportPath, 'utf8');
+    const report = JSON.parse(honestReport) as {
+      build: { url: string; startedAt: string };
+    };
+    const ownedUrl = report.build.url;
+    const ownedStartedAt = report.build.startedAt;
+    assert.ok(ownedUrl, 'fixture guard: the parent-runner report must record the owned listener URL');
+    assert.ok(ownedStartedAt, 'fixture guard: the parent-runner report must record the owned listener start');
+
+    writeRawLighthouse(rawPath, {
+      finalUrl: 'http://127.0.0.1:65534/',
+      fetchTime: new Date().toISOString(),
+    });
+    const wrongOrigin = await convertLighthouseArtifact(cwd);
+    assert.equal(wrongOrigin.code, 1);
+    assert.match(wrongOrigin.err, /runner-owned live build listener/);
+
+    writeRawLighthouse(rawPath, {
+      finalUrl: `${ownedUrl}/`,
+      fetchTime: new Date(Date.parse(ownedStartedAt) - 60_000).toISOString(),
+    });
+    const beforeStart = await convertLighthouseArtifact(cwd);
+    assert.equal(beforeStart.code, 1);
+    assert.match(beforeStart.err, /runner-owned live build listener/);
+
+    writeRawLighthouse(rawPath, {
+      finalUrl: `${ownedUrl}/*`,
+      fetchTime: new Date().toISOString(),
+    });
+    const catchAll = await convertLighthouseArtifact(cwd);
+    assert.equal(catchAll.code, 1);
+    assert.match(catchAll.err, /Lighthouse measured \/\* instead of the intended \//);
+    assert.match(catchAll.err, /never a catch-all/);
+
+    fs.writeFileSync(rawPath, honest);
+    fs.writeFileSync(reportPath, honestReport);
+    const honestAgain = await convertLighthouseArtifact(cwd);
+    assert.equal(honestAgain.code, 0, 'the honest artifact captured on the attested listener still converts');
+  });
+});
+
+function setupNonvisualPerformanceProject(cwd: string): VerificationContractV2 {
+  fs.mkdirSync(path.join(cwd, 'apps/web/src/lib'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
+    name: 'web',
+    dependencies: { react: '19.0.0', vite: '7.0.0' },
+    scripts: { build: 'node -e ""', test: 'node -e ""', 'format:check': 'node -e ""' },
+  }));
+  const architecture = compileArchitecture(cwd, 'R', STATE, {
+    schemaVersion: 1,
+    routes: [],
+    modules: [{ id: 'mapper', name: 'Mapper', kind: 'service' }],
+  });
+  fs.writeFileSync(
+    path.join(cwd, 'apps/web/src/lib/Mapper.ts'),
+    'export const map = (value: string): string => value;\n',
+  );
+  const contract = compileVerificationContract(cwd, 'R', STATE, architecture, {
+    changedPaths: ['apps/web/src/lib/Mapper.ts'],
+    explicitLighthouse: {
+      performanceMin: 90,
+      accessibilityMin: 90,
+      bestPracticesMin: 90,
+      lcpMaxMs: 2_500,
+      clsMax: 0.1,
+    },
+  });
+  assert.equal(contract.uiImpact, 'nonvisual', 'fixture guard: stack owns this contract');
+  assert.equal(contract.browserRequired, false);
+  assert.equal(contract.performance.required, true);
+  return contract;
+}
+
+function writeStackLighthouseRaw(
+  cwd: string,
+  opts: { finalUrl?: string; performance?: number } = {},
+): string {
+  const rel = '.traffic-one/reports/qa/R/lighthouse.raw.json';
+  const file = path.join(cwd, rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeRawLighthouse(file, {
+    finalUrl: opts.finalUrl || 'http://127.0.0.1:4173/',
+    fetchTime: new Date().toISOString(),
+    performance: opts.performance,
+  });
+  return rel;
+}
+
+test('stack --artifact attaches Lighthouse when performance.required and settles without a served listener', async () => {
+  await withProject(async (cwd) => {
+    setupNonvisualPerformanceProject(cwd);
+    const artifact = writeStackLighthouseRaw(cwd, { finalUrl: 'http://127.0.0.1:65534/' });
+    const code = await main([
+      'stack',
+      '--project-root', cwd,
+      '--run-id', 'R',
+      '--artifact', artifact,
+    ], cwd);
+    const validated = readQaReportV2(cwd, 'R');
+    assert.equal(code, 0, validated.ok ? '' : `${validated.code}: ${validated.message}`);
+    assert.equal(validated.ok, true, validated.ok ? '' : `${validated.code}: ${validated.message}`);
+    if (!validated.ok) return;
+    assert.equal(validated.report.lighthouse?.evidencePath, 'lighthouse-evidence-v1.json');
+    assert.equal(validated.report.build, undefined, 'stack must not invent a served build identity');
+    assert.deepEqual(validated.report.routes, [], 'do not force a screenshot/route matrix on none/nonvisual');
+    assert.equal(validated.report.machineEvidencePath, undefined);
+  });
+});
+
+test('lighthouse --artifact on a stack report settles without --build-dir or build.url', async () => {
+  await withProject(async (cwd) => {
+    setupNonvisualPerformanceProject(cwd);
+    const missing = await main(['stack', '--project-root', cwd, '--run-id', 'R'], cwd);
+    const before = readQaReportV2(cwd, 'R');
+    assert.equal(missing, 1);
+    assert.equal(before.ok, false);
+    if (!before.ok) assert.equal(before.code, 'lighthouse-threshold-failed');
+    assert.equal(before.report?.lighthouse?.evidencePath, undefined);
+
+    const artifact = writeStackLighthouseRaw(cwd);
+    const code = await main([
+      'lighthouse',
+      '--project-root', cwd,
+      '--run-id', 'R',
+      '--artifact', artifact,
+    ], cwd);
+    const validated = readQaReportV2(cwd, 'R');
+    assert.equal(code, 0, validated.ok ? '' : `${validated.code}: ${validated.message}`);
+    assert.equal(validated.ok, true, validated.ok ? '' : `${validated.code}: ${validated.message}`);
+    if (!validated.ok) return;
+    assert.equal(validated.report.lighthouse?.evidencePath, 'lighthouse-evidence-v1.json');
+    assert.equal(validated.report.build, undefined);
+  });
+});
+
+test('lighthouse --artifact conversion fails closed without the parent-runner owned listener identity', async () => {
+  await withProject(async (cwd) => {
+    setupProject(cwd, { performanceMin: 90 });
+    installFakePlaywright(cwd);
+    installFakeLighthouse(cwd);
+    assert.equal(await main([
+      'browser',
+      '--run-id', 'R',
+      '--build-dir', 'apps/web/dist',
+      '--scenario-json', scenario(),
+    ], cwd), 0);
+
+    const reportPath = qaReportV2Path(cwd, 'R');
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Record<string, unknown>;
+    delete report.build;
+    fs.writeFileSync(reportPath, JSON.stringify(report));
+
+    const stripped = await convertLighthouseArtifact(cwd);
+    assert.equal(stripped.code, 1);
+    assert.match(
+      stripped.err,
+      /Lighthouse conversion requires the matching report-v2 produced by the browser runner/,
+    );
+  });
+});
+
 test('browser CLI fails exact Lighthouse thresholds and rejects another localhost listener', async () => {
   await withProject(async (cwd) => {
     setupProject(cwd, { performanceMin: 90 });
@@ -1226,6 +1446,37 @@ test('resolveStackCommand discards the Go build object instead of naming it afte
     const lint = resolveStackCommand(dir, 'stack-lint');
     assert.deepEqual('unavailable' in test ? null : test.args, ['test', './...']);
     assert.deepEqual('unavailable' in lint ? null : lint.args, ['vet', './...']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveStackCommand gives a Rust crate cargo test, clippy and fmt --check', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ruststack-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'Cargo.toml'), '[package]\nname = "api"\nedition = "2021"\n');
+    const build = resolveStackCommand(dir, 'stack-build');
+    const testCmd = resolveStackCommand(dir, 'stack-test');
+    const lint = resolveStackCommand(dir, 'stack-lint');
+    const format = resolveStackCommand(dir, 'stack-format');
+    assert.ok(!('unavailable' in build), 'a Cargo.toml crate must resolve stack-build');
+    assert.ok(!('unavailable' in testCmd), 'a Cargo.toml crate must resolve stack-test');
+    assert.ok(!('unavailable' in lint), 'clippy must not require clippy.toml');
+    assert.ok(!('unavailable' in format), 'cargo fmt --check is the format form');
+    if ('unavailable' in build || 'unavailable' in testCmd || 'unavailable' in lint || 'unavailable' in format) {
+      return;
+    }
+    assert.equal(build.command, 'cargo');
+    assert.deepEqual(build.args, ['build']);
+    assert.deepEqual(testCmd.args, ['test']);
+    assert.deepEqual(lint.args, ['clippy']);
+    assert.deepEqual(format.args, ['fmt', '--check']);
+
+    fs.writeFileSync(path.join(dir, 'Cargo.lock'), '# lock\n');
+    const locked = resolveStackCommand(dir, 'stack-test');
+    assert.ok(!('unavailable' in locked));
+    if ('unavailable' in locked) return;
+    assert.deepEqual(locked.args, ['test', '--locked'], 'a present Cargo.lock pins the graph');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

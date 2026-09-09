@@ -25,15 +25,17 @@ import {
   shellStrayDeleteTarget,
   shellTrafficOneWriteTargets,
   shellWriteTargetsStateDir,
+  shellWriteTargetsStateFile,
 } from '../../../shared/feature-source';
 import { parseApplyPatch, patchTextFromToolInput, type ApplyPatchParseResult } from '../../../shared/apply-patch';
 import { projectRelativeHookPath } from '../../../shared/hook/paths';
 import { materializeProjectIfNeeded } from '../../../shared/materialize';
 import { pluginRoot } from '../../../shared/paths';
 import { makeSkillBlock } from '../../../shared/skill-block';
-import { activeAgentRole, explainUnresolvedRunAgent, hookSessionIdentity, isNativeState, isNewProjectMode, readEffectiveState, readState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
+import { activeAgentRole, explainUnresolvedRunAgent, hasRunAgentState, hookSessionIdentity, isNativeState, isNewProjectMode, readEffectiveState, readState, resolveRunAgentContext, roleForRunSessionId } from '../../../shared/state';
 import { capturePlanGuardDebug } from '../../../shared/state/claim-capture';
-import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../../shared/tool-classify';
+import { doctorUnblockAgentMintDenial } from '../../../shared/doctor-unblock-deny';
+import { canonicalToolName, commandFromToolInput, isShellToolName, isStateFilePath, isTrafficOneSecurityCheckCommand, normalizedToolName, parsedToolInput } from '../../../shared/tool-classify';
 import {
   capabilityProfileForRun,
   isDeletableStrayArtifact,
@@ -47,6 +49,7 @@ import {
   assetExtensionMismatchViolations, planStaticViolations, makePlanBlock, type Vars,
 } from '../plan-static';
 import { resolveToolScope, workspaceMemberRefusal } from '../../../shared/tool-scope';
+import { canonicalizeStateDirSegments, STATE_DIR } from '../../../config/paths';
 import { isDenyId, type DenyId } from '../../../config/deny-ids';
 
 import { shellResetRecordDestruction } from './reset-record-shell';
@@ -176,6 +179,12 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const tool = ctx.input.tool;
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName) || 'Bash';
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  // Same helper as onboarding-gate: an agent-issued `doctor --unblock` is a
+  // mint, not a plan write, and this gate is the Bash path on hosts that do
+  // not run onboarding-gate. Ahead of stand-down — the write is outside every
+  // project fence.
+  const unblockMint = doctorUnblockAgentMintDenial(toolName, toolInput);
+  if (unblockMint) return unblockMint;
 
   // OpenCode tools carry camelCase args (write/edit → `filePath`, edit → `newString`,
   // apply_patch → `patchText`) — the snake_case reads below miss them, which would
@@ -184,7 +193,9 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // canonical fields + camelCase raw names. Claude/Codex/Cursor hit the snake_case /
   // parsedToolInput reads first, so their behavior is byte-identical.
   const rawFilePath = (asString(toolInput.file_path) || asString(toolInput.filePath)
-    || asString(toolInput.path) || asString(tool?.filePath)).replace(/\\/g, '/');
+    || asString(toolInput.path)
+    || asString(toolInput.notebook_path) || asString(toolInput.notebookPath)
+    || asString(tool?.filePath)).replace(/\\/g, '/');
   const isApplyPatch = normalizedToolName(toolName).toLowerCase() === 'apply_patch';
   // Codex apply_patch payloads arrive in tool_input.command — patch DATA, not a
   // shell command. Run-id/feature-write/heredoc scanners must never read patch
@@ -367,12 +378,16 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // digests, fix-cycle notes), not an implementation write — even when its BODY
   // cites feature-source paths. Mirrors the Write/Edit target-path exemption.
   const shellStateDirWrite = isShellToolName(toolName) && shellWriteTargetsStateDir(rawCommand);
+  // State-file redirect/tee: `.one.json` is now a visible write target so the
+  // shell deny can see it. A heredoc whose BODY cites `src/` must not also run
+  // feature-source / run-team ownership as if this were product source.
+  const shellStateFileWrite = isShellToolName(toolName) && shellWriteTargetsStateFile(rawCommand);
   // Asset-import carve-out: a single `cp`/`mv` bringing a read-only file from
   // OUTSIDE the project into a project path has a verifiable DEST — route it
   // through the same per-target ownership checks as Write/Edit instead of the
   // blanket shell-write deny (binary deliverables have no text-tool path;
   // observed 10c-codex: a generated OG raster could never be placed).
-  const assetImportDest = isShellToolName(toolName) && !shellStateDirWrite
+  const assetImportDest = isShellToolName(toolName) && !shellStateDirWrite && !shellStateFileWrite
     ? shellAssetImportDest(rawCommand, patchBase, projectRoot)
     : null;
   if (assetImportDest) {
@@ -387,19 +402,21 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // parent (observed 6co on `apps/web/public/icons/favicon.svg.png`), so the run
   // only escapes through an exact `git clean`. Everything broader — globs,
   // `-r`, multiple operands, tracked or compiled paths — stays denied.
-  const strayDeleteTarget = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
+  const strayDeleteTarget = isShellToolName(toolName) && !shellStateDirWrite && !shellStateFileWrite && !assetImportDest
     ? shellStrayDeleteTarget(rawCommand, patchBase, projectRoot)
     : null;
   const cleaningStrayArtifact = Boolean(
     strayDeleteTarget && isDeletableStrayArtifact(projectRoot, strayDeleteTarget, compiledArchitecture),
   );
-  const writingFeatureSourceViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
+  const writingFeatureSourceViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !shellStateFileWrite
+    && !assetImportDest
     && !cleaningStrayArtifact
     && (
       commandAppearsToWriteFeatureSource(rawCommand)
       || commandAppearsToWriteCompiledFeature(rawCommand, compiledArchitecture)
     );
-  const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !assetImportDest
+  const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite && !shellStateFileWrite
+    && !assetImportDest
     && !cleaningStrayArtifact
     && commandAppearsToWriteBuildArtifact(rawCommand);
   // Structured cwd from tool_input WORKDIR_FIELDS only — never ctx.cwd. Hook
@@ -561,10 +578,32 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // in between reads a mode this project never chose — but the reason is a
   // window, not a permanent stand-down, and a deny that overstates its own cause
   // teaches the reader to discount the next one.
-  const STATE_FILE_REL = '.traffic-one/.one.json';
+  const STATE_FILE_REL = `${STATE_DIR}/.one.json`;
   for (const target of gateTargets) {
-    if (target.filePath !== STATE_FILE_REL || !target.staticCheck) continue;
+    if (canonicalizeStateDirSegments(target.filePath) !== STATE_FILE_REL || !target.staticCheck) continue;
     const rawOnDisk = readState(projectRoot);
+    let proposed: Record<string, unknown>;
+    try {
+      proposed = JSON.parse(target.resultContent) as Record<string, unknown>;
+    } catch {
+      continue; // not parseable JSON — other validation owns corrupt writes
+    }
+    // `activeAgentRole` is a legacy writer-identity fallback. An agent Write
+    // or Edit that sets it forges APPROVED / TESTS_GREEN / PLAN_READY (and
+    // every other role-owned artifact) through assignmentWriterRole.
+    //
+    // `resultContent` is the full reconstructed file, so a surgical Edit of
+    // another key still carries a legacy value that was already on disk.
+    // Deny only add or value-change against `rawOnDisk`; omitting the key
+    // (drop) and rewriting it to the same `===` value both stay allowed.
+    const proposedHasRole = Object.prototype.hasOwnProperty.call(proposed, 'activeAgentRole');
+    const onDiskHasRole = Object.prototype.hasOwnProperty.call(rawOnDisk, 'activeAgentRole');
+    if (proposedHasRole && (!onDiskHasRole || rawOnDisk.activeAgentRole !== proposed.activeAgentRole)) {
+      violations.push(block('state-writer-identity',
+        'State writer-identity gate: `activeAgentRole` is a legacy fallback and is not agent-writable. Do not add or change it in `.traffic-one/.one.json`. Parallel workers bind through per-agent run claims (`.traffic-one/runs/<runId>/…`), not a shared field the parent can type. Leave the field absent for new runs; if a legacy value is already on disk, do not replace it.'));
+      offendingTargets.add(target.filePath);
+      break;
+    }
     // Through the predicate at BOTH ends. On disk, because a hand-edited
     // ` New-Project ` is a scaffolded project to every gate that reads it and
     // must therefore be one to the guard that protects them; and on the
@@ -572,15 +611,23 @@ export function planWriteGate(ctx: Ctx): HookResult {
     // they can agree that it changed.
     if (!isNewProjectMode(rawOnDisk)
       || (rawOnDisk.confirmed !== true && rawOnDisk.onboardingComplete !== true)) continue;
-    let proposed: Record<string, unknown>;
-    try {
-      proposed = JSON.parse(target.resultContent) as Record<string, unknown>;
-    } catch {
-      continue; // not parseable JSON — other validation owns corrupt writes
-    }
     if (!isNewProjectMode(proposed)) {
       violations.push(block('state-mode-downgrade',
         'State mode gate: this project was onboarded as `new-project`; rewriting `.traffic-one/.one.json` to any other mode mid-run would disarm the architecture gates that mode selects. An UNRECOGNIZED `mode` counts — `workspace`, `brownfield`, anything the mode table does not name stands the same gates down as `existing-codebase` while the run\'s compiled architecture and verification contracts stay frozen against the old profile. An empty, absent or null `mode` is refused for a different reason: state normalization repairs it back to `new-project` on the next materialization pass, so the write does not survive as written and any gate reading the file before that pass reads a mode this project never declared. Mode changes go through onboarding, not a state-file edit. If the user explicitly wants this project treated as an existing codebase, re-run Traffic One onboarding.'));
+      offendingTargets.add(target.filePath);
+      break;
+    }
+  }
+  // Shell/staticCheck-false writes of the state file skip the loop above, which
+  // is why `cat > .traffic-one/.one.json` was ungated. Write/Edit/apply_patch
+  // stay on the static identity and mode checks; this deny is the shell channel
+  // only. The security-check runner writes via `writeState` and typically does
+  // not name `.one.json` in argv — still skip if the command is that runner.
+  if (isShell && !isTrafficOneSecurityCheckCommand(toolName, toolInput)) {
+    for (const target of gateTargets) {
+      if (target.staticCheck || !isStateFilePath(target.filePath)) continue;
+      violations.push(block('state-file-shell-write',
+        'State file shell gate: `.traffic-one/.one.json` is not writable through a shell redirect, `tee`, in-place editor, or interpreter eval (`python -c`, `node -e`, `cat >`). Those channels skip the state-file identity and mode checks that Write/Edit/apply_patch already run. Use the Write or Edit tool so those checks can see the proposed contents. The only sanctioned shell writer is `node ~/.traffic-one/bin/security-check-runner.cjs --strict --stamp`.'));
       offendingTargets.add(target.filePath);
       break;
     }
@@ -756,7 +803,11 @@ export function planWriteGate(ctx: Ctx): HookResult {
     : resolveRunAgentContext(projectRoot, state, raw, { host: ctx.host });
   const resolvedRole = registryRole
     || (typeof resolvedContext?.role === 'string' ? resolvedContext.role : null);
-  const effectiveRole = activeAgentRole(state) || resolvedRole;
+  // Registry / resolveRunAgentContext first. `activeAgentRole` is forgeable
+  // shared state — only the legacy fallback when this run has no claims,
+  // assignments, or registry (same gate as assignmentWriterRole / plan-runteam).
+  const effectiveRole = resolvedRole
+    || (!hasRunAgentState(projectRoot, state) ? activeAgentRole(state) : null);
   capturePlanGuardDebug(projectRoot, runId, {
     filePath,
     filePaths: writeTargetPaths,

@@ -2,7 +2,7 @@
 // The retry policy is a BLOCK bought by recency, so a stamp ahead of `nowMs`
 // used to suppress the report's next attempt permanently.
 
-import * as assert from 'assert';
+import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { FAILED_RETRY_MS, QUEUED_RETRY_MS } from '../../../config/reporting';

@@ -15,6 +15,9 @@ import { ensureRunModelPolicy } from '../../../shared/run-model-policy';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 import { assertLatencyBudget } from '../../../test-support/__tests__/latency-budget';
 import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { doctorCommand, doctorScriptPath } from '../../../shared/doctor-command';
+import { securityCheckScriptPath, securityCheckShimPath, securityCheckStampCommand } from '../../../shared/security-check-command';
+import { shimSource } from '../../../shared/runner-shims';
 import { readDecisions } from '../../../shared/state/decision-log';
 import { makeKiloAdapter } from '../../../adapters/kilo';
 import { makeOpenCodeAdapter } from '../../../adapters/opencode';
@@ -24,6 +27,13 @@ import {
   publishRuntimeAssignments,
 } from '../../../shared/architecture-contract';
 import { compileVerificationContract } from '../../../shared/verification-contract';
+import {
+  ARCHITECTURE_INPUT_RE,
+  ASSIGNMENTS_FILE_RE,
+  PLAN_FILE_RE,
+  RESET_RECORD_RE,
+  RUN_RUNTIME_SIDECAR_RE,
+} from '../plan-readiness/context';
 
 // Split into a fixture + two wrappers so the async wrapper below can AWAIT its
 // body before the teardown runs: `try { fn(dir) } finally { rm(dir) }` deletes
@@ -661,13 +671,40 @@ test('apply_patch reconstructs architect digest content before enforcing PLAN_RE
       '*** Update File: .traffic-one/digests/run-1/architect.md',
       '@@',
       '-draft',
-      '+draft PLAN_READY',
+      '+verdict: PLAN_READY',
       '*** End Patch',
     ].join('\n');
 
     const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { patchText }));
     assert.equal(result.kind, 'deny');
     if (result.kind === 'deny') assert.match(result.reason, /Architect completion gate|PLAN_READY/);
+  });
+});
+
+test('apply_patch bare-word PLAN_READY in architect digest is not a compile claim', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run-1');
+    fs.mkdirSync(digestDir, { recursive: true });
+    fs.writeFileSync(path.join(digestDir, 'architect.md'), 'draft\n', 'utf8');
+    const patchText = [
+      '*** Begin Patch',
+      '*** Update File: .traffic-one/digests/run-1/architect.md',
+      '@@',
+      '-draft',
+      '+draft PLAN_READY',
+      '*** End Patch',
+    ].join('\n');
+
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', { patchText }));
+    if (result.kind === 'deny') {
+      assert.doesNotMatch(result.reason, /Architect completion gate/,
+        'a mention without a verdict line must not take the PLAN_READY compile path');
+    } else {
+      assert.equal(result.kind, 'noop');
+    }
   });
 });
 
@@ -1602,6 +1639,21 @@ test('existing codebase: an Edit near a pre-existing wide line is not collapse-d
 // at all, or `"workspace"` disarmed exactly as much as `existing-codebase` did
 // and walked straight past the guard — while the run's compiled architecture
 // and verification contracts stayed frozen against the old profile.
+test('state-dir path predicates fold the .traffic-one segment only', () => {
+  assert.equal(PLAN_FILE_RE.test('.traffic-one/plan.md'), true);
+  assert.equal(PLAN_FILE_RE.test('.Traffic-One/plan.md'), true);
+  assert.equal(PLAN_FILE_RE.test('.traffic-one-backup/plan.md'), false);
+  assert.equal(ASSIGNMENTS_FILE_RE.test('.TRAFFIC-ONE/runs/R/assignments.json'), true);
+  assert.equal(ASSIGNMENTS_FILE_RE.test('.traffic-one-backup/runs/R/assignments.json'), false);
+  assert.equal(ASSIGNMENTS_FILE_RE.test('.traffic-one/runs/R/ASSIGNMENTS.json'), false);
+  assert.equal(ARCHITECTURE_INPUT_RE.test('.Traffic-One/runs/R/architecture-input-v1.json'), true);
+  assert.equal(RESET_RECORD_RE.test('.Traffic-One/runs/.resets.json'), true);
+  assert.equal(RESET_RECORD_RE.test('.traffic-one-backup/runs/.resets.json'), false);
+  assert.equal(RESET_RECORD_RE.test('.traffic-one/runs/.RESETS.json'), false);
+  assert.equal(RUN_RUNTIME_SIDECAR_RE.test('.TRAFFIC-ONE/runs/R/scan-bound.json'), true);
+  assert.equal(RUN_RUNTIME_SIDECAR_RE.test('.traffic-one-backup/runs/R/scan-bound.json'), false);
+});
+
 test('a confirmed new-project state cannot rewrite itself to any other mode', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
@@ -1630,6 +1682,17 @@ test('a confirmed new-project state cannot rewrite itself to any other mode', ()
     assert.equal(rewrite({ ...onDisk, stack: 'default' }).kind, 'noop');
     assert.equal(rewrite({ ...onDisk, mode: ' New-Project ' }).kind, 'noop',
       'the guard normalizes what it compares, or it refuses a no-op');
+    const folded = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.Traffic-One/.one.json',
+      content: JSON.stringify({ ...onDisk, mode: 'existing-codebase' }),
+    }));
+    assert.equal(folded.kind, 'deny', 'a case-folded state path is still the state file');
+    if (folded.kind === 'deny') assert.match(folded.reason, /State mode gate/);
+    const backup = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one-backup/.one.json',
+      content: JSON.stringify({ ...onDisk, mode: 'existing-codebase' }),
+    }));
+    assert.notEqual(backup.kind === 'deny' ? backup.denyId : '', 'state-mode-downgrade');
   });
   // CREATING the state file (no `.one.json` on disk) with an existing mode is
   // what the state-gate prose instructs on first detection of an existing
@@ -1648,6 +1711,222 @@ test('a confirmed new-project state cannot rewrite itself to any other mode', ()
     }));
     assert.equal(create.kind, 'noop');
   });
+});
+
+test('a Write or Edit that forges activeAgentRole on .one.json is denied', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')) as Record<string, unknown>;
+    const forged = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, activeAgentRole: 'senior-architect' }),
+    }));
+    assert.equal(forged.kind, 'deny');
+    if (forged.kind === 'deny') {
+      assert.equal(forged.denyId, 'state-writer-identity');
+      assert.match(forged.reason, /State writer-identity gate/);
+    }
+    const folded = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.Traffic-One/.one.json',
+      content: JSON.stringify({ ...onDisk, activeAgentRole: 'senior-reviewer' }),
+    }));
+    assert.equal(folded.kind, 'deny', 'a case-folded state path is still the state file');
+    if (folded.kind === 'deny') assert.equal(folded.denyId, 'state-writer-identity');
+    const onDiskText = fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8');
+    const edited = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: '.traffic-one/.one.json',
+      old_string: onDiskText,
+      new_string: JSON.stringify({ ...JSON.parse(onDiskText), activeAgentRole: 'senior-tester' }),
+    }));
+    assert.equal(edited.kind, 'deny');
+    if (edited.kind === 'deny') assert.equal(edited.denyId, 'state-writer-identity');
+    assert.equal(
+      planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+        file_path: '.traffic-one/.one.json',
+        content: JSON.stringify({ ...onDisk, stack: 'default' }),
+      })).kind,
+      'noop',
+      'rewriting other fields without introducing activeAgentRole stays allowed',
+    );
+  });
+});
+
+test('a legacy activeAgentRole on disk may be preserved or dropped, but not replaced', () => {
+  withMaterialized({
+    currentRunId: 'R',
+    team: { mode: 'main-agent', source: 'prompted' },
+  }, (cwd) => {
+    // Run-agent artifacts stand the legacy field down as writer identity, so
+    // this row isolates the static add/change predicate from architect-scope.
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'runs', 'R'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'runs', 'R', 'assignments.json'), '{}', 'utf8');
+    const stateFile = path.join(cwd, '.traffic-one', '.one.json');
+    const plant = (role: string): Record<string, unknown> => {
+      const current = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+      const planted = { ...current, activeAgentRole: role };
+      fs.writeFileSync(stateFile, JSON.stringify(planted), 'utf8');
+      return planted;
+    };
+
+    const planted = plant('senior-architect');
+    const plantedText = fs.readFileSync(stateFile, 'utf8');
+    const edited = planWriteGate(writeCtx(cwd, 'Edit', 'file-edit', {
+      file_path: '.traffic-one/.one.json',
+      old_string: plantedText,
+      new_string: JSON.stringify({ ...JSON.parse(plantedText), stack: 'default' }),
+    }));
+    assert.equal(edited.kind, 'noop', edited.kind === 'deny' ? edited.reason : undefined);
+
+    const { activeAgentRole: _dropped, ...withoutRole } = planted;
+    assert.equal(
+      planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+        file_path: '.traffic-one/.one.json',
+        content: JSON.stringify(withoutRole),
+      })).kind,
+      'noop',
+      'omitting a legacy activeAgentRole (drop) stays allowed',
+    );
+
+    plant('senior-architect');
+    const changed = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...planted, activeAgentRole: 'senior-reviewer' }),
+    }));
+    assert.equal(changed.kind, 'deny');
+    if (changed.kind === 'deny') {
+      assert.equal(changed.denyId, 'state-writer-identity');
+      assert.match(changed.reason, /State writer-identity gate/);
+    }
+  });
+});
+
+test('a forged activeAgentRole does not win deny attribution once run-agent state exists', () => {
+  withMaterialized({
+    currentRunId: 'R',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const stateFile = path.join(cwd, '.traffic-one', '.one.json');
+    const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+    // On-disk forge: the closed-ledger row only checks `role: null` when this
+    // field is absent. With run-agent claims present, attribution must come
+    // from the registry/claim, not this shared field.
+    const planted = { ...onDisk, activeAgentRole: 'senior-architect' };
+    fs.writeFileSync(stateFile, JSON.stringify(planted), 'utf8');
+    assert.ok(claimThreadRole(cwd, planted, 'frontend-child', 'senior-frontend', {
+      parentSessionId: 'orchestrator',
+    }));
+
+    const changed = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...planted, activeAgentRole: 'senior-reviewer' }),
+    }, { session_id: 'frontend-child' }));
+    assert.equal(changed.kind, 'deny');
+    if (changed.kind === 'deny') assert.equal(changed.denyId, 'state-writer-identity');
+
+    const log = path.join(cwd, '.traffic-one', 'runs', 'R', 'debug', 'plan-guard-deny.jsonl');
+    const rows = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const last = rows[rows.length - 1];
+    assert.equal(last.role, 'senior-frontend',
+      'attribution comes from the run claim/registry, not the forged activeAgentRole');
+    assert.notEqual(last.role, 'senior-architect');
+  });
+});
+
+test('shell writes of .one.json deny as state-file-shell-write', () => {
+  const STATE = '.traffic-one/.one.json';
+  const FOLDED = '.Traffic-One/.one.json';
+  for (const command of [
+    `cat > ${STATE}`,
+    `echo '{}' > ${STATE}`,
+    `tee ${STATE}`,
+    `node -e "require('fs').writeFileSync('${STATE}','{}')"`,
+    `python3 -c "open('${STATE}','w').write('{}')"`,
+    `sed -i 's/a/b/' ${STATE}`,
+    `cat > ${FOLDED}`,
+    `cat > ${STATE} <<'EOF'\n{"src":"apps/web/src"}\nEOF`,
+    // Unknown verb: only the inverse-question arm sees the path. Exact-case
+    // already denied; the folded spelling used to fail open because
+    // TRAFFIC_ONE_PATH_RE is exact-case (2c residual for non-state paths).
+    `python -c "import zipfile; zipfile.ZipFile('${STATE}','w')"`,
+    `python -c "import zipfile; zipfile.ZipFile('${FOLDED}','w')"`,
+  ]) {
+    withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+      const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+      assert.equal(r.kind, 'deny', command);
+      if (r.kind === 'deny') {
+        assert.equal(r.denyId, 'state-file-shell-write', command);
+        assert.match(r.reason, /State file shell gate/, command);
+      }
+    });
+  }
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const read = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: `cat ${STATE}` }));
+    assert.notEqual(read.kind === 'deny' ? read.denyId : '', 'state-file-shell-write');
+    const foldedRead = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: `python -c "print(open('${FOLDED}').read())"`,
+    }));
+    assert.notEqual(foldedRead.kind === 'deny' ? foldedRead.denyId : '', 'state-file-shell-write');
+  });
+});
+
+test('Write/Edit of .one.json keep the static denies and never use state-file-shell-write', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')) as Record<string, unknown>;
+    const keep = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, stack: 'default' }),
+    }));
+    assert.equal(keep.kind, 'noop');
+    const modeFlip = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, mode: 'existing-codebase' }),
+    }));
+    assert.equal(modeFlip.kind, 'deny');
+    if (modeFlip.kind === 'deny') {
+      assert.equal(modeFlip.denyId, 'state-mode-downgrade');
+      assert.notEqual(modeFlip.denyId, 'state-file-shell-write');
+    }
+    const forged = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: '.traffic-one/.one.json',
+      content: JSON.stringify({ ...onDisk, activeAgentRole: 'senior-architect' }),
+    }));
+    assert.equal(forged.kind, 'deny');
+    if (forged.kind === 'deny') {
+      assert.equal(forged.denyId, 'state-writer-identity');
+      assert.notEqual(forged.denyId, 'state-file-shell-write');
+    }
+  });
+});
+
+test('security-check --strict --stamp is not state-file-shell-write', () => {
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 't1-seccheck-planwrite-'));
+  try {
+    process.env.HOME = isolated;
+    process.env.USERPROFILE = isolated;
+    const shim = securityCheckShimPath();
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, shimSource('scripts/security-check-runner.cjs'), 'utf8');
+    withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+      const home = process.env.HOME || os.homedir();
+      const tilde = `~${shim.slice(home.length)}`;
+      for (const [label, command] of [
+        ['generated shim', `node ${shim} --strict --stamp`],
+        ['~ spelling', `node ${tilde} --strict --stamp`],
+        ['self-relative printed', securityCheckStampCommand()],
+        ['self-relative script', `node ${securityCheckScriptPath()} --strict --stamp`],
+      ] as const) {
+        const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
+        assert.notEqual(r.kind === 'deny' ? r.denyId : '', 'state-file-shell-write', `${label}: ${command}`);
+        assert.equal(r.kind, 'noop', `${label}: ${command} → ${r.kind === 'deny' ? r.reason.slice(0, 200) : r.kind}`);
+      }
+    });
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedProfile;
+    fs.rmSync(isolated, { recursive: true, force: true });
+  }
 });
 
 test('Edit hot structural gate reconstructs the full file and banks monolithization findings in the quality ledger', () => {
@@ -1896,6 +2175,18 @@ function sidecarProject(fn: (cwd: string) => void): void {
 function shellResult(cwd: string, command: string) {
   return planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command }));
 }
+
+test('a case-folded .traffic-one segment still reaches the runtime sidecar fence', () => {
+  sidecarProject((cwd) => {
+    for (const command of [
+      'rm -rf .Traffic-One/runs',
+      'rm -rf .TRAFFIC-ONE',
+    ]) {
+      const r = shellResult(cwd, command);
+      assert.equal(r.kind === 'deny' ? r.denyId : '', 'runtime-sidecar-owner-gate', command);
+    }
+  });
+});
 
 test('a shell command that destroys a run sidecar without naming it is refused', () => {
   sidecarProject((cwd) => {
@@ -2392,4 +2683,27 @@ test('subagents project: reads of feature source stay free', () => {
       assert.notEqual(r.kind, 'deny', `${command} → ${r.kind === 'deny' ? r.reason.slice(0, 200) : ''}`);
     });
   }
+});
+
+test('doctor --unblock is denied on the plan-write shell path; --bundle still noops', () => {
+  const script = doctorScriptPath();
+  const mint = `node ${script} --unblock plan-guard.write`;
+  const wrappers = [
+    mint,
+    `expect -c "spawn node ${script} --unblock plan-guard.write"`,
+    `script -q /dev/null node ${script} --unblock plan-guard.write`,
+    `python3 -c "import pty; pty.spawn(['node', '${script}', '--unblock', 'plan-guard.write'])"`,
+    `bash -c '${mint}'`,
+  ];
+  withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+    for (const command of wrappers) {
+      const result = shellResult(cwd, command);
+      assert.equal(result.kind, 'deny', command);
+      if (result.kind === 'deny') {
+        assert.equal(result.denyId, 'doctor-unblock-agent-mint', command);
+      }
+    }
+    assert.equal(shellResult(cwd, doctorCommand()).kind, 'noop', 'read-only doctor');
+    assert.equal(shellResult(cwd, `node ${script} --bundle`).kind, 'noop', 'doctor --bundle');
+  });
 });

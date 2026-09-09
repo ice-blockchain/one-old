@@ -8,6 +8,7 @@ import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
 import { DEFAULT_PUBLIC_ENDPOINT, ONE_MCP_CONFIG_NAME_BY_HOST } from '../../config/one-mcp';
 import {  OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
 import { readSimpleAuth } from '../../shared/auth';
+import { readUnknownAuthGate401 } from '../../shared/auth/auth-gate-drift';
 import { codexHookEvidenceEvent, hasCodexHookEvidenceMarker, isCodexHookEvent } from '../../shared/codex-hook-evidence';
 import { readOneMcpCache, type OneMcpLastSync } from '../../shared/one-mcp/cache';
 import { usableOneMcpConfigCacheEntry } from '../../shared/current-model-tiers';
@@ -29,16 +30,22 @@ export interface CanonicalAuthProbe {
   present: boolean;
   valid: boolean;
   updatedAt: string | null;
+  /** Last 401 `error.code` this client has never heard of, or null. */
+  unknown401Code?: string | null;
+  unknown401At?: string | null;
 }
 
 // Redacted by construction: the stored API key never enters the probe output.
 export function probeCanonicalAuth(env: NodeJS.ProcessEnv = process.env): CanonicalAuthProbe {
   const state = readSimpleAuth(env);
+  const drift = readUnknownAuthGate401(env);
   return {
     filePath: oneSettingsPath(env),
     present: state !== null,
     valid: Boolean(state && state.authenticated === true && state.apiKey.trim()),
     updatedAt: state && state.updatedAt ? state.updatedAt : null,
+    unknown401Code: drift?.code ?? null,
+    unknown401At: drift?.seenAt || null,
   };
 }
 
@@ -361,10 +368,12 @@ export function probeOpenCodeMcp(env: NodeJS.ProcessEnv = process.env): OpenCode
 export {
   type CodexHooksProbe,
   type GitnexusProbe,
+  type NestedRootRelation,
   type NodeProbe,
   type NvmProbe,
   type ProjectProbe,
   type RunIdProbe,
+  classifyNestedTrafficOneRoots,
   probeCodexHooks,
   probeGitnexus,
   probeNode,

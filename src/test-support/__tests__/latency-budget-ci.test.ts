@@ -844,7 +844,7 @@ const HOLLOW_WORKFLOWS: readonly {
   {
     name: 'the checker job keeps its matrix and empties it, so the suite runs zero times',
     workflow: () => committedWorkflow.replace(
-      '    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n',
+      '    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n',
       '    strategy:\n      fail-fast: false\n      matrix:\n        include: []\n',
     ),
     names: 'no non-empty matrix dimension',

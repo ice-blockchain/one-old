@@ -91,16 +91,23 @@ export type { OrphanSnapshot } from './snapshots';
 export {
   MAX_QUARANTINED_RUNS,
   OVERRIDE_RECONCILE_SECTION,
+  quarantinedRunsDigest,
   readOverrideReconciliations,
+  readQuarantinedRunsSidecar,
   reconciliationRef,
   recordOverrideReconciliation,
   runQuarantinedByOverrideReconciliation,
+  writeQuarantinedRunsSidecar,
 } from './reconcile';
 export type {
   OverrideAcknowledgement,
   OverrideReconciliation,
   RecordReconciliationResult,
 } from './reconcile';
+export {
+  signVerifiedSettlement,
+  verifiedSettlementAuthentic,
+} from './settlement-mac';
 
 export interface OverridableDenyInput {
   readonly event: CanonicalEvent;

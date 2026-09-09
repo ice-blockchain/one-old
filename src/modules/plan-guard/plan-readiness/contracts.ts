@@ -29,6 +29,7 @@ import {
 import { matchesScope, type AssignedScope } from '../../../shared/scope';
 import {
   activeAgentRole,
+  hasRunAgentState,
   isNewProjectMode,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
@@ -51,6 +52,7 @@ import {
 // Leaf classifier, not the plan-write dispatcher: `plan-write/targets` imports
 // only `shared/**`, so plan-readiness may use it without an import cycle.
 import { isCompiledFeatureTarget } from '../plan-write/targets';
+import { digestHasVerdictLine, exactDigestVerdict } from '../../../shared/digest-verdict';
 
 import {
   QA_REPORT_ARTIFACT_RE,
@@ -240,18 +242,32 @@ function thresholdsWeakened(
   return false;
 }
 
-// True when the digest CLAIMS the given verdict token. The machine-readable
-// channel is the `verdict:` line — when one exists, only its leading token
-// counts. A bare body word-match remains ONLY as the fallback for digests with
-// no verdict line at all (fail-closed: prose claiming IMPLEMENTED without the
-// contract line still triggers the completion gates). Matching the whole body
-// blocked honest failure reports: observed 5co-codex, a `verdict: BLOCKED …`
-// digest was denied by the IMPLEMENTED completion gates because its blocker
-// section said "…before this role can emit `IMPLEMENTED`" — the agent got
-// through only by rewording, so gates were selecting for phrasing, not truth.
-export function digestClaimsVerdict(content: string, token: string): boolean {
-  const verdictLine = /^[ \t]*verdict:[ \t]*(.+)$/m.exec(content);
-  if (verdictLine) return new RegExp(`^${token}\\b`).test(verdictLine[1]!.trim());
+// True when the digest CLAIMS the given verdict token.
+//
+// When any `verdict:` line exists, this mirrors settlement's exactDigestVerdict
+// (shared/digest-verdict.ts): every verdict line counts, a trailing other
+// machine token fails closed, and conflicting lines fail closed. True iff the
+// agreed token equals `token`.
+//
+// When no verdict line exists, a bare body word-match remains ONLY as the
+// fallback for completion-gate claims (fail-closed: prose claiming IMPLEMENTED
+// without the contract line still triggers those gates). The compile trigger
+// (PLAN_READY write that starts runtime compilation) passes
+// `{ allowBareWord: false }` so a mention in architect prose cannot compile.
+// Matching the whole body blocked honest failure reports: observed 5co-codex, a
+// `verdict: BLOCKED …` digest was denied by the IMPLEMENTED completion gates
+// because its blocker section said "…before this role can emit `IMPLEMENTED`"
+// — the agent got through only by rewording, so gates were selecting for
+// phrasing, not truth.
+export function digestClaimsVerdict(
+  content: string,
+  token: string,
+  options?: { allowBareWord?: boolean },
+): boolean {
+  if (digestHasVerdictLine(content)) {
+    return exactDigestVerdict(content) === token;
+  }
+  if (options?.allowBareWord === false) return false;
   return new RegExp(`\\b${token}\\b`).test(content);
 }
 
@@ -633,7 +649,13 @@ function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
 
 export function assignmentWriterRole(projectRoot: string, state: Rec, rawData: unknown, host?: string): string | null {
   const ctx = rawData ? resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true, host }) : null;
-  return (ctx && typeof ctx.role === 'string' ? ctx.role : null) || activeAgentRole(state);
+  const resolved = ctx && typeof ctx.role === 'string' ? ctx.role : null;
+  if (resolved) return resolved;
+  // Mirror plan-runteam.ts: `activeAgentRole` is a forgeable shared field.
+  // Once run-agent state exists, the parent must not mint APPROVED /
+  // TESTS_GREEN / PLAN_READY (or any other writer-owned artifact) by typing
+  // it. Legacy runs without claims/assignments/registry still fall back.
+  return hasRunAgentState(projectRoot, state) ? null : activeAgentRole(state);
 }
 
 const ARCHITECT_MEMORY_RE =

@@ -1,11 +1,9 @@
 # Force LF on checkout on every OS. The golden snapshot
 # (tests/golden/generated-manifest.sha256) is a BYTE hash of the generated tree;
 # a checkout that converted source files to CRLF would change those bytes and
-# break the byte-identical golden test. This is exercised on both CI legs of
-# .github/workflows/generate-check.yml's `generate-check` matrix (ubuntu-latest
-# and macos-latest) today; a hypothetical windows-latest leg would need it too,
-# but no such leg exists yet. eol=lf keeps the working tree identical across
-# platforms regardless of which of those actually run.
+# break the byte-identical golden test. The generate-check matrix now includes
+# a windows-latest leg (typecheck + npm test); `eol=lf` is why golden bytes
+# stay identical there as well as on ubuntu-latest and macos-latest.
 * text=auto eol=lf
 
 # The golden manifest itself and shipped content must never be CRLF-normalized.

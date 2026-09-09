@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { STATE_DIR, STATE_FILE } from '../../config/paths';
+import { canonicalizeStateDirSegments, STATE_DIR, STATE_FILE } from '../../config/paths';
 import { hasPluginAuthoringMarkers, isMachineConfigRoot } from '../authoring-root';
 import { readJson, readJsonResult } from '../fsjson';
 import { obj } from '../obj';
@@ -32,11 +32,20 @@ type Rec = Record<string, unknown>;
 // Kilo's OpenCode-compatible hook bridge can drop the leading slash from an
 // absolute macOS path. Restore it only when the resulting path is inside this
 // hook's cwd, so an ordinary relative `Users/...` target is never reinterpreted.
+//
+// Do not restrict the first segment to `Users`/`home`: `/workspace`, `/srv`,
+// `/opt` and `C:/` are the same stripped-slash shape. And do not repair merely
+// because the rootless form sits inside cwd — `cwd=/app` plus relative `app/x`
+// yields rootless `/app/x`, which is inside cwd, while `app/x` under cwd is
+// `/app/app/x`. Repair only when the relative join does not exist AND the
+// rootless form is within cwd. If `app/x` exists under `/app`, leave it.
 function normalizeHookTargetPath(cwd: string, filePath: unknown): string {
   const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
   if (!normalized || path.isAbsolute(normalized)) return normalized;
+  const cwdAbs = path.resolve(cwd);
+  if (fs.existsSync(path.join(cwd, normalized))) return normalized;
   const rootlessAbsolute = path.resolve(path.sep, normalized);
-  return isPathWithin(rootlessAbsolute, path.resolve(cwd)) ? rootlessAbsolute : normalized;
+  return isPathWithin(rootlessAbsolute, cwdAbs) ? rootlessAbsolute : normalized;
 }
 
 export function stateRequiresNewProjectMonorepo(state: Rec): boolean {
@@ -1082,10 +1091,23 @@ export function resolveProjectRootDetailed(
 export function projectRelativeHookPath(cwd: string, projectRoot: string, filePath: unknown): string {
   const normalized = normalizeHookTargetPath(cwd, filePath);
   if (!normalized) return '';
-  const absPath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
-  const relative = path.relative(projectRoot, absPath).replace(/\\/g, '/');
-  if (relative && !relative.startsWith('..') && relative !== '.') return relative;
-  return normalized;
+  const cwdAbs = path.resolve(cwd);
+  const rootAbs = path.resolve(projectRoot);
+  const cwdRel = path.relative(rootAbs, cwdAbs).replace(/\\/g, '/');
+  // Host-relative paths already include the cwd's project-relative prefix when
+  // `cwd` was rewritten to a package (file-hint `projectRoot`) while the host
+  // still sent the workspace-relative spelling. Joining that again doubles it.
+  const alreadyProjectRelative = Boolean(cwdRel)
+    && cwdRel !== '.'
+    && !cwdRel.startsWith('..')
+    && !path.isAbsolute(cwdRel)
+    && (normalized === cwdRel || normalized.startsWith(`${cwdRel}/`));
+  const absPath = path.isAbsolute(normalized)
+    ? path.resolve(normalized)
+    : path.resolve(alreadyProjectRelative ? rootAbs : cwdAbs, normalized);
+  const relative = path.relative(rootAbs, absPath).replace(/\\/g, '/');
+  if (relative && !relative.startsWith('..') && relative !== '.') return canonicalizeStateDirSegments(relative);
+  return canonicalizeStateDirSegments(normalized.replace(/\\/g, '/'));
 }
 
 export function packageJsonDeclaresWorkspace(content: string): boolean {

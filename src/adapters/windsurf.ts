@@ -7,6 +7,7 @@
 import * as path from 'path';
 
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
+import { classifyTool } from '../core/events';
 import { patchTextFromToolInput } from '../shared/apply-patch';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from './coerce';
@@ -63,8 +64,11 @@ function bareToolName(name: string): string {
   return (parts[parts.length - 1] || name).trim();
 }
 
-function cwdFor(data: Record<string, unknown>, info: Record<string, unknown>, filePath: string): string {
-  const cwd = firstString(info.cwd, info.working_directory, info.workingDirectory, data.cwd, data.workspace_root, data.workspaceRoot);
+function cwdFor(data: Record<string, unknown>, filePath: string): string {
+  // Session cwd only. `tool_info.cwd` / `working_directory` is the agent-chosen
+  // tool workdir (set on `tool.workdir` in toolFor) — treating it as the raw
+  // session cwd made `Cwd=/tmp` stand every path-less production command down.
+  const cwd = firstString(data.cwd, data.workspace_root, data.workspaceRoot, data.root_workspace_path);
   if (cwd) return cwd;
   if (filePath && path.isAbsolute(filePath)) return path.dirname(filePath);
   return process.cwd();
@@ -96,6 +100,8 @@ function toolFor(action: string, info: Record<string, unknown>): ToolInput | und
     ? 'spawn-agent'
     : action === 'pre_write_code' || action === 'post_write_code'
     ? writeClass(info)
+    : action === 'pre_mcp_tool_use' || action === 'post_mcp_tool_use'
+    ? classifyTool(rawName, info)
     : (mapping.tool ?? 'other');
 
   return {
@@ -120,7 +126,7 @@ export function makeWindsurfAdapter(): HostAdapter {
       const tool = toolFor(action, info);
       const filePath = tool?.filePath || '';
       const prompt = firstString(info.user_prompt, info.userPrompt, data.prompt, data.user_prompt, data.userPrompt);
-      const cwd = cwdFor(data, info, filePath);
+      const cwd = cwdFor(data, filePath);
       // Use Cascade's authoritative workspace root as the resolution ceiling WHEN it
       // sends one. Do NOT fall back to the hook cwd: a tool hook's cwd is often a
       // SUBDIRECTORY of the opened project (e.g. `apps/web/src/lib`), and pinning the

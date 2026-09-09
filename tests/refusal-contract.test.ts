@@ -2547,10 +2547,9 @@ const REFUSAL_BLIND_PUBLISHERS: readonly string[] = [
   // ── BLIND ────────────────────────────────────────────────────────────────
   // The QA evidence write is dropped and the exit code is decided from the
   // in-memory report. This is the `ok: true`, exit 0, report-never-on-disk
-  // shape. browser.ts#browserCommand sat at the head of this group until both
-  // of its evidence writes were routed into the verdict and the advertised
-  // path; its Lighthouse and native siblings still carry the defect.
-  'src/runners/qa-evidence/lighthouse.ts#lighthouseCommand',
+  // shape. browser.ts#browserCommand and lighthouse.ts#lighthouseCommand sat
+  // here until their evidence writes were routed into the verdict; the live
+  // OwnedServer Lighthouse path and the native siblings still carry the defect.
   'src/runners/qa-evidence/lighthouse.ts#runLighthouseOnOwnedServer',
   'src/runners/qa-evidence/native.ts#publishNativeResult',
   'src/runners/qa-evidence/native.ts#runXcodeNative',
@@ -2646,6 +2645,14 @@ const REFUSAL_BLIND_PUBLISHERS: readonly string[] = [
   // (`persisted = writeJson(file, { seq })`) and gates the return. A refused
   // mkdir surfaces as the refused write into it.
   'src/shared/state/decision-log.ts#nextHookSeq',
+  // Diagnostic sidecar / best-effort rename. The caller already has a verdict
+  // (auth probe, fold notice text, override path names) that does not depend
+  // on these writes landing; a refused persist costs a repeat notice or a
+  // leftover miscased folder, never a certified artifact.
+  'src/runners/auth/revalidate.ts#runAuthRevalidation',
+  'src/runners/auth/validate-key.ts#probeAuthenticatedUpdates',
+  'src/shared/materialize/plan-migration.ts#consumeArchitectureFoldNotice',
+  'src/shared/override/paths.ts#overrideProjectPaths',
 
   // ── ADMITTED BY THE RAW-FS SHAPE ─────────────────────────────────────────
   // Four sites the instrument could not see until the second writer layer was

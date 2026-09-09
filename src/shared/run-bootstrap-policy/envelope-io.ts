@@ -273,6 +273,8 @@ export function readActiveRunBootstrap(
           boundedOutputs: boundedMaintenanceSourceScope(runId, role, envelope.workUnit.outputs),
           boundedAllowlist: boundedMaintenanceSourceScope(runId, role, envelope.workUnit.allowlist),
           boundedAllowlistExclude: envelope.workUnit.allowlistExclude,
+          // Reconstructing an already-published bounded unit, not granting one.
+          maintenancePhase: envelope.workUnit.unitId === `${role}:bounded-maintenance`,
         }
       : {},
   );

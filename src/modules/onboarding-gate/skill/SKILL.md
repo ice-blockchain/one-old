@@ -396,3 +396,7 @@ Partial signals already detected:
 
 On success it prints TRAFFIC_ONE_TECH_RECORDED and then the setup wizard's `Setup link:` — post that link to the user in chat and run the printed waiter command, exactly as in the normal setup flow. Run the command EXACTLY as printed plus your surface flags — no pipes, redirection, or `&&`; the gate allow-lists the precise argv.
 <!-- T1BLOCK:END tech-classify-required -->
+
+<!-- T1BLOCK:BEGIN doctor-unblock-agent-mint -->
+traffic-one — blocked: an agent must not mint its own operator override. `doctor --unblock` writes a token under ~/.traffic-one/overrides that lifts a gate for this run. That is a bypass, not a recovery. If a human intends to override, they run doctor themselves in their own terminal — not through this tool call, and not wrapped in expect, script, python pty, bash -c, or any other helper. Read-only doctor (`--bundle`, `--run`, `--session`) remains available.
+<!-- T1BLOCK:END doctor-unblock-agent-mint -->

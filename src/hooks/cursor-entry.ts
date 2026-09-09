@@ -13,8 +13,9 @@
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { makeCursorAdapter } from '../adapters/cursor';
-import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
-import { cursorPreToolDeny, hasValidPreToolPayload, isCursorPreToolSubcommand, isFailClosedRecoveryExemption } from './fail-closed';
+import { authFallbackMessage, safeHookFallbackStandsDown } from './auth-fallback';
+import { guardedMain } from './entry-guard';
+import { cursorPreToolDeny, hasValidPreToolPayload, isCursorPreToolSubcommand, safeFailClosedRecoveryExemption } from './fail-closed';
 import { asRecord, firstString } from '../adapters/coerce';
 import { parseJson } from '../shared/fsjson';
 import { canonicalOneMcpServerHint, isManagedOneMcpPair, ONE_MCP_AGENT_TOOL_DENY_REASON } from '../shared/one-mcp/agent-tools';
@@ -44,7 +45,7 @@ export async function runCursorHook(
   if (!subcommand) return { stdout: CURSOR_NOOP, exitCode: 0 };
   if (isCursorPreToolSubcommand(subcommand)
     && !hasValidPreToolPayload(stdin, subcommand, 'cursor')
-    && !isFailClosedRecoveryExemption(stdin, subcommand, 'cursor')) {
+    && !safeFailClosedRecoveryExemption(stdin, subcommand, 'cursor')) {
     return { stdout: cursorPreToolDeny(), exitCode: 0 };
   }
   if (subcommand === 'before-mcp-execution' && isManagedCursorMcpInvocation(stdin)) {
@@ -56,13 +57,13 @@ export async function runCursorHook(
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand] });
     return { stdout: stdout || CURSOR_NOOP, exitCode: 0 };
   } catch {
-    if (hookFallbackStandsDown(stdin, env)) return { stdout: CURSOR_NOOP, exitCode: 0 };
+    if (safeHookFallbackStandsDown(stdin, env)) return { stdout: CURSOR_NOOP, exitCode: 0 };
     if (subcommand === 'session-start') {
       const message = authFallbackMessage(stdin, env);
       return { stdout: message ? sessionStartFallback(message) : CURSOR_NOOP, exitCode: 0 };
     }
     if (isCursorPreToolSubcommand(subcommand)) {
-      if (isFailClosedRecoveryExemption(stdin, subcommand, 'cursor')) return { stdout: CURSOR_NOOP, exitCode: 0 };
+      if (safeFailClosedRecoveryExemption(stdin, subcommand, 'cursor')) return { stdout: CURSOR_NOOP, exitCode: 0 };
       return { stdout: cursorPreToolDeny(), exitCode: 0 };
     }
     return { stdout: CURSOR_NOOP, exitCode: 0 };
@@ -84,12 +85,32 @@ function readStdin(): Promise<string> {
 
 export async function main(): Promise<void> {
   const subcommand = process.argv[2];
-  const stdin = await readStdin();
-  const { stdout } = await runCursorHook(subcommand, stdin);
-  process.stdout.write(stdout);
-  process.exitCode = 0;
+  try {
+    const stdin = await readStdin();
+    const out = await guardedMain({
+      subcommand,
+      stdin,
+      isPreTool: isCursorPreToolSubcommand(subcommand),
+      surface: 'cursor',
+      deny: { stdout: cursorPreToolDeny(), exitCode: 0 },
+      noop: { stdout: CURSOR_NOOP, exitCode: 0 },
+      run: () => runCursorHook(subcommand, stdin),
+    });
+    process.stdout.write(out.stdout);
+    process.exitCode = 0;
+  } catch {
+    try {
+      process.stdout.write(isCursorPreToolSubcommand(subcommand) ? cursorPreToolDeny() : CURSOR_NOOP);
+    } catch { /* last-ditch write must not reject */ }
+    process.exitCode = 0;
+  }
 }
 
 if (require.main === module) {
-  void main();
+  void main().catch(() => {
+    try {
+      process.stdout.write(isCursorPreToolSubcommand(process.argv[2]) ? cursorPreToolDeny() : CURSOR_NOOP);
+    } catch { /* */ }
+    process.exitCode = 0;
+  });
 }

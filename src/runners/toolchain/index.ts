@@ -109,20 +109,31 @@ export {
   toolchainRoot,
 } from '../../shared/toolchain-paths';
 
+function parseSemver(value: string): { core: [number, number, number]; pre: string | null } | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(value);
+  if (!match) return null;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    pre: match[4] ?? null,
+  };
+}
+
 // Compare two semver strings (no dep). -1 / 0 / 1, or null for non-semver.
+// A prerelease is older than the same core release (`1.2.3-beta` < `1.2.3`).
 export function compareSemver(a: unknown, b: unknown): number | null {
   if (typeof a !== 'string' || typeof b !== 'string') return null;
-  const norm = (v: string): number[] => v.replace(/^v/, '').split('.').map((n) => Number(n));
-  const aa = norm(a);
-  const bb = norm(b);
-  if (aa.length !== 3 || bb.length !== 3) return null;
-  if (aa.some(Number.isNaN) || bb.some(Number.isNaN)) return null;
+  const aa = parseSemver(a);
+  const bb = parseSemver(b);
+  if (!aa || !bb) return null;
   for (let i = 0; i < 3; i += 1) {
-    const av = aa[i] as number;
-    const bv = bb[i] as number;
+    const av = aa.core[i] as number;
+    const bv = bb.core[i] as number;
     if (av !== bv) return av < bv ? -1 : 1;
   }
-  return 0;
+  if (aa.pre === null && bb.pre === null) return 0;
+  if (aa.pre === null) return 1;
+  if (bb.pre === null) return -1;
+  return aa.pre < bb.pre ? -1 : aa.pre > bb.pre ? 1 : 0;
 }
 
 // Probe `tool --version` and extract the semver via the spec's versionRegex.

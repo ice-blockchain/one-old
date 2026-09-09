@@ -41,3 +41,50 @@ const STATE_BASENAME = '.one.json';
 export const STATE_FILE = path.join(STATE_DIR, STATE_BASENAME);
 export const LEGACY_STATE_FILE = STATE_FILE;
 export const LEGACY_LOCK_FILE = '.claude-plugin-mode';
+
+// Agent-facing fences must recognize `.Traffic-One` / `.TRAFFIC-ONE` as the
+// state dir: macOS default FS and Windows treat those as the same directory.
+// Runtime already folds (plugin-use, fsjson); these helpers are the shared
+// agent-facing side. Match the SEGMENT, never a mid-word substring
+// (`.traffic-one-backup`). Indices come from a regex on the original string,
+// never from `toLowerCase().indexOf()` — lowercasing is not length-preserving
+// for every Unicode code point (U+0130).
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function caseInsensitiveLiteral(value: string): string {
+  let out = '';
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i]!;
+    const code = value.charCodeAt(i);
+    if (code >= 97 && code <= 122) out += `[${ch}${ch.toUpperCase()}]`;
+    else if (code >= 65 && code <= 90) out += `[${ch.toLowerCase()}${ch}]`;
+    else out += escapeRegExp(ch);
+  }
+  return out;
+}
+
+/** STATE_DIR as a regex source matching that one path segment, ASCII-case-insensitive. */
+export const STATE_DIR_SEGMENT_SOURCE = caseInsensitiveLiteral(STATE_DIR);
+
+const STATE_DIR_SEGMENT_EXACT_RE = new RegExp(`^${escapeRegExp(STATE_DIR)}$`, 'i');
+
+/** STATE_DIR as a complete path segment inside a larger string (path or command). */
+export const STATE_DIR_MENTION_RE = new RegExp(
+  `(?:^|[/\\\\]|[^/\\\\.\\w])${STATE_DIR_SEGMENT_SOURCE}(?=[/\\\\]|$)`,
+);
+
+export function isStateDirSegment(segment: string): boolean {
+  return STATE_DIR_SEGMENT_EXACT_RE.test(segment);
+}
+
+export function mentionsStateDirSegment(text: string): boolean {
+  return STATE_DIR_MENTION_RE.test(text);
+}
+
+/** Fold each path segment that equals STATE_DIR (case-insensitive) to STATE_DIR. */
+export function canonicalizeStateDirSegments(posixPath: string): string {
+  if (!posixPath) return posixPath;
+  return posixPath.split('/').map((seg) => (isStateDirSegment(seg) ? STATE_DIR : seg)).join('/');
+}
