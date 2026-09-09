@@ -17,6 +17,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { tmpRedirectEnv } from '../../test-support/__tests__/temp-dirs';
+
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const PRELOAD = path.join(REPO_ROOT, 'src', 'build', 'test-preload.mjs');
 
@@ -32,10 +34,11 @@ type Observed = Partial<Record<string, string>>;
 // would be reading its own parent's state.
 function preloadEnv(ambient: Record<string, string>, preload: string = PRELOAD): Observed {
   const script = 'process.stdout.write(JSON.stringify(process.env))';
+  const tmp = ambient.TMPDIR ? tmpRedirectEnv(ambient.TMPDIR) : {};
   const result = spawnSync(
     process.execPath,
     ['--import', pathToFileURL(preload).href, '-e', script],
-    { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...ambient } },
+    { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...tmp, ...ambient } },
   );
   assert.equal(result.status, 0, `preload run failed: ${result.stderr}`);
   return JSON.parse(result.stdout) as Observed;
@@ -51,10 +54,11 @@ function preloadEnv(ambient: Record<string, string>, preload: string = PRELOAD):
 // so the property is asserted here, at the one place that can hold it, rather
 // than per call site.
 
-// Every case below runs the preload under a PRIVATE TMPDIR. os.tmpdir() reads
-// TMPDIR on POSIX, so the whole scratch tree moves with it — which keeps these
-// assertions from touching, or racing, the scratch parent the surrounding
-// suite's own 291 test-file processes are using while this file runs.
+// Every case below runs the preload under a PRIVATE temp dir. os.tmpdir()
+// reads TMPDIR on POSIX and TEMP/TMP on Windows, so the scratch tree only
+// moves when all three names are set — which keeps these assertions from
+// touching, or racing, the scratch parent the surrounding suite's own
+// test-file processes are using while this file runs.
 function withPrivateTmp(fn: (tmp: string, scratchParent: string) => void): void {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-preload-state-'));
   try {
@@ -234,7 +238,7 @@ test('a recycled pid inherits no residue: the claim is a delete THEN a create', 
     const result = spawnSync(
       process.execPath,
       ['--import', pathToFileURL(seed).href, '--import', pathToFileURL(PRELOAD).href, observer],
-      { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', TMPDIR: tmp } },
+      { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...tmpRedirectEnv(tmp) } },
     );
     assert.equal(result.status, 0, result.stderr);
 
@@ -374,7 +378,16 @@ test('nothing in the plugin or host namespaces survives except what the preload 
     assert.ok(inNamespace(key), `${key} is not in the namespace policy — fix the fixture or the policy`);
   }
 
-  const survivors = Object.keys(preloadEnv(hostile)).filter(inNamespace).sort();
+  // HOME must NOT already be a preload scratch tree. Inheriting this process's
+  // pinned HOME leaves TRAFFIC_ONE_TEST_UNPINNED_HOME unset on Linux, where
+  // tmpdir and HOME share one spelling; macOS's /var vs /private/var mismatch
+  // accidentally stamped the pinned home and hid the hole.
+  const ambientHome = path.join(os.tmpdir(), 't1-preload-ambient-home');
+  const survivors = Object.keys(preloadEnv({
+    ...hostile,
+    HOME: ambientHome,
+    USERPROFILE: ambientHome,
+  })).filter(inNamespace).sort();
   assert.deepEqual(survivors, [
     'TRAFFIC_ONE_ASK_USE_PLUGIN',
     'TRAFFIC_ONE_MANAGED_RUNTIME_OFF',

@@ -348,15 +348,24 @@ test('projectRootHash case-folds with realpathSync.native on a case-insensitive 
       return;
     }
 
-    assert.equal(fs.realpathSync(lowered), lowered,
-      'the JS realpath still returns the spelling it was GIVEN');
-    assert.equal(fs.realpathSync.native(lowered), onDisk,
-      'the native realpath returns the ON-DISK case');
+    const nativeLowered = fs.realpathSync.native(lowered);
+    const nativeOnDisk = fs.realpathSync.native(onDisk);
+    assert.equal(nativeLowered, nativeOnDisk,
+      'the native realpath returns one on-disk spelling for both cases');
+    // Darwin's JS realpath keeps the caller's case; Windows often already
+    // folds it. The product hashes native, so the JS spelling is only a
+    // fixture note where it is actually distinct.
+    if (process.platform === 'darwin') {
+      assert.equal(fs.realpathSync(lowered), lowered,
+        'the JS realpath still returns the spelling it was GIVEN');
+      assert.equal(nativeOnDisk, onDisk,
+        'the native realpath returns the ON-DISK case');
+    }
     assert.equal(projectRootHash(lowered), projectRootHash(onDisk),
       'one directory, one bucket: miscased and on-disk spellings must hash together');
     assert.equal(
       projectRootHash(lowered),
-      require('crypto').createHash('sha256').update(onDisk).digest('hex'),
+      require('crypto').createHash('sha256').update(nativeOnDisk).digest('hex'),
       'the bucket name is sha256 of the native realpath',
     );
   } finally {

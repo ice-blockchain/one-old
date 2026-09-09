@@ -169,14 +169,23 @@ export function assertSafeRuntimeOutput(outDir: string): string {
   if (isWithin(generatedScripts, candidate)) return candidate;
 
   const home = canonicalPath(os.homedir());
-  if (candidate === home || isWithin(home, candidate)) {
+  const tempRoot = canonicalPath(os.tmpdir());
+  // Exact home / tmpdir are never outputs, even when a test remaps HOME into a
+  // t1- tree (replay-corpus) or when tmpdir itself sits under the real home.
+  if (candidate === home || candidate === tempRoot) {
     throw new Error(`refusing to clean unsafe runtime output directory: ${candidate}`);
   }
 
-  const tempRoot = canonicalPath(os.tmpdir());
-  if (isWithin(tempRoot, candidate) && candidate !== tempRoot) {
+  // Owned temp trees first. The home veto used to run before this and rejected
+  // `$HOME/traffic-one-plugin/scripts` once replay-corpus (and the hook-timing
+  // process leg) pointed HOME at `tmpdir/t1-replay-home-*`.
+  if (isWithin(tempRoot, candidate)) {
     const firstSegment = path.relative(tempRoot, candidate).split(path.sep)[0]?.toLowerCase() ?? '';
     if (firstSegment.startsWith('t1-') || firstSegment.startsWith('traffic-one-')) return candidate;
+  }
+
+  if (isWithin(home, candidate)) {
+    throw new Error(`refusing to clean unsafe runtime output directory: ${candidate}`);
   }
 
   throw new Error(`refusing to clean unsafe runtime output directory: ${candidate}`);

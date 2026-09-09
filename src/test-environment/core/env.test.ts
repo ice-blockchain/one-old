@@ -77,9 +77,11 @@ test('isolateStateHome forwards rustup and cargo homes when HOME is remapped', (
 
 test('isolateStateHome forwards a real Playwright browser cache when HOME is remapped', () => {
   const realHome = process.env.TRAFFIC_ONE_TEST_UNPINNED_HOME || os.homedir();
-  const defaultCache = process.platform === 'darwin'
-    ? path.join(realHome, 'Library', 'Caches', 'ms-playwright')
-    : path.join(realHome, '.cache', 'ms-playwright');
+  const defaultCache = process.platform === 'win32'
+    ? path.join(realHome, 'AppData', 'Local', 'ms-playwright')
+    : process.platform === 'darwin'
+      ? path.join(realHome, 'Library', 'Caches', 'ms-playwright')
+      : path.join(realHome, '.cache', 'ms-playwright');
   const caseFolder = path.join(os.tmpdir(), 't1-env-pw-browsers');
   const isolated = buildCaseEnv(defaultConfig(), caseFolder, '', 'pure-node');
   if (fs.existsSync(defaultCache)) {

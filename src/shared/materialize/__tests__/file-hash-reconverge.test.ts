@@ -35,6 +35,14 @@ const SOURCE_SKILLS = path.join(MODULES, 'skills', 'skills-catalog');
 const MUTABLE_SKILL = 'project-memory';
 const HASH_A = 'a'.repeat(64);
 
+function linkOrCopyDir(src: string, dest: string): void {
+  try {
+    fs.symlinkSync(src, dest, 'dir');
+  } catch {
+    fs.cpSync(src, dest, { recursive: true });
+  }
+}
+
 const STATE = {
   mode: 'new-project',
   stack: 'default',
@@ -74,8 +82,8 @@ function withFixture(
   fs.writeFileSync(path.join(plugin, 'scripts', 'hook-runtime.cjs'), '// test fixture stub\n', 'utf8');
   fs.writeFileSync(path.join(plugin, 'package.json'), JSON.stringify({ name: 'traffic-one', version: '9.9.9' }), 'utf8');
   fs.mkdirSync(path.join(plugin, 'agents'), { recursive: true });
-  fs.symlinkSync(SOURCE_RULES, path.join(plugin, 'rules'), 'dir');
-  fs.symlinkSync(SOURCE_SKILLS, path.join(plugin, 'skills-catalog'), 'dir');
+  linkOrCopyDir(SOURCE_RULES, path.join(plugin, 'rules'));
+  linkOrCopyDir(SOURCE_SKILLS, path.join(plugin, 'skills-catalog'));
   if (opts.provenance !== undefined) setProvenance(plugin, opts.provenance);
 
   const project = path.join(base, 'project');

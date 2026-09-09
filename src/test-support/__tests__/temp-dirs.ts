@@ -143,28 +143,46 @@ export function trackedTempDirs(prefix: string): TrackedTempDirs {
  *    directory nothing has written to yet, and `TMPDIR` is restored while the
  *    body is still using it. Both halves of the check silently become
  *    assertions about nothing.
- * 3. POSIX ONLY. `os.tmpdir()` reads `TMPDIR` on POSIX and `TEMP`/`TMP` on
- *    Windows, so on Windows the redirect does not take and the private directory
- *    stays empty — which this function would then report as a pass. The
- *    assertion below refuses that rather than certifying it. This repo's CI is
- *    ubuntu-latest and macOS; a Windows runner would need the other two names
- *    set, and would need them checked, not assumed.
+ * 3. ALL THREE TEMP NAMES. `os.tmpdir()` reads `TMPDIR` on POSIX and
+ *    `TEMP`/`TMP` on Windows. Pinning only `TMPDIR` leaves Windows looking at
+ *    the real temp directory, so the private dir stays empty and the check
+ *    would pass vacuously — or, with the assertion below, fail the Windows
+ *    matrix for a reason that is not a leak. Set and restore all three.
  *
  * `TMPDIR` is process-global, so this must not be used from tests that run
  * concurrently inside one process. node:test runs the tests of a file
  * sequentially, which is the only place this is used.
  */
+const TMP_ENV_KEYS = ['TMPDIR', 'TEMP', 'TMP'] as const;
+
+/** Env block that moves `os.tmpdir()` on POSIX and Windows. */
+export function tmpRedirectEnv(dir: string): Record<(typeof TMP_ENV_KEYS)[number], string> {
+  return { TMPDIR: dir, TEMP: dir, TMP: dir };
+}
+
+/** Point `os.tmpdir()` at `dir` in THIS process; restore on the returned teardown. */
+export function isolateTmpEnv(dir: string): () => void {
+  const saved = Object.fromEntries(TMP_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of TMP_ENV_KEYS) process.env[key] = dir;
+  return () => {
+    for (const key of TMP_ENV_KEYS) {
+      const prev = saved[key];
+      if (prev === undefined) delete process.env[key];
+      else process.env[key] = prev;
+    }
+  };
+}
+
 export function withPrivateTmpdir<T>(dirs: TrackedTempDirs, body: () => T): T {
   const home = dirs.make();
-  const saved = process.env.TMPDIR;
-  process.env.TMPDIR = home;
+  const restoreTmp = isolateTmpEnv(home);
   try {
     // Limit 3, checked at the one moment it is checkable. A redirect that did
     // not take makes every assertion below vacuous.
     assert.equal(
       os.tmpdir(),
       home,
-      `redirecting TMPDIR did not move os.tmpdir() (it reads TEMP/TMP on Windows), so this check would pass`
+      `redirecting TMPDIR/TEMP/TMP did not move os.tmpdir(), so this check would pass`
       + ' by looking at a directory nothing was ever going to be written to',
     );
     const result = body();
@@ -182,7 +200,6 @@ export function withPrivateTmpdir<T>(dirs: TrackedTempDirs, body: () => T): T {
     assert.deepEqual(fs.readdirSync(home), [], `left a scratch tree behind in ${home}`);
     return result;
   } finally {
-    if (saved === undefined) delete process.env.TMPDIR;
-    else process.env.TMPDIR = saved;
+    restoreTmp();
   }
 }

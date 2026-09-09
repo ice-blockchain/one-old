@@ -22,10 +22,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { globalTrafficOneDir } from '../state-root';
+import { tmpRedirectEnv } from '../../test-support/__tests__/temp-dirs';
 import { oneSettingsPath } from '../one-settings';
-import { toolchainRoot } from '../toolchain-paths';
 import { projectRootForStatePath } from '../state/plugin-use';
+import { globalTrafficOneDir } from '../state-root';
+import { toolchainRoot } from '../toolchain-paths';
 // Imported from its historical home as well, because six callers still resolve
 // the name through here: a re-export that stopped tracking the base would
 // reopen the defect for all of them while every direct test of the base passed.
@@ -358,7 +359,7 @@ function askResolvers(opts: { preload: boolean; tmp: string }): ChildReport {
     encoding: 'utf8',
     // The real HOME, on purpose: the whole question is whether the pin keeps the
     // resolvers away from it. A child with no HOME could not answer it.
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', TMPDIR: opts.tmp },
+    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...tmpRedirectEnv(opts.tmp) },
   });
   assert.equal(result.status, 0, `child failed: ${result.stderr}`);
   return JSON.parse(result.stdout) as ChildReport;

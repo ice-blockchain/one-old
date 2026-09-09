@@ -89,6 +89,28 @@ test('runtime cleanup accepts only generated scripts and Traffic One-owned temp 
     fs.rmSync(safeTemp, { recursive: true, force: true });
   }
 
+  // replay-corpus/env.ts remaps HOME to `tmpdir/t1-replay-home-*` and builds
+  // the process-leg runtime under `$HOME/traffic-one-plugin/scripts`. That
+  // path is both "under home" and an owned temp tree — the allowlist must win.
+  const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 't1-replay-home-'));
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  try {
+    process.env.HOME = isolatedHome;
+    process.env.USERPROFILE = isolatedHome;
+    const scripts = path.join(isolatedHome, 'traffic-one-plugin', 'scripts');
+    assert.equal(
+      assertSafeRuntimeOutput(scripts),
+      path.join(fs.realpathSync.native(isolatedHome), 'traffic-one-plugin', 'scripts'),
+    );
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedProfile;
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
+  }
+
   for (const unsafe of [
     path.parse(path.resolve('.')).root,
     path.resolve(__dirname, '..', '..', '..'),

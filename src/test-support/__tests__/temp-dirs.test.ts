@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { trackedTempDirs, withPrivateTmpdir } from './temp-dirs';
+import { isolateTmpEnv, trackedTempDirs, withPrivateTmpdir } from './temp-dirs';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const dirs = trackedTempDirs('t1-temp-dirs-test-');
@@ -130,15 +130,13 @@ test('make() returns a resolved path even when the temp directory is reached thr
   fs.mkdirSync(real);
   fs.symlinkSync(real, link);
 
-  const saved = process.env.TMPDIR;
-  process.env.TMPDIR = link;
+  const restoreTmp = isolateTmpEnv(link);
   let made: string;
   try {
     assert.equal(os.tmpdir(), link, 'the redirect did not take, so this row proves nothing');
     made = trackedTempDirs('t1-symlinked-').make();
   } finally {
-    if (saved === undefined) delete process.env.TMPDIR;
-    else process.env.TMPDIR = saved;
+    restoreTmp();
   }
 
   assert.equal(made.startsWith(`${real}${path.sep}`), true, `make() returned an unresolved path: ${made}`);
