@@ -16,8 +16,8 @@
 // and the rest of the suite is thousands of mkdtemp fixtures the scanner
 // opens one by one. Mass trees prove a file-count cap, not a Windows path,
 // so they skip on win32 via `SKIP_10K_TREE_ON_WIN32`. The generate-check
-// Windows job also turns Defender off and sets `core.autocrlf=false`
-// globally before `npm test`. Do not raise `timeout-minutes` again.
+// Windows job also turns Defender off, sets `core.autocrlf=false`
+// globally, and shards `npm test` 3 ways. Do not raise `timeout-minutes`.
 
 import { execFileSync } from 'child_process';
 

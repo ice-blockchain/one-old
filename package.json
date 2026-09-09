@@ -25,7 +25,7 @@
     "plugin:sync": "tsx src/build/sync-hosts.ts",
     "replay:rebaseline": "node --import ./src/build/test-preload.mjs --import tsx tests/replay-corpus/rebaseline.ts",
     "smoke": "tsx src/build/compiled-smoke.ts",
-    "test": "node --import ./src/build/test-preload.mjs --import tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\"",
+    "test": "node --import ./src/build/test-preload.mjs --import tsx --test --test-timeout=180000 \"src/**/*.test.ts\" \"tests/**/*.test.ts\"",
     "test:env": "tsx src/test-environment/run.ts",
     "test:env:dry": "tsx src/test-environment/run.ts --dry-run",
     "test:env:e2e": "tsx src/test-environment/run.ts --e2e --strict",

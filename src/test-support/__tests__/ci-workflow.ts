@@ -1489,6 +1489,12 @@ export function auditCheckerJob(options: CheckerJobAuditOptions): string[] {
     }
     for (const invocation of suiteInvocations(step, suiteScript)) {
       if (invocation.extra.length === 0) continue;
+      // `--test-shard=N/M` partitions the suite. It is not a silent-green
+      // filter: each shard runs a real slice, and the count floor below
+      // still catches `1/100`. `--` is npm's operand separator. Anything
+      // else (`--test-only`, a name pattern) stays refused.
+      const extras = invocation.extra.filter((word) => word !== '--');
+      if (extras.length > 0 && extras.every((word) => /^--test-shard=/.test(word))) continue;
       findings.push(
         `${workflowPath} job \`${jobId}\` step "${step.name}" (line ${step.line}) passes`
         + ` \`${invocation.extra.join(' ')}\` to \`npm ${suiteScript}\`. The suite is invoked BARE here or not at`

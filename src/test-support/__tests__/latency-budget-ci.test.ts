@@ -844,7 +844,23 @@ const HOLLOW_WORKFLOWS: readonly {
   {
     name: 'the checker job keeps its matrix and empties it, so the suite runs zero times',
     workflow: () => committedWorkflow.replace(
-      '    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n',
+      [
+        '    strategy:',
+        '      fail-fast: false',
+        '      matrix:',
+        '        os: [ubuntu-latest, macos-latest, windows-latest]',
+        '        shard: [1, 2, 3]',
+        '        exclude:',
+        '          - os: ubuntu-latest',
+        '            shard: 2',
+        '          - os: ubuntu-latest',
+        '            shard: 3',
+        '          - os: macos-latest',
+        '            shard: 2',
+        '          - os: macos-latest',
+        '            shard: 3',
+        '',
+      ].join('\n'),
       '    strategy:\n      fail-fast: false\n      matrix:\n        include: []\n',
     ),
     names: 'no non-empty matrix dimension',
@@ -852,7 +868,9 @@ const HOLLOW_WORKFLOWS: readonly {
   {
     name: 'the step that runs the suite echoes it instead, so this file is never executed',
     workflow: () => editStep(committedWorkflow, 'Tests', (line) => (
-      line.includes('npm test 2>&1') ? '          echo "npm test 2>&1" | tee "$RUNNER_TEMP/npm-test.log"' : line
+      line.includes('| tee "$RUNNER_TEMP/npm-test.log"') && line.includes('npm test')
+        ? '          echo "npm test 2>&1" | tee "$RUNNER_TEMP/npm-test.log"'
+        : line
     ), CHECKER_JOB),
     names: 'no step that reachably runs `npm test`',
   },
@@ -885,8 +903,8 @@ const HOLLOW_WORKFLOWS: readonly {
     // test — `tests 1 / pass 1 / fail 0`.
     name: 'the suite is invoked with a name filter that matches nothing, so it runs and reports nothing',
     workflow: () => editStep(committedWorkflow, 'Tests', (line) => (
-      line.includes('npm test 2>&1')
-        ? line.replace('npm test 2>&1', "npm test -- --test-name-pattern='zzzz-no-such-test' 2>&1")
+      line.includes('npm test -- --test-shard=')
+        ? line.replace('npm test -- --test-shard="$shard/$denom"', "npm test -- --test-name-pattern='zzzz-no-such-test'")
         : line
     ), CHECKER_JOB),
     names: 'passes `-- --test-name-pattern=zzzz-no-such-test` to `npm test`',
@@ -897,7 +915,9 @@ const HOLLOW_WORKFLOWS: readonly {
     // none.
     name: 'the suite is invoked in only-mode, and nothing in the repo is marked only',
     workflow: () => editStep(committedWorkflow, 'Tests', (line) => (
-      line.includes('npm test 2>&1') ? line.replace('npm test 2>&1', 'npm test -- --test-only 2>&1') : line
+      line.includes('npm test -- --test-shard=')
+        ? line.replace('npm test -- --test-shard="$shard/$denom"', 'npm test -- --test-only')
+        : line
     ), CHECKER_JOB),
     names: 'passes `-- --test-only` to `npm test`',
   },
@@ -917,7 +937,9 @@ const HOLLOW_WORKFLOWS: readonly {
   {
     name: 'the suite step stops teeing its output, so no count can be read from it',
     workflow: () => editStep(committedWorkflow, 'Tests', (line) => (
-      line.includes('npm test 2>&1') ? '          npm test' : line
+      line.includes('| tee "$RUNNER_TEMP/npm-test.log"') && line.includes('npm test')
+        ? '          npm test'
+        : line
     ), CHECKER_JOB),
     names: 'without teeing it to a log',
   },

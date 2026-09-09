@@ -3,10 +3,11 @@ name: Generate check
 # Three jobs:
 #
 # `generate-check` (matrix: ubuntu-latest, macos-latest, windows-latest) is the
-# FAST path: typecheck and the unit+golden suite on every OS. gen+build, the
-# two determinism gates (see comment below -- neither is the src-to-content
-# drift gate), and compiled-runtime smoke stay POSIX -- windows-latest is
-# typecheck + npm test only. `test:env` is a separate job and stays POSIX.
+# FAST path: typecheck and the unit+golden suite on every OS. windows-latest
+# shards npm test 3 ways (posix stays 1/1). gen+build, the two determinism
+# gates (see comment below -- neither is the src-to-content drift gate), and
+# compiled-runtime smoke stay POSIX -- windows-latest is typecheck + npm test
+# only. `test:env` is a separate job and stays POSIX.
 # Running the matrix on macOS too is deliberate: `npm run golden:update` is a
 # maintainer command run on macOS, and `.gitattributes` normalizes line endings
 # for byte-identical hashing across platforms, yet until now nothing in CI ever
@@ -43,19 +44,29 @@ permissions:
 
 jobs:
   generate-check:
-    name: "Typecheck + tests (${{ matrix.os }})"
+    name: "Typecheck + tests (${{ matrix.os }}#${{ matrix.shard }})"
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        shard: [1, 2, 3]
+        exclude:
+          - os: ubuntu-latest
+            shard: 2
+          - os: ubuntu-latest
+            shard: 3
+          - os: macos-latest
+            shard: 2
+          - os: macos-latest
+            shard: 3
     runs-on: ${{ matrix.os }}
-    # Hang ceiling, not a budget. ubuntu/macos finish in minutes.
-    # windows-latest cancelled at 31m/30, then 59m 10s/60, still inside
-    # `npm test` (typecheck + tests only). That is Defender plus mass
-    # fixture trees, not a hung test and not a ceiling that wants another
-    # raise: the refuse-step red after cancel is the missing `pass <n>`
-    # line from a killed suite. Mass trees skip on win32; the Windows
-    # job turns Defender off before Tests. Do not raise this number again.
+    # Hang ceiling, not a budget. ubuntu/macos finish in minutes on shard 1/1.
+    # windows-latest cancelled at 31m/30, 59m/60, then 59m 3s/60 AFTER
+    # Defender was turned off and the mass trees skipped. The remaining
+    # suite is still larger than one hosted Windows runner can finish in
+    # an hour (tsx spawn + fixture I/O), and a single hung file has no
+    # per-test deadline in package.json. Windows is three shards; the
+    # suite now carries --test-timeout. Do not raise this number again.
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -191,9 +202,14 @@ jobs:
       - name: Tests
         # No *_PLUGIN_ROOT var is set here on purpose.
         shell: bash
+        env:
+          T1_TEST_SHARD: ${{ matrix.shard }}
+          T1_TEST_SHARDS: ${{ matrix.os == 'windows-latest' && 3 || 1 }}
         run: |
           set -o pipefail
-          npm test 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
+          shard="$T1_TEST_SHARD"
+          denom="$T1_TEST_SHARDS"
+          npm test -- --test-shard="$shard/$denom" 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
 
       # THE SUITE RAN. Everything above this line — every rule in
       # src/test-support/__tests__/ci-workflow.ts, every budget, every gate —
@@ -239,6 +255,11 @@ jobs:
         run: |
           log="$RUNNER_TEMP/npm-test.log"
           floor=1500
+          # A Windows shard is one third of the suite. 1500 is the full-run
+          # floor; 400 is the same slack on a third (measured ~1000+ pass
+          # per shard after POSIX skips). RUNNER_OS is unset in the in-repo
+          # execution of this body, which must keep the full-run floor.
+          if [ "$RUNNER_OS" = Windows ]; then floor=400; fi
           [ -f "$log" ] || exit 0
           # tap prints `# pass <n>`, spec prints `ℹ pass <n>`; Node 22 and
           # Node 26 default to different reporters and both spellings are
