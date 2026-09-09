@@ -27,11 +27,21 @@ function withProject(fn: (cwd: string) => void): void {
 }
 
 function gitCommitAll(cwd: string, message = 'baseline'): void {
-  execFileSync('git', ['init', '-q'], { cwd });
-  execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd });
-  execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd });
-  execFileSync('git', ['add', '.'], { cwd });
-  execFileSync('git', ['commit', '-qm', message], { cwd });
+  // stdin/stdout discarded; stderr piped so a real failure still lands in the
+  // exception and never on the reporter. windows-latest CI sets
+  // `core.autocrlf=true` globally: `git add` of the 10_001-file vendor / PNG /
+  // source trees then emits one "LF will be replaced by CRLF" warning per
+  // file, node:test reprints each as a TAP `#` line, and the Actions log
+  // spends tens of minutes ingesting them (observed: still on f07911.go at
+  // 45m). Local config overrides the runner for every later git in this repo.
+  const quiet = { cwd, stdio: ['ignore', 'ignore', 'pipe'] as const };
+  execFileSync('git', ['init', '-q'], quiet);
+  execFileSync('git', ['config', 'core.autocrlf', 'false'], quiet);
+  execFileSync('git', ['config', 'core.safecrlf', 'false'], quiet);
+  execFileSync('git', ['config', 'user.email', 'qa@example.test'], quiet);
+  execFileSync('git', ['config', 'user.name', 'QA Test'], quiet);
+  execFileSync('git', ['add', '.'], quiet);
+  execFileSync('git', ['commit', '-qm', message], quiet);
 }
 
 function writeMany(dir: string, count: number, name: (i: number) => string, body = ''): void {
@@ -370,6 +380,10 @@ test('tracked public/foo.png is not a stray on a tree that does not overflow', (
     fs.mkdirSync(path.join(cwd, 'public'), { recursive: true });
     fs.writeFileSync(path.join(cwd, 'public/foo.png'), '');
     gitCommitAll(cwd);
+    assert.equal(
+      execFileSync('git', ['-C', cwd, 'config', '--get', 'core.autocrlf'], { encoding: 'utf8' }).trim(),
+      'false',
+    );
 
     const architecture = compileArchitecture(cwd, 'R', {
       ...REACT_STATE,
