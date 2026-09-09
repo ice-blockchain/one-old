@@ -67,6 +67,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Fix CI: accept remapped-HOME runtime scratch and stop assuming POSIX temp names. (`2f27d623`)
 - Harden fail-open hosts, forgeable gate inputs, and unwitnessed evidence (`ff6e2fa7`)
 - Latency: load /tmp and trace scanners only for shell tools so Write stays inside the 150 ms budget (`ee121188`)
 - Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
