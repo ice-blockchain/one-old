@@ -1489,15 +1489,6 @@ export function auditCheckerJob(options: CheckerJobAuditOptions): string[] {
     }
     for (const invocation of suiteInvocations(step, suiteScript)) {
       if (invocation.extra.length === 0) continue;
-      // `--test-shard=N/M` partitions the suite. `--test-concurrency=N`
-      // overlaps the per-file Node+tsx processes (default on a 2-vCPU
-      // Windows runner is 1, which is why each shard sat at ~30m). Neither
-      // is a silent-green filter. `--` is npm's operand separator.
-      // Anything else (`--test-only`, a name pattern) stays refused.
-      const extras = invocation.extra.filter((word) => word !== '--');
-      if (extras.length > 0 && extras.every((word) => (
-        /^--test-shard=/.test(word) || /^--test-concurrency=\d+$/.test(word)
-      ))) continue;
       findings.push(
         `${workflowPath} job \`${jobId}\` step "${step.name}" (line ${step.line}) passes`
         + ` \`${invocation.extra.join(' ')}\` to \`npm ${suiteScript}\`. The suite is invoked BARE here or not at`

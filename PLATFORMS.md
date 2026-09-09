@@ -118,12 +118,12 @@ is `HOOK_RUNTIME_NODE_BELOW_FLOOR`.
 |---|---|---|
 | macOS | Exercised on every push | `macos-latest` in the `generate-check` CI matrix: typecheck, determinism gates, the full unit + golden suite, compiled-runtime smoke |
 | Linux | Exercised on every push, most thoroughly | `ubuntu-latest` in the same matrix, **plus** the three jobs that run nowhere else: the serial hook-timing/latency budget, `test:env --strict` (the only test of how the gates, the architecture compiler, the QA runner and settlement compose), and `fence-linux`, which runs the path-containment fences where the filesystem is CASE-SENSITIVE — the volume on which the escapes they refuse are reachable, and which no macOS runner provides |
-| Windows | **typecheck + `npm test` on every push; composition and Job Object teardown untested** | `windows-latest` in the `generate-check` CI matrix runs typecheck and the unit + golden suite only. `gen`/`build`/`plugin:check`/compiled-runtime smoke and `test:env --strict` stay POSIX. 24 non-test source files under `src/` branch on `'win32'` (`.cmd` shim resolution, zip extraction, `Expand-Archive` fallback, Defender-lock-tolerant renames, flat npm-prefix layout, and the QA runner's teardown of bounded commands, of the dev server holding the port and of the Lighthouse CLI's Chrome — which has no process group to address there and ends the tree with `taskkill /PID <leader> /T /F` instead, from a leader that has to still be alive — see KNOWN-ISSUES.md §6). Job Object teardown is not claimed fixed. There is no manual certification record. |
+| Windows | **not exercised in CI; composition and Job Object teardown untested** | `generate-check` has no `windows-latest` job. `gen`/`build`/`plugin:check`/compiled-runtime smoke and `test:env --strict` stay POSIX. 24 non-test source files under `src/` branch on `'win32'` (`.cmd` shim resolution, zip extraction, `Expand-Archive` fallback, Defender-lock-tolerant renames, flat npm-prefix layout, and the QA runner's teardown of bounded commands, of the dev server holding the port and of the Lighthouse CLI's Chrome — which has no process group to address there and ends the tree with `taskkill /PID <leader> /T /F` instead, from a leader that has to still be alive — see KNOWN-ISSUES.md §6). Job Object teardown is not claimed fixed. There is no manual certification record. |
 
-**Read the Windows row literally.** Traffic One now runs typecheck and the unit
-suite on a Windows runner; that is not the composition proof (`test:env`) and
-it is not Job Object teardown. If you run a full shipping workflow on Windows
-you are still the test of those residuals.
+**Read the Windows row literally.** Traffic One does not run typecheck or the
+unit suite on a Windows runner. That is not the composition proof (`test:env`)
+and it is not Job Object teardown. If you run a full shipping workflow on
+Windows you are the test of those residuals.
 
 The managed-runtime downloader has a matrix of its own, and the asset maps in
 `src/config/managed-runtimes.ts` are what decide it — read those rather than the

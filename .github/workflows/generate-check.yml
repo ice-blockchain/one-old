@@ -2,17 +2,16 @@ name: Generate check
 
 # Three jobs:
 #
-# `generate-check` (matrix: ubuntu-latest, macos-latest, windows-latest) is the
-# FAST path: typecheck and the unit+golden suite on every OS. windows-latest
-# shards npm test 3 ways (posix stays 1/1). gen+build, the two determinism
-# gates (see comment below -- neither is the src-to-content drift gate), and
-# compiled-runtime smoke stay POSIX -- windows-latest is typecheck + npm test
-# only. `test:env` is a separate job and stays POSIX.
+# `generate-check` (matrix: ubuntu-latest, macos-latest) is the FAST path:
+# typecheck and the unit+golden suite. windows-latest is not in this matrix.
+# gen+build, the two determinism gates (see comment below -- neither is the
+# src-to-content drift gate), and compiled-runtime smoke stay POSIX.
+# `test:env` is a separate job and stays POSIX.
 # Running the matrix on macOS too is deliberate: `npm run golden:update` is a
 # maintainer command run on macOS, and `.gitattributes` normalizes line endings
 # for byte-identical hashing across platforms, yet until now nothing in CI ever
-# generated or hashed the tree anywhere but ubuntu-latest. Windows does not
-# claim Job Object teardown coverage -- that residual stays documented.
+# generated or hashed the tree anywhere but ubuntu-latest. Windows is not
+# on this matrix. Job Object teardown coverage stays documented as untested.
 #
 # `latency-budget` is the QUIET path: FIVE test files, each alone, on a runner
 # that has done nothing else. It exists because the measurements in this repo
@@ -44,30 +43,14 @@ permissions:
 
 jobs:
   generate-check:
-    name: "Typecheck + tests (${{ matrix.os }}#${{ matrix.shard }})"
+    name: "Typecheck + tests (${{ matrix.os }})"
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        shard: [1, 2, 3]
-        exclude:
-          - os: ubuntu-latest
-            shard: 2
-          - os: ubuntu-latest
-            shard: 3
-          - os: macos-latest
-            shard: 2
-          - os: macos-latest
-            shard: 3
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # Hang ceiling, not a budget. ubuntu/macos finish in minutes on shard 1/1.
-    # windows-latest cancelled at 31m/30, then 59m/60, then 59m 3s AFTER
-    # Defender-off + mass-tree skips, then ~30m PER SHARD after the suite
-    # was split 3 ways. That last number is the diagnosis: ~513 test
-    # files, one Node+tsx process each, default concurrency 1 on a
-    # 2-vCPU Windows runner. Tests run --test-concurrency=8. Do not
-    # raise this number again.
-    timeout-minutes: 60
+    # Hang ceiling, not a budget. ubuntu/macos finish in minutes.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -78,7 +61,7 @@ jobs:
           # substantial history, then regenerates the document and compares it to
           # the committed CHANGELOG.md. actions/checkout defaults to a depth-1
           # clone, which hands those rows ONE commit and failed five of them on
-          # all three matrix legs. Skipping them on a shallow clone was the other
+          # both matrix legs. Skipping them on a shallow clone was the other
           # option and is worse: it would retire the only check that the committed
           # changelog still matches its generator, on the only machine that runs
           # it. So this job gets history.
@@ -97,11 +80,9 @@ jobs:
         run: npm run typecheck
 
       - name: Generate plugin content
-        if: ${{ matrix.os != 'windows-latest' }}
         run: npm run gen
 
       - name: Build plugin runtime
-        if: ${{ matrix.os != 'windows-latest' }}
         run: npm run build
 
       # --- Determinism gates, not drift gates ---------------------------
@@ -130,7 +111,6 @@ jobs:
       # nobody checks. Attribution is not lost: each half prints its own name
       # and npm reports which one exited non-zero.
       - name: "Determinism: gen --check + build:verify (npm run plugin:check)"
-        if: ${{ matrix.os != 'windows-latest' }}
         run: npm run plugin:check
 
       # --- Tests ------------------------------------------------------------
@@ -178,48 +158,13 @@ jobs:
       # and it is now proven directly, from BOTH sides (pinned and opted-off,
       # which no in-suite leg can observe), by
       # src/build/__tests__/test-preload.test.ts -- included in the run below,
-      # in well under a second, on all three operating systems instead of one.
-      # Hosted windows-latest runs Defender real-time scanning. Every
-      # mkdtemp / writeFileSync / git add in the suite is opened by the
-      # scanner; after the 10k trees were skipped, Tests still ran 59m 10s
-      # and the job cancelled at this hang ceiling. The runner also sets
-      # core.autocrlf=true globally, so any fixture `git add` that is not
-      # muted reprints one LF/CRLF warning per file into TAP. Both are
-      # runner costs. Clearing them here is the remaining lever.
-      - name: Unblock Windows test I/O
-        if: ${{ matrix.os == 'windows-latest' }}
-        shell: pwsh
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.safecrlf false
-          Set-MpPreference -DisableRealtimeMonitoring $true
-          Set-MpPreference -DisableBehaviorMonitoring $true
-          Set-MpPreference -DisableIOAVProtection $true
-          Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE
-          Add-MpPreference -ExclusionPath $env:RUNNER_TEMP
-          Add-MpPreference -ExclusionPath $env:TEMP
-
+      # in well under a second, on both operating systems in this matrix.
       - name: Tests
         # No *_PLUGIN_ROOT var is set here on purpose.
         shell: bash
-        env:
-          T1_TEST_SHARD: ${{ matrix.shard }}
-          T1_TEST_SHARDS: ${{ matrix.os == 'windows-latest' && 3 || 1 }}
         run: |
           set -o pipefail
-          shard="$T1_TEST_SHARD"
-          denom="$T1_TEST_SHARDS"
-          # ~513 files. node:test isolation is one process per file
-          # (test-preload.mjs measures this). A 2-vCPU hosted runner
-          # defaults --test-concurrency to 1, so Windows pays
-          # CreateProcess+tsx once per file, sequentially — ~10s × 170
-          # files is the 30m shard, not the assertions. 8 overlaps that
-          # spawn. NODE_COMPILE_CACHE reuses the JS compile across
-          # children. Do not drop concurrency back to the default.
-          if [ "$RUNNER_OS" = Windows ]; then
-            export NODE_COMPILE_CACHE="$RUNNER_TEMP/node-compile-cache"
-          fi
-          npm test -- --test-shard="$shard/$denom" --test-concurrency=8 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
+          npm test 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
 
       # THE SUITE RAN. Everything above this line — every rule in
       # src/test-support/__tests__/ci-workflow.ts, every budget, every gate —
@@ -265,11 +210,6 @@ jobs:
         run: |
           log="$RUNNER_TEMP/npm-test.log"
           floor=1500
-          # A Windows shard is one third of the suite. 1500 is the full-run
-          # floor; 400 is the same slack on a third (measured ~1000+ pass
-          # per shard after POSIX skips). RUNNER_OS is unset in the in-repo
-          # execution of this body, which must keep the full-run floor.
-          if [ "$RUNNER_OS" = Windows ]; then floor=400; fi
           [ -f "$log" ] || exit 0
           # tap prints `# pass <n>`, spec prints `ℹ pass <n>`; Node 22 and
           # Node 26 default to different reporters and both spellings are
@@ -382,7 +322,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compiled-runtime smoke (bare-node dispatch)
-        if: ${{ matrix.os != 'windows-latest' }}
         shell: bash
         run: |
           set -o pipefail

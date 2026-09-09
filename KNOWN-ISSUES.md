@@ -129,11 +129,10 @@ machine.
 24 non-test source files under `src/` branch on `'win32'` — `.cmd` shim
 resolution, zip extraction with an `Expand-Archive` fallback, Defender-lock
 tolerant renames, the flat npm-prefix layout, and the QA runner's teardown.
-Test files are deliberately not counted. Windows now runs typecheck + `npm
-test` on `windows-latest`; composition (`test:env`) and Job Object teardown
-remain untested. The `generate-check` matrix still includes `ubuntu-latest`
-and `macos-latest`. `test:env --strict` stays POSIX. Job Object teardown is
-not claimed fixed.
+Test files are deliberately not counted. Windows does not run on
+`windows-latest`. Composition (`test:env`) and Job Object teardown remain
+untested. The `generate-check` matrix is `ubuntu-latest` and `macos-latest`.
+`test:env --strict` stays POSIX. Job Object teardown is not claimed fixed.
 
 Windows has no signalling process group. The runner uses
 `taskkill /PID <leader> /T /F` from a leader that has to still be alive.

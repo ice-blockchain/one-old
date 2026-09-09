@@ -280,13 +280,21 @@ test('the OS table names the runners the generate-check matrix actually runs on'
     assert.ok(row, `PLATFORMS.md has no OS table row for ${os}`);
     return row as string;
   };
-  for (const [os, runner] of [['macOS', 'macos-latest'], ['Linux', 'ubuntu-latest'], ['Windows', 'windows-latest']] as const) {
+  for (const [os, runner] of [['macOS', 'macos-latest'], ['Linux', 'ubuntu-latest']] as const) {
     assert.ok(runners.includes(runner), `${GENERATE_CHECK}'s matrix no longer includes ${runner}, which PLATFORMS.md's ${os} row cites`);
     assert.ok(
       rowFor(os).includes(`\`${runner}\``),
       `PLATFORMS.md's ${os} row does not cite ${runner}: ${rowFor(os)}`,
     );
   }
+  assert.ok(
+    !runners.includes('windows-latest'),
+    `${GENERATE_CHECK}'s matrix still lists windows-latest; PLATFORMS.md says Windows is not on CI`,
+  );
+  assert.ok(
+    rowFor('Windows').includes('`windows-latest`'),
+    `PLATFORMS.md's Windows row does not cite windows-latest: ${rowFor('Windows')}`,
+  );
 });
 
 // "the two jobs that run nowhere else" is a COUNT of workflow legs, and a
@@ -308,20 +316,25 @@ test('the Linux row states as many Linux-only jobs as the workflow declares', ()
   );
 });
 
-// Windows is on the generate-check matrix for typecheck + npm test only.
-// test:env and the other POSIX-only jobs must stay off windows-latest, and the
-// row must not claim Job Object teardown is covered.
-test('generate-check includes windows-latest; test:env stays POSIX', () => {
+// Windows is off the generate-check matrix. test:env and the other POSIX-only
+// jobs must stay off windows-latest, and the row must not claim Job Object
+// teardown is covered.
+test('generate-check has no windows-latest; test:env stays POSIX', () => {
   const yml = read(GENERATE_CHECK);
   const matrix = /os:\s*\[([^\]]+)\]/.exec(yml);
   assert.ok(matrix, `${GENERATE_CHECK} no longer declares an os matrix`);
   const runners = (matrix![1] as string).split(',').map((entry) => entry.trim()).filter(Boolean);
-  assert.ok(runners.includes('windows-latest'), `${GENERATE_CHECK}'s matrix does not include windows-latest`);
+  assert.ok(!runners.includes('windows-latest'), `${GENERATE_CHECK}'s matrix still lists windows-latest`);
   const row = DOC.split('\n').find((line) => line.startsWith('| Windows '));
   assert.ok(row, 'PLATFORMS.md has no Windows OS-table row');
   assert.ok(
     (row as string).includes('`windows-latest`'),
     `PLATFORMS.md's Windows row does not cite windows-latest: ${row}`,
+  );
+  assert.match(
+    row as string,
+    /not exercised in CI|has no `windows-latest`/,
+    'PLATFORMS.md Windows row must say CI does not run Windows',
   );
   assert.match(
     row as string,

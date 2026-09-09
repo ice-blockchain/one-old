@@ -433,15 +433,18 @@ test('the Windows claims are the measurement, the CI matrix and the asset table'
     `KNOWN-ISSUES.md item 6 says ${stated} non-test source files branch on 'win32'; ${branching.length} do`,
   );
 
-  // Item 6 stays the residual (Job Object / composition), not a claim that CI
-  // has no Windows runner. The matrix now includes windows-latest for
-  // typecheck + npm test; this pin must not demand KNOWN-ISSUES rewrite.
+  // Item 6 is the residual (Job Object / composition) AND the statement that
+  // CI has no Windows runner. The matrix is ubuntu + macos only.
   const workflow = read(path.join('.github', 'workflows', 'generate-check.yml'));
   const matrix = /os:\s*\[([^\]]*)\]/.exec(workflow)?.[1];
   assert.ok(matrix, 'the generate-check OS matrix is gone or reshaped');
   const runners = matrix!.split(',').map((entry) => entry.trim()).filter(Boolean);
-  assert.ok(runners.includes('windows-latest'), 'generate-check matrix dropped windows-latest');
-  for (const runner of runners.filter((name) => !/windows/i.test(name))) {
+  assert.ok(!runners.includes('windows-latest'), 'generate-check matrix still lists windows-latest');
+  assert.ok(
+    /does not run on/.test(text) && text.includes('`windows-latest`'),
+    'item 6 must say Windows does not run on windows-latest',
+  );
+  for (const runner of runners) {
     assert.ok(text.includes(`\`${runner}\``), `item 6 does not name the CI runner \`${runner}\``);
   }
   assert.ok(
