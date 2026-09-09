@@ -49,8 +49,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # Hang ceiling, not a budget. ubuntu/macos finish in minutes.
-    timeout-minutes: 30
+    # Hang ceiling, not a budget. Bare `npm test` on a 2-vCPU runner
+    # defaults --test-concurrency to 1 (os.availableParallelism() - 1).
+    # package.json sets --test-concurrency=8 so the suite overlaps.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
