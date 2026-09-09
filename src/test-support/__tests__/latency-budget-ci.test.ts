@@ -904,7 +904,10 @@ const HOLLOW_WORKFLOWS: readonly {
     name: 'the suite is invoked with a name filter that matches nothing, so it runs and reports nothing',
     workflow: () => editStep(committedWorkflow, 'Tests', (line) => (
       line.includes('npm test -- --test-shard=')
-        ? line.replace('npm test -- --test-shard="$shard/$denom"', "npm test -- --test-name-pattern='zzzz-no-such-test'")
+        ? line.replace(
+          'npm test -- --test-shard="$shard/$denom" --test-concurrency=8',
+          "npm test -- --test-name-pattern='zzzz-no-such-test'",
+        )
         : line
     ), CHECKER_JOB),
     names: 'passes `-- --test-name-pattern=zzzz-no-such-test` to `npm test`',
@@ -916,7 +919,10 @@ const HOLLOW_WORKFLOWS: readonly {
     name: 'the suite is invoked in only-mode, and nothing in the repo is marked only',
     workflow: () => editStep(committedWorkflow, 'Tests', (line) => (
       line.includes('npm test -- --test-shard=')
-        ? line.replace('npm test -- --test-shard="$shard/$denom"', 'npm test -- --test-only')
+        ? line.replace(
+          'npm test -- --test-shard="$shard/$denom" --test-concurrency=8',
+          'npm test -- --test-only',
+        )
         : line
     ), CHECKER_JOB),
     names: 'passes `-- --test-only` to `npm test`',

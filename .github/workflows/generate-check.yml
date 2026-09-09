@@ -61,12 +61,12 @@ jobs:
             shard: 3
     runs-on: ${{ matrix.os }}
     # Hang ceiling, not a budget. ubuntu/macos finish in minutes on shard 1/1.
-    # windows-latest cancelled at 31m/30, 59m/60, then 59m 3s/60 AFTER
-    # Defender was turned off and the mass trees skipped. The remaining
-    # suite is still larger than one hosted Windows runner can finish in
-    # an hour (tsx spawn + fixture I/O), and a single hung file has no
-    # per-test deadline in package.json. Windows is three shards; the
-    # suite now carries --test-timeout. Do not raise this number again.
+    # windows-latest cancelled at 31m/30, then 59m/60, then 59m 3s AFTER
+    # Defender-off + mass-tree skips, then ~30m PER SHARD after the suite
+    # was split 3 ways. That last number is the diagnosis: ~513 test
+    # files, one Node+tsx process each, default concurrency 1 on a
+    # 2-vCPU Windows runner. Tests run --test-concurrency=8. Do not
+    # raise this number again.
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -209,7 +209,17 @@ jobs:
           set -o pipefail
           shard="$T1_TEST_SHARD"
           denom="$T1_TEST_SHARDS"
-          npm test -- --test-shard="$shard/$denom" 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
+          # ~513 files. node:test isolation is one process per file
+          # (test-preload.mjs measures this). A 2-vCPU hosted runner
+          # defaults --test-concurrency to 1, so Windows pays
+          # CreateProcess+tsx once per file, sequentially — ~10s × 170
+          # files is the 30m shard, not the assertions. 8 overlaps that
+          # spawn. NODE_COMPILE_CACHE reuses the JS compile across
+          # children. Do not drop concurrency back to the default.
+          if [ "$RUNNER_OS" = Windows ]; then
+            export NODE_COMPILE_CACHE="$RUNNER_TEMP/node-compile-cache"
+          fi
+          npm test -- --test-shard="$shard/$denom" --test-concurrency=8 2>&1 | tee "$RUNNER_TEMP/npm-test.log"
 
       # THE SUITE RAN. Everything above this line — every rule in
       # src/test-support/__tests__/ci-workflow.ts, every budget, every gate —

@@ -50,7 +50,8 @@ test('windows-latest splits npm test across three shards so one runner cannot bu
   const workflow = fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/generate-check.yml'), 'utf8');
   assert.match(workflow, /shard: \[1, 2, 3\]/);
   assert.match(workflow, /T1_TEST_SHARDS: \$\{\{ matrix\.os == 'windows-latest' && 3 \|\| 1 \}\}/);
-  assert.match(workflow, /npm test -- --test-shard="\$shard\/\$denom"/);
+  assert.match(workflow, /npm test -- --test-shard="\$shard\/\$denom" --test-concurrency=8/);
+  assert.match(workflow, /NODE_COMPILE_CACHE=/);
   assert.match(workflow, /if \[ "\$RUNNER_OS" = Windows \]; then floor=400; fi/);
   const pkg = fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8');
   assert.match(pkg, /--test-timeout=180000/, 'a hung file must die instead of eating the 60m job');
