@@ -36,6 +36,7 @@ import { boundedScanTruncated, recordScanBoundHit } from '../plan-readiness/cont
 import { ensureRunBootstrap } from '../../../shared/run-bootstrap-policy';
 import { effectiveLegacyRunStatus, readRunSettlement } from '../../../shared/run-settlement';
 import { extractBlock } from '../../../shared/skill-markers';
+import { commitFixtureRepo, SKIP_10K_TREE_ON_WIN32 } from '../../../test-support/__tests__/git-fixture';
 
 const names = (name: string): string => name;
 
@@ -4720,6 +4721,7 @@ test('a damaged or forged bound record reads as bound, and an absent one as clea
 
 test('PLAN_READY maps source-surface overflow to architecture-scan-bound-gate', {
   timeout: 120_000,
+  skip: SKIP_10K_TREE_ON_WIN32,
 }, () => {
   withProject((dir) => {
     const state = {
@@ -4741,11 +4743,7 @@ test('PLAN_READY maps source-surface overflow to architecture-scan-bound-gate', 
     for (let i = 0; i < 10_001; i += 1) {
       fs.writeFileSync(path.join(dir, 'src', `bulk-${String(i).padStart(5, '0')}.ts`), 'export {}\n');
     }
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'qa@example.test'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'QA Test'], { cwd: dir });
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-qm', 'baseline'], { cwd: dir });
+    commitFixtureRepo(dir);
 
     writeRequiredMemory(dir, state);
     writeArchitectureInputOnly(dir, 'R');

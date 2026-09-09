@@ -20,6 +20,7 @@ import {
   changedPathsFromBaseline,
   changedPathsFromImmutableBaseline,
 } from '../verification-contract/git';
+import { commitFixtureRepo, SKIP_10K_TREE_ON_WIN32 } from '../../test-support/__tests__/git-fixture';
 
 function withProject(fn: (cwd: string) => void): void {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-scan-bound-'));
@@ -27,21 +28,7 @@ function withProject(fn: (cwd: string) => void): void {
 }
 
 function gitCommitAll(cwd: string, message = 'baseline'): void {
-  // `stdio: 'ignore'` so git's chatter never reaches the reporter.
-  // windows-latest CI sets `core.autocrlf=true` globally: `git add` of the
-  // 10_001-file vendor / PNG / source trees then emits one "LF will be
-  // replaced by CRLF" warning per file, node:test reprints each as a TAP
-  // `#` line, and the Actions log spends tens of minutes ingesting them
-  // (observed: still on f07911.go at 45m). Local config overrides the
-  // runner for every later git in this repo. A non-zero exit still throws.
-  const quiet = { cwd, stdio: 'ignore' as const };
-  execFileSync('git', ['init', '-q'], quiet);
-  execFileSync('git', ['config', 'core.autocrlf', 'false'], quiet);
-  execFileSync('git', ['config', 'core.safecrlf', 'false'], quiet);
-  execFileSync('git', ['config', 'user.email', 'qa@example.test'], quiet);
-  execFileSync('git', ['config', 'user.name', 'QA Test'], quiet);
-  execFileSync('git', ['add', '.'], quiet);
-  execFileSync('git', ['commit', '-qm', message], quiet);
+  commitFixtureRepo(cwd, message);
 }
 
 function writeMany(dir: string, count: number, name: (i: number) => string, body = ''): void {
@@ -140,6 +127,7 @@ test('compileListingPathspecs lists wiring trees, package.json, and Django setti
 
 test('Git website with 10_001 public PNGs compiles; plugin JS is absent; PNG change is visible', {
   timeout: 120_000,
+  skip: SKIP_10K_TREE_ON_WIN32,
 }, () => {
   withProject((cwd) => {
     seedLaravelApi(cwd);
@@ -176,7 +164,10 @@ test('Git website with 10_001 public PNGs compiles; plugin JS is absent; PNG cha
   });
 });
 
-test('tracked vendor/** does not trip the compile listing or leftover-walk cap', { timeout: 120_000 }, () => {
+test('tracked vendor/** does not trip the compile listing or leftover-walk cap', {
+  timeout: 120_000,
+  skip: SKIP_10K_TREE_ON_WIN32,
+}, () => {
   withProject((cwd) => {
     fs.writeFileSync(path.join(cwd, 'go.mod'), 'module example.test/api\n\ngo 1.24\n');
     fs.mkdirSync(path.join(cwd, 'internal'), { recursive: true });
@@ -293,6 +284,7 @@ test('Django config/settings.py stays a wiring output and package.json stays in 
 
 test('file-manifest 10k PNGs do not trip the cap; inert stays hashed; post-capture raster is deletable', {
   timeout: 120_000,
+  skip: SKIP_10K_TREE_ON_WIN32,
 }, () => {
   withProject((cwd) => {
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
@@ -342,6 +334,7 @@ test('file-manifest 10k PNGs do not trip the cap; inert stays hashed; post-captu
 
 test('file-manifest 10_001 PNGs compile; inert is stored; no verification walk', {
   timeout: 120_000,
+  skip: SKIP_10K_TREE_ON_WIN32,
 }, () => {
   withProject((cwd) => {
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
@@ -409,6 +402,7 @@ test('tracked public/foo.png is not a stray on a tree that does not overflow', (
 
 test('10_001 source-surface files throw a distinguishable scan-bound error', {
   timeout: 120_000,
+  skip: SKIP_10K_TREE_ON_WIN32,
 }, () => {
   withProject((cwd) => {
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({
