@@ -28,10 +28,11 @@ Versions come from `package.json` as it stood at each commit; this repository
 publishes no git tags. **Dates are the newest commit in each section, not a
 publication date.**
 
-## 1.0.52 — 2026-09-03
+## 1.0.52 — 2026-09-09
 
 ### Agent-visible content — what your agents are told
 
+- Harden fail-open hosts, forgeable gate inputs, and unwitnessed evidence (`ff6e2fa7`)
 - Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
 - Gates: brief write and spawn rules before the first tool (`a162a469`)
 - Install: reclaim generated agents; always ask Code Graph; name Cursor hook edges (`c628b61a`)
@@ -44,6 +45,7 @@ publication date.**
 
 ### Deny prose — what a refusal says
 
+- Harden fail-open hosts, forgeable gate inputs, and unwitnessed evidence (`ff6e2fa7`)
 - Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
 - Gates: brief write and spawn rules before the first tool (`a162a469`)
 - P8 spawn: stop fake Couldn't-start failures; skip architect when small work is already scoped (`9a5a5460`)
@@ -65,6 +67,7 @@ publication date.**
 
 ### Runtime — what the product does
 
+- Harden fail-open hosts, forgeable gate inputs, and unwitnessed evidence (`ff6e2fa7`)
 - Latency: load /tmp and trace scanners only for shell tools so Write stays inside the 150 ms budget (`ee121188`)
 - Gates: keep architecture scans off inert assets, keep shells out of /tmp and traces, and reuse the tester build for Lighthouse (`a3c6830c`)
 - Consent: inherit prefs-capable parent so enclosed folders cannot deadlock ask-first (`d7f3df1a`)
